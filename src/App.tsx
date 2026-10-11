@@ -1,8 +1,9 @@
 // The frame: green sidebar, one view at a time, toasts, and the walkthrough
-// on first run.
+// on first run. Ctrl+F (or /) jumps to the search box from anywhere.
 
-import { BrushCleaning, FolderOpen, RotateCcw, Search, Settings } from "lucide-react";
+import { BrushCleaning, FolderOpen, History, Search, Settings } from "lucide-react";
 import { useEffect } from "react";
+import { DeskMark } from "./components/icons";
 import { Toasts } from "./components/Toasts";
 import { Tour } from "./components/Tour";
 import { CHANGED_EVENT, ipc, listen, SORTED_EVENT, type SortedEvent } from "./lib/ipc";
@@ -17,7 +18,7 @@ import { SettingsView } from "./views/SettingsView";
 const NAV: { id: View; label: string; icon: typeof Search; tour?: string }[] = [
   { id: "find", label: "Find", icon: Search },
   { id: "cleanup", label: "Clean up", icon: BrushCleaning, tour: "nav-cleanup" },
-  { id: "activity", label: "Activity", icon: RotateCcw, tour: "nav-activity" },
+  { id: "activity", label: "Activity", icon: History, tour: "nav-activity" },
 ];
 
 export default function App() {
@@ -52,10 +53,24 @@ export default function App() {
   }, [loadInfo, refreshFind, toast, checkBrowsers]);
 
   useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
+      const wantsSearch = ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") || (event.key === "/" && !typing);
+      if (!wantsSearch || document.querySelector('[role="dialog"]')) return;
+      event.preventDefault();
+      setView("find");
+      window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[data-testid="search-input"]')?.focus());
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setView]);
+
+  useEffect(() => {
     if (info && !info.settings.tourDone) startTour();
   }, [info?.settings.tourDone, info, startTour]);
 
   const finishTour = () => {
+    document.querySelector('[data-testid="main"]')?.scrollTo({ top: 0 });
     if (info && !info.settings.tourDone) void saveSettings({ ...info.settings, tourDone: true });
   };
 
@@ -66,24 +81,25 @@ export default function App() {
       <nav className="sidebar" aria-label="Main" data-testid="sidebar">
         <div className="brand">
           <span className="brand-mark" aria-hidden>
-            <Search size={18} strokeWidth={2.5} />
+            <DeskMark />
           </span>
-          <span>Desk</span>
+          <span className="brand-name">Desk</span>
         </div>
         {NAV.map((item) => (
-          <button key={item.id} type="button" className={`nav-button${view === item.id ? " is-active" : ""}`} onClick={() => setView(item.id)} aria-current={view === item.id ? "page" : undefined} data-tour={item.tour} data-testid={`nav-${item.id}`}>
+          <button key={item.id} type="button" className={`nav-button${view === item.id ? " is-active" : ""}`} onClick={() => setView(item.id)} aria-current={view === item.id ? "page" : undefined} data-tour={item.tour} data-testid={`nav-${item.id}`} title={item.label}>
             <item.icon size={22} aria-hidden />
-            <span>{item.label}</span>
+            <span className="nav-label">{item.label}</span>
           </button>
         ))}
-        <button type="button" className="nav-button" onClick={() => void openSchoolFiles()} data-testid="nav-folders">
+        <div className="nav-divider" aria-hidden />
+        <button type="button" className="nav-button" onClick={() => void openSchoolFiles()} data-testid="nav-folders" title="Open School Files in File Explorer">
           <FolderOpen size={22} aria-hidden />
-          <span>Sorted folders</span>
+          <span className="nav-label">Sorted folders</span>
         </button>
         <div className="sidebar-spacer" />
-        <button type="button" className={`nav-button${view === "settings" ? " is-active" : ""}`} onClick={() => setView("settings")} aria-current={view === "settings" ? "page" : undefined} data-testid="nav-settings">
+        <button type="button" className={`nav-button${view === "settings" ? " is-active" : ""}`} onClick={() => setView("settings")} aria-current={view === "settings" ? "page" : undefined} data-testid="nav-settings" title="Settings">
           <Settings size={22} aria-hidden />
-          <span>Settings</span>
+          <span className="nav-label">Settings</span>
         </button>
       </nav>
       <main className="main" data-testid="main">

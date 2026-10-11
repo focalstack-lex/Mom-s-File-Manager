@@ -1,6 +1,8 @@
-// A small modal: Escape closes, focus starts inside, the backdrop closes.
+// A small modal: Escape closes, focus starts inside and stays inside (Tab
+// wraps), the backdrop closes, and focus returns where it was.
 
 import { useEffect, useRef, type ReactNode } from "react";
+import { trapTab } from "../lib/focus";
 
 interface Props {
   title: string;
@@ -16,6 +18,7 @@ export function Dialog({ title, children, onClose, testId }: Props) {
     ref.current?.querySelector<HTMLElement>("button, input, [tabindex]")?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
+      else if (event.key === "Tab" && ref.current) trapTab(event, ref.current);
     };
     window.addEventListener("keydown", onKey);
     return () => {

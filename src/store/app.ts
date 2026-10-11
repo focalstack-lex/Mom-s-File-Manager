@@ -11,7 +11,8 @@ export interface Toast {
   id: number;
   text: string;
   kind: "info" | "error";
-  undoId?: number;
+  /** Activity entries the toast's Undo button reverses. */
+  undoIds?: number[];
 }
 
 interface AppStore {
@@ -27,7 +28,7 @@ interface AppStore {
   checkBrowsers(): Promise<void>;
   loadInfo(): Promise<void>;
   saveSettings(settings: Settings): Promise<void>;
-  toast(text: string, kind?: Toast["kind"], undoId?: number): void;
+  toast(text: string, kind?: Toast["kind"], undoIds?: number[]): void;
   fail(error: unknown): void;
   dismissToast(id: number): void;
 }
@@ -68,10 +69,11 @@ export const useApp = create<AppStore>((set, get) => ({
       get().fail(error);
     }
   },
-  toast: (text, kind = "info", undoId) => {
+  toast: (text, kind = "info", undoIds) => {
     const id = nextToast++;
-    set((state) => ({ toasts: [...state.toasts.slice(-2), { id, text, kind, undoId }] }));
-    window.setTimeout(() => get().dismissToast(id), kind === "error" ? 9000 : 6000);
+    set((state) => ({ toasts: [...state.toasts.slice(-2), { id, text, kind, undoIds }] }));
+    // A toast that can be undone stays long enough to reach the button.
+    window.setTimeout(() => get().dismissToast(id), kind === "error" ? 9000 : undoIds?.length ? 10000 : 6000);
   },
   fail: (error) => {
     console.warn("Desk:", error);
@@ -79,3 +81,20 @@ export const useApp = create<AppStore>((set, get) => ({
   },
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 }));
+
+/**
+ * The Activity ids of the moves that just put files at `paths`, so a toast can
+ * offer Undo. Moves return new paths, not ids; the log is the source of truth.
+ * Returns an empty list when the log cannot be read; the toast then simply has
+ * no Undo button and Activity still has it.
+ */
+export async function moveOpIds(paths: string[]): Promise<number[]> {
+  try {
+    const wanted = new Set(paths);
+    const ops = await ipc.activity();
+    return ops.filter((op) => op.kind === "move" && op.status === "done" && op.dst !== null && wanted.has(op.dst)).map((op) => op.id);
+  } catch (error) {
+    console.warn("Desk: could not read Activity for Undo", error);
+    return [];
+  }
+}

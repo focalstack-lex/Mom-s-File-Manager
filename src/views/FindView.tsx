@@ -1,13 +1,14 @@
 // The one screen she opens (spec 5.3): search, pinned, templates, recent
 // downloads, results grouped by copy.
 
-import { FilePlus, Info, Search, X } from "lucide-react";
+import { FilePlus, Inbox, Info, Search, SearchX, X } from "lucide-react";
 import { browserNotice } from "../lib/browsers";
 import { useEffect, useRef, useState } from "react";
 import { ActionBar } from "../components/ActionBar";
 import { Chips } from "../components/Chips";
 import { PreviewPanel } from "../components/PreviewPanel";
 import { ResultRow } from "../components/ResultRow";
+import { SkeletonList } from "../components/Skeleton";
 import { ipc } from "../lib/ipc";
 import type { AppInfo, FileRow } from "../lib/types";
 import { useApp } from "../store/app";
@@ -57,6 +58,7 @@ export function FindView({ info }: { info: AppInfo }) {
   const previewPath = useFind((s) => s.previewPath);
   const searching = useFind((s) => s.isSearching());
   const clearFilters = useFind((s) => s.clearFilters);
+  const loading = useFind((s) => s.loading);
   const tourActive = useTour((s) => s.active);
   const toast = useApp((s) => s.toast);
   const fail = useApp((s) => s.fail);
@@ -92,10 +94,11 @@ export function FindView({ info }: { info: AppInfo }) {
   const recent = result?.recent ?? [];
   const showSamples = tourActive && recent.length === 0;
   const totalGroups = result?.groups.length ?? 0;
+  const countLabel = totalGroups === 1 ? "1 file" : `${totalGroups.toLocaleString()} files`;
 
   return (
     <div className="main-inner" data-testid="find-view">
-      <div>
+      <div className="view-head">
         <h1 className="view-title">Find a file</h1>
         <p className="status-line" data-testid="status-line">
           {status}
@@ -124,29 +127,46 @@ export function FindView({ info }: { info: AppInfo }) {
           autoComplete="off"
           spellCheck={false}
         />
-        {query && (
-          <button type="button" className="icon-button" onClick={() => setQuery("")} aria-label="Clear search">
+        {searching && loading && <span className="spinner" role="status" aria-label="Searching" />}
+        {query ? (
+          <button type="button" className="icon-button" onClick={() => setQuery("")} aria-label="Clear search" title="Clear search">
             <X size={22} aria-hidden />
           </button>
+        ) : (
+          <span className="search-hint" aria-hidden>
+            <kbd>Ctrl</kbd>
+            <kbd>F</kbd>
+          </span>
         )}
       </div>
 
       <Chips settings={info.settings} />
 
       <div className={`find-layout${previewPath ? " has-preview" : ""}`}>
-        <div className="main-inner" style={{ gap: "var(--space-5)" }}>
+        <div className="find-results">
           {searching ? (
-            <section aria-label="Results" data-testid="results">
-              {totalGroups === 0 ? (
+            <section className="section" aria-labelledby="results-title" data-testid="results">
+              <div className="section-head">
+                <h2 className="card-title" id="results-title">
+                  Results
+                </h2>
+                <span className="section-count" aria-live="polite" data-testid="result-count">
+                  {result && !(loading && totalGroups === 0) ? countLabel : ""}
+                </span>
+              </div>
+              {loading && totalGroups === 0 ? (
+                <SkeletonList label="Searching" />
+              ) : totalGroups === 0 ? (
                 <div className="card empty">
+                  <span className="empty-mark" aria-hidden>
+                    <SearchX size={26} />
+                  </span>
                   <strong>Nothing matched yet</strong>
                   {index.scanning ? "Desk is still reading your files. Try again in a minute." : "Try fewer words, or a word you remember from inside the file."}
                   {!query && (
-                    <div style={{ marginTop: "var(--space-3)" }}>
-                      <button type="button" className="button" onClick={clearFilters}>
-                        Clear filters
-                      </button>
-                    </div>
+                    <button type="button" className="button" onClick={clearFilters}>
+                      Clear filters
+                    </button>
                   )}
                 </div>
               ) : (
@@ -169,7 +189,7 @@ export function FindView({ info }: { info: AppInfo }) {
           ) : (
             <>
               {result && result.pinned.length > 0 && (
-                <section aria-label="Pinned" data-testid="pinned">
+                <section className="section" aria-label="Pinned" data-testid="pinned">
                   <h2 className="card-title">Pinned</h2>
                   <div className="rows">
                     {result.pinned.map((file) => (
@@ -179,12 +199,11 @@ export function FindView({ info }: { info: AppInfo }) {
                 </section>
               )}
               {result && result.orphanPins.length > 0 && (
-                <section aria-label="Pinned files that moved">
+                <section className="section" aria-label="Pinned files that moved">
                   {result.orphanPins.map((path) => (
-                    <div key={path} className="card" style={{ display: "flex", gap: "var(--space-3)", alignItems: "center", flexWrap: "wrap" }}>
-                      <span style={{ flex: 1, minWidth: 200 }}>
+                    <div key={path} className="card orphan">
+                      <span className="orphan-text">
                         <strong>{path.split("\\").pop()}</strong>
-                        <br />
                         <span className="field-note">Moved or deleted outside Desk.</span>
                       </span>
                       <button type="button" className="button" onClick={() => setQuery((path.split("\\").pop() ?? "").replace(/\.[^.]+$/, ""))}>
@@ -198,7 +217,7 @@ export function FindView({ info }: { info: AppInfo }) {
                 </section>
               )}
               {templates.length > 0 && (
-                <section aria-label="Templates" data-testid="templates">
+                <section className="section" aria-label="Templates" data-testid="templates">
                   <h2 className="card-title">New from a template</h2>
                   <div className="shelf">
                     {templates.map((t) => (
@@ -210,10 +229,13 @@ export function FindView({ info }: { info: AppInfo }) {
                   </div>
                 </section>
               )}
-              <section aria-label="Recent downloads" data-testid="recent" data-tour="recent">
+              <section className="section" aria-label="Recent downloads" data-testid="recent" data-tour="recent">
                 <h2 className="card-title">Recent downloads</h2>
                 {recent.length === 0 && !showSamples ? (
                   <div className="card empty">
+                    <span className="empty-mark" aria-hidden>
+                      <Inbox size={26} />
+                    </span>
                     <strong>Nothing downloaded yet</strong>
                     New downloads appear here, newest first, already filed in School Files.
                   </div>
@@ -236,10 +258,10 @@ export function FindView({ info }: { info: AppInfo }) {
               </section>
             </>
           )}
+          <ActionBar onRename={(path) => setRenaming(path)} />
         </div>
         <PreviewPanel roots={roots} />
       </div>
-      <ActionBar onRename={(path) => setRenaming(path)} />
     </div>
   );
 }

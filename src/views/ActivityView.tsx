@@ -1,9 +1,11 @@
-// Every change in plain words, newest first, with Undo (spec 5.7).
+// Every change in plain words, newest first, grouped by day, with Undo
+// (spec 5.7). A change that failed says what to do next.
 
-import { CircleAlert, Copy, FolderInput, FolderPlus, Pencil, RotateCcw, Trash, Undo2 } from "lucide-react";
+import { CircleAlert, Copy, FolderInput, FolderOpen, FolderPlus, History, Pencil, RotateCcw, Trash, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { locationLine, relativeTime } from "../lib/format";
 import { ipc } from "../lib/ipc";
+import { SkeletonList } from "../components/Skeleton";
 import type { AppInfo, OpRow } from "../lib/types";
 import { useApp } from "../store/app";
 import { useFind } from "../store/find";
@@ -37,8 +39,29 @@ export function describeOp(op: OpRow, roots: string[]): { title: string; detail:
   }
 }
 
+/** "Today", "Yesterday", "Earlier this week", "Earlier": the order she remembers things in. */
+export function dayGroup(unixSeconds: number, now: Date = new Date()): string {
+  const start = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((start(now) - start(new Date(unixSeconds * 1000))) / 86_400_000);
+  if (days <= 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 7) return "Earlier this week";
+  return "Earlier";
+}
+
+function groupByDay(ops: OpRow[]): { title: string; ops: OpRow[] }[] {
+  const groups: { title: string; ops: OpRow[] }[] = [];
+  for (const op of ops) {
+    const title = dayGroup(op.createdAt);
+    const last = groups[groups.length - 1];
+    if (last && last.title === title) last.ops.push(op);
+    else groups.push({ title, ops: [op] });
+  }
+  return groups;
+}
+
 function OpIcon({ op }: { op: OpRow }) {
-  const props = { size: 22, "aria-hidden": true };
+  const props = { size: 20, "aria-hidden": true };
   if (op.status === "failed") return <CircleAlert {...props} />;
   switch (op.kind) {
     case "rename":
@@ -86,50 +109,66 @@ export function ActivityView({ info }: { info: AppInfo }) {
 
   return (
     <div className="main-inner" data-testid="activity-view">
-      <div>
+      <div className="view-head">
         <h1 className="view-title">Activity</h1>
         <p className="view-lead">Everything Desk changed, and everything you changed through it. Undo puts it back.</p>
       </div>
-      <div className="card">
-        {ops === null ? (
-          <p className="status-line">Loading...</p>
-        ) : ops.length === 0 ? (
-          <div className="empty">
-            <strong>Nothing yet</strong>
-            When a download is filed or you move a file, it shows up here.
-          </div>
-        ) : (
-          ops.map((op) => {
-            const { title, detail } = describeOp(op, info.roots);
-            return (
-              <div key={op.id} className={`activity-row${op.status === "failed" ? " is-failed" : ""}`} data-testid="activity-row">
-                <OpIcon op={op} />
-                <div className="activity-text">
-                  <strong>{title}</strong>
-                  <span>
-                    {detail}
-                    {detail ? " · " : ""}
-                    {relativeTime(op.createdAt)}
-                  </span>
-                </div>
-                {op.status === "done" ? (
-                  <button type="button" className="button" onClick={() => void undo(op)} data-testid="undo">
-                    <Undo2 size={18} aria-hidden />
-                    Undo
-                  </button>
-                ) : op.status === "undone" ? (
-                  <span className="activity-state">
-                    <RotateCcw size={16} aria-hidden style={{ verticalAlign: "-3px", marginRight: 4 }} />
-                    Undone
-                  </span>
-                ) : (
-                  <span className="activity-state">Not done</span>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
+      {ops === null ? (
+        <SkeletonList label="Loading activity" rows={4} />
+      ) : ops.length === 0 ? (
+        <div className="card empty">
+          <span className="empty-mark" aria-hidden>
+            <History size={26} />
+          </span>
+          <strong>Nothing yet</strong>
+          When a download is filed or you move a file, it shows up here.
+        </div>
+      ) : (
+        groupByDay(ops).map((group) => (
+          <section key={group.title} className="activity-group" aria-label={group.title}>
+            <h2 className="activity-group-title">{group.title}</h2>
+            <div className="rows">
+              {group.ops.map((op) => {
+                const { title, detail } = describeOp(op, info.roots);
+                return (
+                  <div key={op.id} className={`activity-row${op.status === "failed" ? " is-failed" : ""}${op.status === "undone" ? " is-undone" : ""}`} data-testid="activity-row">
+                    <span className="op-mark">
+                      <OpIcon op={op} />
+                    </span>
+                    <div className="activity-text">
+                      <strong>{title}</strong>
+                      <span>
+                        {detail.replace(/\.$/, "")}
+                        {detail ? " \u00b7 " : ""}
+                        {relativeTime(op.createdAt)}
+                      </span>
+                    </div>
+                    {op.status === "done" ? (
+                      <button type="button" className="button" onClick={() => void undo(op)} data-testid="undo">
+                        <Undo2 size={18} aria-hidden />
+                        Undo
+                      </button>
+                    ) : op.status === "undone" ? (
+                      <span className="activity-state">
+                        <RotateCcw size={16} aria-hidden />
+                        Undone
+                      </span>
+                    ) : (
+                      <span className="activity-actions">
+                        <span className="activity-state">Not done</span>
+                        <button type="button" className="button" onClick={() => void ipc.reveal(op.src).catch(fail)} data-testid="failed-reveal">
+                          <FolderOpen size={18} aria-hidden />
+                          Show the file
+                        </button>
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        ))
+      )}
     </div>
   );
 }

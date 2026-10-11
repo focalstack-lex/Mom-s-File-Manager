@@ -35,7 +35,7 @@ export function Chips({ settings }: { settings: Settings }) {
             {chip.label}
           </button>
         ))}
-        <button type="button" className="chip" onClick={() => setMore(!more)} aria-expanded={more} data-testid="more-filters">
+        <button type="button" className="chip chip-more" onClick={() => setMore(!more)} aria-expanded={more} data-testid="more-filters">
           {more ? <ChevronDown size={18} aria-hidden /> : <ChevronRight size={18} aria-hidden />}
           {extra > 0 ? `More filters (${extra})` : "More filters"}
         </button>

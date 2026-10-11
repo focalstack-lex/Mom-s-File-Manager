@@ -61,7 +61,7 @@ export function FolderPicker({ count, warnOld, onPick, onClose }: Props) {
           <input id="new-folder-name" autoFocus value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void create()} />
         </div>
       ) : (
-        <button type="button" className="button button-quiet" onClick={() => setCreating(true)} style={{ alignSelf: "flex-start" }}>
+        <button type="button" className="button button-quiet align-start" onClick={() => setCreating(true)}>
           <FolderPlus size={18} aria-hidden />
           New folder
         </button>

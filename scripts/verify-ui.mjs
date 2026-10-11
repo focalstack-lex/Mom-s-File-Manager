@@ -267,7 +267,7 @@ async function drive(browser) {
   const cards = await page.locator('[data-testid="cleanup-view"] section.card').count();
   const tickedByDefault = await page.locator('[data-testid="cleanup-view"] input[type=checkbox]:checked').count();
   const recycleDisabled = await page.locator('[data-testid="recycle-ticked"]').isDisabled();
-  await page.locator('[data-testid="desktop-list"] .button-primary').first().click();
+  await page.locator('[data-testid="desktop-list"]').getByRole("button", { name: "Move it there" }).first().click();
   const suggestionMoved = await page.evaluate(() => window.__deskMock.calls.filter((c) => c.command === "move_files").at(-1)?.args.destination);
   await capture(page, "11-cleanup");
   record("Clean up shows duplicates, Desktop clutter and old downloads with nothing ticked, and a suggestion moves on click", cleanupOk && cards === 3 && tickedByDefault === 0 && recycleDisabled && String(suggestionMoved).includes("School Files"), JSON.stringify({ cards, tickedByDefault, recycleDisabled, suggestionMoved }));

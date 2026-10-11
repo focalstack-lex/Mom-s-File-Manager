@@ -1,15 +1,18 @@
 // Clean up (spec 5.5): duplicate copies, Desktop clutter, old downloads.
-// Nothing happens until she clicks; no destructive box starts ticked.
+// Nothing happens until she clicks; no destructive box starts ticked. A file
+// that is an extra copy is only offered for the Recycle Bin, never also for a
+// move, so she is never asked two opposite things about the same file.
 
-import { Trash } from "lucide-react";
+import { CheckCheck, CircleCheck, Trash } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Dialog } from "../components/Dialog";
 import { FolderPicker } from "../components/FolderPicker";
-import { KindIcon } from "../components/icons";
+import { KindTile } from "../components/icons";
+import { SkeletonList } from "../components/Skeleton";
 import { locationLine, monthName, relativeTime } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import type { AppInfo, CleanupReport, Suggestion } from "../lib/types";
-import { useApp } from "../store/app";
+import { moveOpIds, useApp } from "../store/app";
 
 function dirLabel(dir: string, roots: string[]): string {
   return locationLine(dir, roots).replace(/^in /, "");
@@ -36,10 +39,10 @@ export function CleanupView({ info }: { info: AppInfo }) {
     void load();
   }, [load]);
 
-  const act = async (work: () => Promise<void>, done: string) => {
+  const act = async (work: () => Promise<number[] | void>, done: string) => {
     try {
-      await work();
-      toast(done);
+      const undoIds = await work();
+      toast(done, "info", undoIds ?? undefined);
       await load();
     } catch (error) {
       fail(error);
@@ -47,33 +50,36 @@ export function CleanupView({ info }: { info: AppInfo }) {
     }
   };
 
-  const accept = (s: Suggestion) => act(async () => void (await ipc.moveFiles([s.file.path], s.suggestedDir)), `Moved to ${dirLabel(s.suggestedDir, info.roots)}. Undo is in Activity.`);
+  const accept = (s: Suggestion) => act(async () => moveOpIds(await ipc.moveFiles([s.file.path], s.suggestedDir)), `Moved to ${dirLabel(s.suggestedDir, info.roots)}.`);
   const moveTo = (path: string, dir: string) => {
     setPicking(null);
-    return act(async () => void (await ipc.moveFiles([path], dir)), "Moved. Undo is in Activity.");
+    return act(async () => moveOpIds(await ipc.moveFiles([path], dir)), "Moved.");
   };
   const recycleTicked = () => {
     setConfirm(false);
     const count = ticked.length;
     return act(async () => {
-      await ipc.recycleFiles(ticked);
+      const ops = await ipc.recycleFiles(ticked);
       setTicked([]);
-    }, count === 1 ? "1 copy moved to the Recycle Bin. Undo is in Activity." : `${count} copies moved to the Recycle Bin. Undo is in Activity.`);
+      return ops.map((o) => o.id);
+    }, count === 1 ? "1 copy moved to the Recycle Bin." : `${count} copies moved to the Recycle Bin.`);
   };
   const acceptAll = (items: Suggestion[]) => {
     const live = items.filter((s) => !skipped.includes(s.file.path));
     return act(async () => {
-      for (const s of live) await ipc.moveFiles([s.file.path], s.suggestedDir);
-    }, `Moved ${live.length} files into School Files. Undo is in Activity.`);
+      const moved: string[] = [];
+      for (const s of live) moved.push(...(await ipc.moveFiles([s.file.path], s.suggestedDir)));
+      return moveOpIds(moved);
+    }, `Moved ${live.length} files into School Files.`);
   };
 
   const SuggestionList = ({ items, testId }: { items: Suggestion[]; testId: string }) => (
-    <div data-testid={testId}>
+    <div className="rows" data-testid={testId}>
       {items
         .filter((s) => !skipped.includes(s.file.path))
         .map((s) => (
           <div key={s.file.path} className="suggestion">
-            <KindIcon kind={s.file.kind} />
+            <KindTile kind={s.file.kind} ext={s.file.ext} />
             <div className="suggestion-text">
               <strong>{s.file.name}</strong>
               <span>
@@ -81,13 +87,13 @@ export function CleanupView({ info }: { info: AppInfo }) {
               </span>
             </div>
             <div className="suggestion-actions">
-              <button type="button" className="button button-primary" onClick={() => void accept(s)}>
+              <button type="button" className="button" onClick={() => void accept(s)}>
                 Move it there
               </button>
-              <button type="button" className="button" onClick={() => setPicking(s.file.path)}>
+              <button type="button" className="button button-subtle" onClick={() => setPicking(s.file.path)}>
                 Somewhere else
               </button>
-              <button type="button" className="button button-quiet" onClick={() => setSkipped((list) => [...list, s.file.path])}>
+              <button type="button" className="button button-subtle" onClick={() => setSkipped((list) => [...list, s.file.path])}>
                 Skip
               </button>
             </div>
@@ -96,28 +102,38 @@ export function CleanupView({ info }: { info: AppInfo }) {
     </div>
   );
 
-  const tidy = (report?.duplicates.length ?? 0) === 0 && (report?.desktop.length ?? 0) === 0 && (report?.oldDownloads.length ?? 0) === 0;
+  // Extra copies belong to the Recycle Bin question only.
+  const extraCopies = new Set(report?.duplicates.flatMap((g) => g.others.map((o) => o.path)) ?? []);
+  const notCopies = (items: Suggestion[]) => items.filter((s) => !extraCopies.has(s.file.path));
+  const desktop = notCopies(report?.desktop ?? []);
+  const oldDownloads = notCopies(report?.oldDownloads ?? []);
+  const tidy = (report?.duplicates.length ?? 0) === 0 && desktop.length === 0 && oldDownloads.length === 0;
 
   return (
     <div className="main-inner" data-testid="cleanup-view">
-      <div>
+      <div className="view-head">
         <h1 className="view-title">Clean up</h1>
         <p className="view-lead">Things Desk noticed. Nothing moves until you click, and everything can be undone.</p>
       </div>
       {report === null ? (
-        <p className="status-line">Looking around...</p>
+        <SkeletonList label="Looking around" />
       ) : tidy ? (
-        <div className="card empty">
+        <div className="card empty" data-testid="cleanup-tidy">
+          <span className="empty-mark is-good" aria-hidden>
+            <CheckCheck size={28} />
+          </span>
           <strong>All tidy</strong>
           No duplicate copies, nothing loose on the Desktop, no old downloads.
         </div>
       ) : (
         <div className="cleanup-cards">
           {report.duplicates.length > 0 && (
-            <section className="card" aria-labelledby="dupes-title">
+            <section className="card section" aria-labelledby="dupes-title">
               <div className="cleanup-head">
                 <div>
-                  <h2 id="dupes-title">Duplicate copies</h2>
+                  <h2 className="card-title" id="dupes-title">
+                    Duplicate copies
+                  </h2>
                   <p>The newest copy is marked Latest. Tick the extra copies you no longer need.</p>
                 </div>
                 <button type="button" className="button button-danger" disabled={ticked.length === 0} onClick={() => setConfirm(true)} data-testid="recycle-ticked">
@@ -126,21 +142,24 @@ export function CleanupView({ info }: { info: AppInfo }) {
                 </button>
               </div>
               {report.duplicates.map((group) => (
-                <div key={group.latest.groupKey} style={{ marginBottom: "var(--space-3)" }}>
+                <div key={group.latest.groupKey} className="dupe-group">
                   <div className="suggestion">
-                    <KindIcon kind={group.latest.kind} />
+                    <KindTile kind={group.latest.kind} ext={group.latest.ext} />
                     <div className="suggestion-text">
                       <strong>
-                        {group.latest.name} <span className="latest">Latest</span>
+                        <span>{group.latest.name}</span> <span className="latest">Latest</span>
                       </strong>
                       <span>
                         edited {relativeTime(group.latest.modified)} · {locationLine(group.latest.parent, info.roots)}
                       </span>
                     </div>
-                    <span className="activity-state">keep</span>
+                    <span className="keep-mark">
+                      <CircleCheck size={18} aria-hidden />
+                      Keeping
+                    </span>
                   </div>
                   {group.others.map((copy) => (
-                    <div key={copy.path} className="suggestion" style={{ paddingLeft: "var(--space-5)" }}>
+                    <div key={copy.path} className="suggestion is-copy">
                       <label className="row-check">
                         <input type="checkbox" checked={ticked.includes(copy.path)} onChange={() => setTicked((list) => (list.includes(copy.path) ? list.filter((p) => p !== copy.path) : [...list, copy.path]))} aria-label={`Recycle ${copy.name}`} />
                       </label>
@@ -150,7 +169,7 @@ export function CleanupView({ info }: { info: AppInfo }) {
                           edited {relativeTime(copy.modified)} · {locationLine(copy.parent, info.roots)}
                         </span>
                       </div>
-                      <button type="button" className="button button-quiet" onClick={() => void ipc.open(copy.path)}>
+                      <button type="button" className="button button-subtle" onClick={() => void ipc.open(copy.path).catch(fail)}>
                         Open
                       </button>
                     </div>
@@ -159,29 +178,33 @@ export function CleanupView({ info }: { info: AppInfo }) {
               ))}
             </section>
           )}
-          {report.desktop.length > 0 && (
-            <section className="card" aria-labelledby="desktop-title">
+          {desktop.length > 0 && (
+            <section className="card section" aria-labelledby="desktop-title">
               <div className="cleanup-head">
                 <div>
-                  <h2 id="desktop-title">Loose files on the Desktop</h2>
+                  <h2 className="card-title" id="desktop-title">
+                    Loose files on the Desktop
+                  </h2>
                   <p>Each one has a suggested home in School Files.</p>
                 </div>
-                <button type="button" className="button" onClick={() => void acceptAll(report.desktop)}>
+                <button type="button" className="button button-primary" onClick={() => void acceptAll(desktop)}>
                   Move all as suggested
                 </button>
               </div>
-              <SuggestionList items={report.desktop} testId="desktop-list" />
+              <SuggestionList items={desktop} testId="desktop-list" />
             </section>
           )}
-          {report.oldDownloads.length > 0 && (
-            <section className="card" aria-labelledby="old-title">
+          {oldDownloads.length > 0 && (
+            <section className="card section" aria-labelledby="old-title">
               <div className="cleanup-head">
                 <div>
-                  <h2 id="old-title">Old downloads</h2>
+                  <h2 className="card-title" id="old-title">
+                    Old downloads
+                  </h2>
                   <p>Untouched for two months or more.</p>
                 </div>
               </div>
-              <SuggestionList items={report.oldDownloads} testId="old-downloads-list" />
+              <SuggestionList items={oldDownloads} testId="old-downloads-list" />
             </section>
           )}
         </div>

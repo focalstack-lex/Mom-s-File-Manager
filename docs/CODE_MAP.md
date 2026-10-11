@@ -40,6 +40,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | `lib/dates.ts` | Date chips and spans, quarter and school year. |
 | `lib/errors.ts` | Error code to plain sentence. |
 | `lib/browsers.ts` | Browser check labels and the Find notice text. |
+| `lib/focus.ts` | Tab trapping for the dialog and walkthrough; arrow-key movement between file rows. |
 | `store/app.ts` | View, app info, settings save, toasts. |
 | `store/find.ts` | Query, chips, results, selection, preview. |
 | `store/tour.ts` | Walkthrough steps and state, `placeCard`. |
@@ -49,7 +50,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | `components/FolderPicker.tsx` | Move to dialog with New folder. |
 | `components/PreviewPanel.tsx` | Quick preview. |
 | `components/Tour.tsx` | Walkthrough overlay with mask, ring and arrow. |
-| `components/Dialog.tsx`, `Toasts.tsx`, `icons.tsx` | Shared pieces. |
+| `components/Dialog.tsx`, `Toasts.tsx`, `icons.tsx`, `Skeleton.tsx` | Shared pieces: modal with focus trap, toasts with Undo, kind tiles and the Desk mark, loading rows. |
 | `views/FindView.tsx`, `CleanupView.tsx`, `ActivityView.tsx`, `SettingsView.tsx` | The four screens. |
 | `dev/mockBackend.ts` | Fake native side for the browser harness and the UI drive. |
 | `tests/*.test.ts` | vitest for helpers, stores and the text gate. |

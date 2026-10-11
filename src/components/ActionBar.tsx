@@ -1,10 +1,11 @@
 // The bar that appears when files are ticked (spec 5.4): Move to, Rename,
-// Pin, Recycle Bin. Only the Recycle Bin asks first.
+// Pin, Recycle Bin. Only the Recycle Bin asks first, and it names the files.
+// Every finished change offers Undo right in its toast.
 
 import { FolderInput, Pencil, Pin, Trash, X } from "lucide-react";
 import { useState } from "react";
 import { ipc } from "../lib/ipc";
-import { useApp } from "../store/app";
+import { moveOpIds, useApp } from "../store/app";
 import { allRows, useFind } from "../store/find";
 import { Dialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
@@ -20,7 +21,8 @@ export function ActionBar({ onRename }: { onRename(path: string): void }) {
   const [confirmRecycle, setConfirmRecycle] = useState(false);
   if (selected.length === 0) return null;
 
-  const rows = allRows(result).filter((r) => selected.includes(r.path));
+  // A pinned file can also be a recent one; list each path once.
+  const rows = [...new Map(allRows(result).filter((r) => selected.includes(r.path)).map((r) => [r.path, r])).values()];
   const anyOld = rows.some((r) => !r.downloadedAt || (Date.now() / 1000 - r.downloadedAt) > 7 * 86_400);
 
   const move = async (destination: string) => {
@@ -29,7 +31,7 @@ export function ActionBar({ onRename }: { onRename(path: string): void }) {
       const moved = await ipc.moveFiles(selected, destination);
       clear();
       await refresh();
-      toast(moved.length === 1 ? "Moved. Undo is in Activity." : `Moved ${moved.length} files. Undo is in Activity.`);
+      toast(moved.length === 1 ? "Moved." : `Moved ${moved.length} files.`, "info", await moveOpIds(moved));
     } catch (error) {
       fail(error);
       await refresh();
@@ -55,7 +57,7 @@ export function ActionBar({ onRename }: { onRename(path: string): void }) {
       await refresh();
       const failed = ops.filter((o) => o.status === "failed");
       if (failed.length > 0) toast(failed[0].message ?? "Some files could not be moved to the Recycle Bin.", "error");
-      else toast(ops.length === 1 ? "Moved to the Recycle Bin. Undo is in Activity." : `${ops.length} files moved to the Recycle Bin. Undo is in Activity.`);
+      else toast(ops.length === 1 ? "Moved to the Recycle Bin." : `${ops.length} files moved to the Recycle Bin.`, "info", ops.map((o) => o.id));
     } catch (error) {
       fail(error);
       await refresh();
@@ -65,7 +67,10 @@ export function ActionBar({ onRename }: { onRename(path: string): void }) {
   return (
     <>
       <div className="action-bar" role="toolbar" aria-label="Selected files" data-testid="action-bar">
-        <span className="action-bar-count">{selected.length === 1 ? "1 file" : `${selected.length} files`}</span>
+        <span className="action-bar-count" aria-live="polite">
+          {selected.length === 1 ? "1 file" : `${selected.length} files`}
+        </span>
+        <span className="action-bar-divider" aria-hidden />
         <button type="button" className="button" onClick={() => setPicking(true)}>
           <FolderInput size={18} aria-hidden />
           Move to...
@@ -84,17 +89,24 @@ export function ActionBar({ onRename }: { onRename(path: string): void }) {
           <Trash size={18} aria-hidden />
           Recycle Bin
         </button>
-        <button type="button" className="icon-button" onClick={clear} aria-label="Clear selection">
+        <span className="action-bar-divider" aria-hidden />
+        <button type="button" className="icon-button" onClick={clear} aria-label="Clear selection" title="Clear selection">
           <X size={20} aria-hidden />
         </button>
       </div>
       {picking && <FolderPicker count={selected.length} warnOld={anyOld} onPick={(d) => void move(d)} onClose={() => setPicking(false)} />}
       {confirmRecycle && (
         <Dialog title={selected.length === 1 ? "Move this file to the Recycle Bin?" : `Move ${selected.length} files to the Recycle Bin?`} onClose={() => setConfirmRecycle(false)} testId="recycle-confirm">
-          <p>Nothing is deleted for good. You can bring it back from Activity or from the Recycle Bin.</p>
+          <ul className="dialog-files" aria-label="Files">
+            {rows.slice(0, 5).map((r) => (
+              <li key={r.path}>{r.name}</li>
+            ))}
+            {rows.length > 5 && <li className="more">and {rows.length - 5} more</li>}
+          </ul>
+          <p>Nothing is deleted for good. You can bring {selected.length === 1 ? "it" : "them"} back from Activity or from the Recycle Bin.</p>
           <div className="dialog-actions">
             <button type="button" className="button" onClick={() => setConfirmRecycle(false)}>
-              Keep it
+              {selected.length === 1 ? "Keep it" : "Keep them"}
             </button>
             <button type="button" className="button button-danger" onClick={() => void recycle()}>
               Move to Recycle Bin

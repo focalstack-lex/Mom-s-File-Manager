@@ -1,9 +1,10 @@
 // The first-run walkthrough (spec 5.9). The page dims except for the control
 // being explained; a card with an arrow drawn to that control says what it
-// does. Enter is Next, Escape is Skip.
+// does. Enter is Next, Escape is Skip, and Tab stays inside the card.
 
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { trapTab } from "../lib/focus";
 import { placeCard, TOUR_STEPS, useTour } from "../store/tour";
 
 interface Rect {
@@ -60,6 +61,8 @@ export function Tour({ onFinish }: { onFinish(): void }) {
         event.preventDefault();
         if (index >= TOUR_STEPS.length - 1) onFinish();
         next();
+      } else if (event.key === "Tab" && cardRef.current) {
+        trapTab(event, cardRef.current);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -97,6 +100,11 @@ export function Tour({ onFinish }: { onFinish(): void }) {
         </svg>
       )}
       <div className="tour-card" ref={cardRef} style={{ top: placed.top, left: placed.left }}>
+        <div className="tour-progress" aria-hidden>
+          {TOUR_STEPS.map((s, i) => (
+            <span key={s.target} className={i <= index ? "is-done" : undefined} />
+          ))}
+        </div>
         <span className="tour-step">
           Step {index + 1} of {TOUR_STEPS.length}
         </span>

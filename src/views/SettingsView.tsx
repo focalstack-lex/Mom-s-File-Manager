@@ -1,5 +1,6 @@
 // Settings (spec 5.8): the few switches that exist, the school-year dates
-// that unlock two chips, templates, and the walkthrough replay.
+// that unlock two chips (picked from a calendar, stored as YYYY-MM-DD),
+// templates, and the walkthrough replay.
 
 import { CircleAlert, CircleCheck } from "lucide-react";
 import { useState } from "react";
@@ -77,9 +78,9 @@ export function SettingsView({ info }: { info: AppInfo }) {
 
   return (
     <div className="main-inner" data-testid="settings-view">
-      <div>
+      <div className="view-head">
         <h1 className="view-title">Settings</h1>
-        <p className="view-lead">Desk {info.version}. Only the few things worth deciding.</p>
+        <p className="view-lead">Only the few things worth deciding. Changes save as you make them.</p>
       </div>
 
       <section className="card settings-list" aria-labelledby="general-title">
@@ -91,14 +92,14 @@ export function SettingsView({ info }: { info: AppInfo }) {
             Start when the computer starts
             <span>So downloads are filed even before Desk is opened.</span>
           </span>
-          <input type="checkbox" checked={draft.startAtLogin} onChange={(e) => update({ startAtLogin: e.target.checked })} />
+          <input type="checkbox" role="switch" className="switch" checked={draft.startAtLogin} onChange={(e) => update({ startAtLogin: e.target.checked })} />
         </label>
         <label className="toggle">
           <span className="toggle-text">
             Tell me when a download is filed
             <span>A small Windows message in the corner.</span>
           </span>
-          <input type="checkbox" checked={draft.notifications} onChange={(e) => update({ notifications: e.target.checked })} />
+          <input type="checkbox" role="switch" className="switch" checked={draft.notifications} onChange={(e) => update({ notifications: e.target.checked })} />
         </label>
         <div className="toggle">
           <span className="toggle-text">
@@ -141,7 +142,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
             </div>
           ))
         )}
-        <button type="button" className="button" onClick={() => void checkBrowsers()} style={{ alignSelf: "flex-start" }} data-testid="browsers-recheck">
+        <button type="button" className="button align-start" onClick={() => void checkBrowsers()} data-testid="browsers-recheck">
           Check again
         </button>
       </section>
@@ -150,33 +151,25 @@ export function SettingsView({ info }: { info: AppInfo }) {
         <h2 className="card-title" id="year-title">
           School year
         </h2>
-        <p className="field-note">Set these once and the Find screen gets "This quarter" and "School year" filters. Dates are YYYY-MM-DD.</p>
-        <div className="range-grid">
-          <div className="field">
-            <label htmlFor="sy-start">School year starts</label>
-            <input id="sy-start" placeholder="2026-07-28" value={draft.schoolYear?.start ?? ""} onChange={(e) => update({ schoolYear: { name: "School year", start: e.target.value, end: draft.schoolYear?.end ?? "" } })} />
-          </div>
-          <div className="field">
-            <label htmlFor="sy-end">Ends</label>
-            <input id="sy-end" placeholder="2027-04-16" value={draft.schoolYear?.end ?? ""} onChange={(e) => update({ schoolYear: { name: "School year", start: draft.schoolYear?.start ?? "", end: e.target.value } })} />
-          </div>
+        <p className="field-note">Set these once and the Find screen gets &quot;This quarter&quot; and &quot;School year&quot; filters.</p>
+        <div className="date-grid" role="group" aria-label="School year and quarters">
+          <span className="date-grid-head" aria-hidden />
+          <span className="date-grid-head" aria-hidden>
+            Starts
+          </span>
+          <span className="date-grid-head" aria-hidden>
+            Ends
+          </span>
+          <span className="date-grid-label" id="sy-label">
+            School year
+          </span>
+          <input id="sy-start" type="date" aria-label="School year starts" value={draft.schoolYear?.start ?? ""} max={draft.schoolYear?.end || undefined} onChange={(e) => update({ schoolYear: { name: "School year", start: e.target.value, end: draft.schoolYear?.end ?? "" } })} />
+          <input id="sy-end" type="date" aria-label="School year ends" value={draft.schoolYear?.end ?? ""} min={draft.schoolYear?.start || undefined} onChange={(e) => update({ schoolYear: { name: "School year", start: draft.schoolYear?.start ?? "", end: e.target.value } })} />
+          <span className="date-grid-divider" aria-hidden />
+          {QUARTERS.map((name, i) => (
+            <QuarterRow key={name} index={i} range={quarter(i)} min={draft.schoolYear?.start} max={draft.schoolYear?.end} onChange={(patch) => setQuarter(i, patch)} />
+          ))}
         </div>
-        {QUARTERS.map((name, i) => (
-          <div className="range-grid" key={name}>
-            <div className="field">
-              <label htmlFor={`q${i}-name`}>Name</label>
-              <input id={`q${i}-name`} value={quarter(i).name} onChange={(e) => setQuarter(i, { name: e.target.value })} />
-            </div>
-            <div className="field">
-              <label htmlFor={`q${i}-start`}>Starts</label>
-              <input id={`q${i}-start`} placeholder="YYYY-MM-DD" value={quarter(i).start} onChange={(e) => setQuarter(i, { start: e.target.value })} />
-            </div>
-            <div className="field">
-              <label htmlFor={`q${i}-end`}>Ends</label>
-              <input id={`q${i}-end`} placeholder="YYYY-MM-DD" value={quarter(i).end} onChange={(e) => setQuarter(i, { end: e.target.value })} />
-            </div>
-          </div>
-        ))}
       </section>
 
       <section className="card settings-list" aria-labelledby="templates-title">
@@ -188,14 +181,14 @@ export function SettingsView({ info }: { info: AppInfo }) {
           <div key={t.id} className="toggle" data-testid="template-row">
             <span className="toggle-text">
               {t.name}
-              <span>{t.missing ? "The file is missing" : t.path}</span>
+              <span title={t.path}>{t.missing ? "The file is missing" : `in ${t.path.split("\\").slice(-2, -1)[0] ?? "its folder"}`}</span>
             </span>
-            <button type="button" className="button button-quiet" onClick={() => void ipc.removeTemplate(t.id).then(loadTemplates)}>
+            <button type="button" className="button button-subtle" onClick={() => void ipc.removeTemplate(t.id).then(loadTemplates)}>
               Remove
             </button>
           </div>
         ))}
-        <button type="button" className="button" onClick={() => void addTemplate()} style={{ alignSelf: "flex-start" }} data-testid="add-template">
+        <button type="button" className="button align-start" onClick={() => void addTemplate()} data-testid="add-template">
           Choose a file to add
         </button>
       </section>
@@ -206,20 +199,20 @@ export function SettingsView({ info }: { info: AppInfo }) {
         </h2>
         {info.roots.map((root) => (
           <div key={root} className="toggle" data-testid="root-row">
-            <span className="toggle-text">
+            <span className="toggle-text" title={root}>
               {root.split("\\").pop()}
-              <span>{root}</span>
+              <span>{root.split("\\").slice(0, -1).join("\\")}</span>
             </span>
             {info.removableRoots.includes(root) ? (
-              <button type="button" className="button button-quiet" onClick={() => void removeFolder(root)}>
+              <button type="button" className="button button-subtle" onClick={() => void removeFolder(root)}>
                 Remove
               </button>
             ) : (
-              <span className="field-note">always</span>
+              <span className="field-note">Always included</span>
             )}
           </div>
         ))}
-        <button type="button" className="button" onClick={() => void addFolder()} style={{ alignSelf: "flex-start" }} data-testid="add-folder">
+        <button type="button" className="button align-start" onClick={() => void addFolder()} data-testid="add-folder">
           Add a folder
         </button>
         {needsRestart && (
@@ -235,6 +228,19 @@ export function SettingsView({ info }: { info: AppInfo }) {
         )}
         <p className="field-note">Downloads are filed into {info.schoolFiles}.{info.testMode ? " Test mode: these are the DESK_ROOTS folders." : ""}</p>
       </section>
+      <p className="view-foot">Desk {info.version}</p>
     </div>
+  );
+}
+
+/** One quarter: an editable name, then its two dates, kept inside the school year. */
+function QuarterRow({ index, range, min, max, onChange }: { index: number; range: DateRange; min?: string; max?: string; onChange(patch: Partial<DateRange>): void }) {
+  const label = range.name || QUARTERS[index];
+  return (
+    <>
+      <input id={`q${index}-name`} className="date-grid-name" aria-label={`Name for ${QUARTERS[index]}`} value={range.name} onChange={(e) => onChange({ name: e.target.value })} />
+      <input id={`q${index}-start`} type="date" aria-label={`${label} starts`} value={range.start} min={min || undefined} max={range.end || max || undefined} onChange={(e) => onChange({ start: e.target.value })} />
+      <input id={`q${index}-end`} type="date" aria-label={`${label} ends`} value={range.end} min={range.start || min || undefined} max={max || undefined} onChange={(e) => onChange({ end: e.target.value })} />
+    </>
   );
 }

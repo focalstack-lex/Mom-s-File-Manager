@@ -1,13 +1,15 @@
 // Quick preview (spec 5.3): the words inside a document, the image itself,
-// or plain details, beside the list.
+// or plain details, beside the list (a drawer over it on narrow windows).
+// It carries the labelled actions; Escape closes it.
 
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { X } from "lucide-react";
+import { Copy, FolderOpen, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { fileSize, locationLine, relativeTime } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { describeError } from "../lib/errors";
 import type { Preview } from "../lib/types";
+import { useApp } from "../store/app";
 import { useFind } from "../store/find";
 
 export function PreviewPanel({ roots }: { roots: string[] }) {
@@ -15,6 +17,17 @@ export function PreviewPanel({ roots }: { roots: string[] }) {
   const setPreview = useFind((s) => s.setPreview);
   const [preview, setPreviewData] = useState<Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const toast = useApp((s) => s.toast);
+  const fail = useApp((s) => s.fail);
+
+  useEffect(() => {
+    if (!path) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !document.querySelector('[role="dialog"]')) setPreview(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [path, setPreview]);
 
   useEffect(() => {
     if (!path) return;
@@ -46,7 +59,7 @@ export function PreviewPanel({ roots }: { roots: string[] }) {
         <>
           <dl className="preview-details">
             <dt>Where</dt>
-            <dd>{locationLine(preview.parent, roots)}</dd>
+            <dd>{locationLine(preview.parent, roots).replace(/^in /, "")}</dd>
             <dt>Edited</dt>
             <dd>{relativeTime(preview.modified)}</dd>
             <dt>Size</dt>
@@ -59,11 +72,25 @@ export function PreviewPanel({ roots }: { roots: string[] }) {
         </>
       )}
       <div className="preview-actions">
-        <button type="button" className="button button-primary" onClick={() => void ipc.open(path)}>
+        <button type="button" className="button button-primary" onClick={() => void ipc.open(path).catch(fail)}>
           Open
         </button>
-        <button type="button" className="button" onClick={() => void ipc.reveal(path)}>
+        <button type="button" className="button" onClick={() => void ipc.reveal(path).catch(fail)}>
+          <FolderOpen size={18} aria-hidden />
           Show in folder
+        </button>
+        <button
+          type="button"
+          className="button button-subtle"
+          onClick={() =>
+            void ipc
+              .copyFiles([path])
+              .then(() => toast("Copied. Paste it into your message."))
+              .catch(fail)
+          }
+        >
+          <Copy size={18} aria-hidden />
+          Copy
         </button>
       </div>
     </aside>

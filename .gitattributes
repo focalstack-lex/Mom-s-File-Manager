@@ -1,0 +1,9 @@
+# Text stays LF in every checkout so generated artifacts (docs/CODE_MAP.md)
+# compare byte-for-byte on Windows and on the Linux CI runners.
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.ico binary
+*.icns binary
+*.woff2 binary

@@ -1,0 +1,68 @@
+[package]
+name = "desk"
+version = "0.1.0"
+description = "Desk: finds a teacher's files and keeps new downloads filed"
+authors = ["Lex Matondo"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+# The `_lib` suffix keeps the library name distinct from the binary on Windows.
+name = "desk_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Shell and plugins. The tray icon keeps the app alive when the window is closed.
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
+tauri-plugin-log = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-notification = "2"
+# IPC serialization.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# App data: SQLite with FTS5 compiled in, so no system library is required.
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Error enum derivation and the logging facade.
+thiserror = "2"
+log = "0.4"
+# The known folders (Desktop, Documents, Downloads).
+dirs = "7"
+# Folder change events, debounced, for the Downloads watcher and the index.
+notify-debouncer-mini = "0.7"
+# Office files are zip archives of XML; text is pulled from the XML parts.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+# PDF text extraction.
+pdf-extract = "0.12"
+# Recycle Bin instead of permanent deletion.
+trash = "5"
+# Local dates for the YYYY-MM folders and relative times.
+chrono = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+# Files on the clipboard as files (CF_HDROP), so she can paste into Messenger or Gmail.
+clipboard-win = "5"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+# Release builds abort on panic (below), so command code must never panic.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

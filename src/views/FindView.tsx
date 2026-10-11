@@ -1,0 +1,233 @@
+// The one screen she opens (spec 5.3): search, pinned, templates, recent
+// downloads, results grouped by copy.
+
+import { FilePlus, Search, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ActionBar } from "../components/ActionBar";
+import { Chips } from "../components/Chips";
+import { PreviewPanel } from "../components/PreviewPanel";
+import { ResultRow } from "../components/ResultRow";
+import { ipc } from "../lib/ipc";
+import type { AppInfo, FileRow } from "../lib/types";
+import { useApp } from "../store/app";
+import { useFind } from "../store/find";
+import { useTour } from "../store/tour";
+
+const SAMPLE_ROWS: FileRow[] = [
+  {
+    id: -1,
+    path: "sample-1",
+    parent: "School Files\\Word\\2026-10",
+    name: "Grade 7 Quiz 2.docx",
+    ext: "docx",
+    kind: "word",
+    size: 0,
+    modified: Math.floor(Date.now() / 1000) - 3600,
+    originLabel: "Messenger",
+    downloadedAt: Math.floor(Date.now() / 1000) - 3600,
+    groupKey: "sample-1",
+    snippet: null,
+    pinned: false,
+  },
+  {
+    id: -2,
+    path: "sample-2",
+    parent: "School Files\\PDF\\2026-10",
+    name: "DepEd Order 2026-014.pdf",
+    ext: "pdf",
+    kind: "pdf",
+    size: 0,
+    modified: Math.floor(Date.now() / 1000) - 86_400,
+    originLabel: "DepEd",
+    downloadedAt: Math.floor(Date.now() / 1000) - 86_400,
+    groupKey: "sample-2",
+    snippet: null,
+    pinned: false,
+  },
+];
+
+export function FindView({ info }: { info: AppInfo }) {
+  const query = useFind((s) => s.query);
+  const setQuery = useFind((s) => s.setQuery);
+  const result = useFind((s) => s.result);
+  const templates = useFind((s) => s.templates);
+  const refresh = useFind((s) => s.refresh);
+  const loadTemplates = useFind((s) => s.loadTemplates);
+  const previewPath = useFind((s) => s.previewPath);
+  const searching = useFind((s) => s.isSearching());
+  const clearFilters = useFind((s) => s.clearFilters);
+  const tourActive = useTour((s) => s.active);
+  const toast = useApp((s) => s.toast);
+  const fail = useApp((s) => s.fail);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+
+  useEffect(() => {
+    void refresh();
+    void loadTemplates();
+    inputRef.current?.focus();
+  }, [refresh, loadTemplates]);
+
+  const roots = info.roots;
+  const index = result?.index ?? info.index;
+  const status = index.scanning
+    ? `Getting to know your files: ${index.scanned.toLocaleString()} of ${index.total.toLocaleString()} so far.`
+    : info.sortedThisWeek === 1
+      ? "1 download filed for you this week."
+      : `${info.sortedThisWeek} downloads filed for you this week.`;
+
+  const makeFromTemplate = async (id: number, name: string) => {
+    try {
+      await ipc.useTemplate(id);
+      toast(`A fresh copy of ${name} is open. The original stays untouched.`);
+      await refresh();
+    } catch (error) {
+      fail(error);
+    }
+  };
+
+  const recent = result?.recent ?? [];
+  const showSamples = tourActive && recent.length === 0;
+  const totalGroups = result?.groups.length ?? 0;
+
+  return (
+    <div className="main-inner" data-testid="find-view">
+      <div>
+        <h1 className="view-title">Find a file</h1>
+        <p className="status-line" data-testid="status-line">
+          {status}
+        </p>
+      </div>
+
+      <div className="search" data-tour="search">
+        <Search size={26} aria-hidden />
+        <input
+          ref={inputRef}
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Type a name, a student, or a word inside the file"
+          aria-label="Find a file"
+          data-testid="search-input"
+          autoComplete="off"
+          spellCheck={false}
+        />
+        {query && (
+          <button type="button" className="icon-button" onClick={() => setQuery("")} aria-label="Clear search">
+            <X size={22} aria-hidden />
+          </button>
+        )}
+      </div>
+
+      <Chips settings={info.settings} />
+
+      <div className={`find-layout${previewPath ? " has-preview" : ""}`}>
+        <div className="main-inner" style={{ gap: "var(--space-5)" }}>
+          {searching ? (
+            <section aria-label="Results" data-testid="results">
+              {totalGroups === 0 ? (
+                <div className="card empty">
+                  <strong>Nothing matched yet</strong>
+                  {index.scanning ? "Desk is still reading your files. Try again in a minute." : "Try fewer words, or a word you remember from inside the file."}
+                  {!query && (
+                    <div style={{ marginTop: "var(--space-3)" }}>
+                      <button type="button" className="button" onClick={clearFilters}>
+                        Clear filters
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="rows">
+                  {result?.groups.map((group) => (
+                    <ResultRow
+                      key={group.latest.path}
+                      file={group.latest}
+                      roots={roots}
+                      latest
+                      others={group.others}
+                      renaming={renaming === group.latest.path}
+                      onRenamed={() => setRenaming(null)}
+                      onCancelRename={() => setRenaming(null)}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : (
+            <>
+              {result && result.pinned.length > 0 && (
+                <section aria-label="Pinned" data-testid="pinned">
+                  <h2 className="card-title">Pinned</h2>
+                  <div className="rows">
+                    {result.pinned.map((file) => (
+                      <ResultRow key={file.path} file={file} roots={roots} renaming={renaming === file.path} onRenamed={() => setRenaming(null)} onCancelRename={() => setRenaming(null)} />
+                    ))}
+                  </div>
+                </section>
+              )}
+              {result && result.orphanPins.length > 0 && (
+                <section aria-label="Pinned files that moved">
+                  {result.orphanPins.map((path) => (
+                    <div key={path} className="card" style={{ display: "flex", gap: "var(--space-3)", alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ flex: 1, minWidth: 200 }}>
+                        <strong>{path.split("\\").pop()}</strong>
+                        <br />
+                        <span className="field-note">Moved or deleted outside Desk.</span>
+                      </span>
+                      <button type="button" className="button" onClick={() => setQuery((path.split("\\").pop() ?? "").replace(/\.[^.]+$/, ""))}>
+                        Search for it
+                      </button>
+                      <button type="button" className="button button-quiet" onClick={() => void ipc.forgetPin(path).then(refresh)}>
+                        Forget
+                      </button>
+                    </div>
+                  ))}
+                </section>
+              )}
+              {templates.length > 0 && (
+                <section aria-label="Templates" data-testid="templates">
+                  <h2 className="card-title">New from a template</h2>
+                  <div className="shelf">
+                    {templates.map((t) => (
+                      <button key={t.id} type="button" className="button" onClick={() => void makeFromTemplate(t.id, t.name)} disabled={t.missing} title={t.missing ? "The template file is missing" : `Make a fresh copy of ${t.name}`}>
+                        <FilePlus size={18} aria-hidden />
+                        {t.name}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+              <section aria-label="Recent downloads" data-testid="recent" data-tour="recent">
+                <h2 className="card-title">Recent downloads</h2>
+                {recent.length === 0 && !showSamples ? (
+                  <div className="card empty">
+                    <strong>Nothing downloaded yet</strong>
+                    New downloads appear here, newest first, already filed in School Files.
+                  </div>
+                ) : (
+                  <div className="rows">
+                    {(showSamples ? SAMPLE_ROWS : recent).map((file, i) => (
+                      <ResultRow
+                        key={file.path}
+                        file={file}
+                        roots={roots}
+                        sample={showSamples}
+                        tourOpen={i === 0}
+                        renaming={renaming === file.path}
+                        onRenamed={() => setRenaming(null)}
+                        onCancelRename={() => setRenaming(null)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </section>
+            </>
+          )}
+        </div>
+        <PreviewPanel roots={roots} />
+      </div>
+      <ActionBar onRename={(path) => setRenaming(path)} />
+    </div>
+  );
+}

@@ -1,0 +1,30 @@
+// Every failure reaches her as one plain sentence with what to do next.
+
+import type { DeskError } from "./types";
+
+export function isDeskError(value: unknown): value is DeskError {
+  return typeof value === "object" && value !== null && "code" in value && "message" in value;
+}
+
+export function describeError(error: unknown): string {
+  if (isDeskError(error)) {
+    switch (error.code) {
+      case "notFound":
+        return "That file is no longer where it was. Try searching for it.";
+      case "permissionDenied":
+        return "Windows did not allow that. The file may be open in another program.";
+      case "alreadyExists":
+        return error.message || "Something with that name is already there.";
+      case "invalidName":
+        return error.message || "That name will not work. Try another.";
+      case "outsideRoots":
+        return "Desk only works with files in Desktop, Documents, Downloads and OneDrive.";
+      case "db":
+        return "Desk could not save that. Try again in a moment.";
+      default:
+        return error.message || "Something went wrong. Nothing was changed.";
+    }
+  }
+  if (error instanceof Error) return error.message;
+  return "Something went wrong. Nothing was changed.";
+}

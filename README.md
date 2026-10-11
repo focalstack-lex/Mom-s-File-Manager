@@ -1,0 +1,77 @@
+# Desk
+
+Desk finds a teacher's files and keeps new downloads filed, with no new routines to learn. Built for one real user first: Lex's mother, a public school teacher on a Windows laptop whose files are saved everywhere.
+
+What it does:
+
+- Watches Downloads and files every finished download into `Documents\School Files\<Type>\<YYYY-MM>`, remembering where it came from (Messenger, Gmail, Google Drive, DepEd, or the site).
+- Indexes Desktop, Documents, Downloads and OneDrive, including the words inside Word, Excel, PowerPoint, PDF and text files, so typing a student's name finds `Book1.xlsx`.
+- One Find screen: a big search box, Recent downloads, pinned files, date and type and source filters, copies grouped with the newest marked Latest, a quick preview, and Copy to paste a file into a message.
+- Organizing by hand when she wants to: Move to, Rename (extension locked), New folder, Recycle Bin, Pin. Every change is logged in Activity with Undo.
+- Clean up: duplicate copies, loose Desktop files and old downloads, each with a suggestion. Nothing moves until she clicks.
+- A Templates shelf that makes a dated copy of a master file instead of editing the original.
+- A five-step walkthrough with arrows on first run, replayable from Settings.
+- No network access at all.
+
+The binding design is `docs/superpowers/specs/2026-10-12-teachers-desktop-manager-design.md`. The surface map is `docs/FEATURE_MAP.md`; the code map is `docs/CODE_MAP.md`.
+
+## Stack
+
+Tauri 2 (Rust) with React 19, TypeScript, Vite and Zustand. SQLite with FTS5 for the index. Atkinson Hyperlegible Next for the type. Plugins: log, opener, single-instance, autostart, notification.
+
+## Develop
+
+```bash
+npm install
+npm run dev
+```
+
+`npm run dev:ui` runs the renderer alone in a browser with a mocked backend (`src/dev/mockBackend.ts`), which is also what the UI drive uses.
+
+## Verify
+
+```bash
+npm run verify
+```
+
+Runs typecheck, lint (with the house invariants: zero emoji, zero em or en dash, no silent catch, no committed secret), the text gate over every tracked file, vitest, and the token contrast gate. Then:
+
+```bash
+npm run verify:ui
+```
+
+drives the renderer with Playwright and writes evidence to `reports/ui-verification/<stamp>/`. The native crate:
+
+```bash
+cd src-tauri && cargo test && cargo clippy --all-targets -- -D warnings
+```
+
+## Release
+
+```bash
+npm run build:release
+```
+
+produces an NSIS installer under `src-tauri/target/release/bundle/nsis/`. The installer is unsigned in v1, so Windows SmartScreen warns on first install.
+
+### Building on a path with an apostrophe
+
+The Windows resource compiler cannot read an icon path containing `'` (tauri-winres escapes it as `\'`). On this machine the checkout lives at `E:\PROJECTS\Teacher's Desktop Manager`, so native builds point the icon at an apostrophe-free copy through Tauri's config override:
+
+```powershell
+Copy-Item src-tauri\icons\* E:\PROJECTS\desk-icons\ -Force
+$env:TAURI_CONFIG = '{"bundle":{"icon":["E:/PROJECTS/desk-icons/32x32.png","E:/PROJECTS/desk-icons/128x128.png","E:/PROJECTS/desk-icons/128x128@2x.png","E:/PROJECTS/desk-icons/icon.icns","E:/PROJECTS/desk-icons/icon.ico"]}}'
+```
+
+A checkout on a plain path (as in CI) needs none of this. Renaming the folder is the clean fix.
+
+## Safety rules
+
+- Only new downloads move automatically. Existing files are indexed, never moved, unless she moves them.
+- Nothing is overwritten (`Name (2).docx`), nothing is deleted for good (Recycle Bin only), every change is undoable.
+- Every file command validates on the Rust side that the path resolves inside Desktop, Documents, Downloads or OneDrive.
+- Failures are logged and shown in Activity in plain words; nothing fails silently.
+
+## License
+
+MIT, see `LICENSE`.

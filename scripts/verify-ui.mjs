@@ -282,6 +282,27 @@ async function drive(browser) {
   await capture(page, "12-settings");
   record("Settings opens and 'Show me again' replays the walkthrough; Escape skips it", settingsOk && replayed && skipped, JSON.stringify({ settingsOk, replayed, skipped }));
 
+  // 13b. Folders: Add a folder (native picker, mocked) lists it and asks for a restart; Remove works; Documents cannot be removed.
+  await page.locator('[data-testid="nav-settings"]').click();
+  await visible(page, '[data-testid="settings-view"]');
+  const rootsBefore = await page.locator('[data-testid="root-row"]').count();
+  await page.locator('[data-testid="add-folder"]').click();
+  await page.waitForFunction((n) => document.querySelectorAll('[data-testid="root-row"]').length === n + 1, rootsBefore, { timeout: STEP_TIMEOUT_MS });
+  const restartNote = await visible(page, '[data-testid="restart-note"]');
+  const added = await page.locator('[data-testid="root-row"]', { hasText: "Lesson Plans" }).count();
+  const alwaysKept = await page.locator('[data-testid="root-row"]', { hasText: "Documents" }).first().locator("text=always").count();
+  await page.locator('[data-testid="root-row"]', { hasText: "Lesson Plans" }).getByRole("button", { name: "Remove" }).click();
+  await page.waitForFunction((n) => document.querySelectorAll('[data-testid="root-row"]').length === n, rootsBefore, { timeout: STEP_TIMEOUT_MS });
+  await capture(page, "12b-settings-folders");
+  record("Settings: Add a folder lists it with a restart note, Documents stays, Remove takes it out", restartNote && added === 1 && alwaysKept === 1, JSON.stringify({ rootsBefore, restartNote, added, alwaysKept }));
+
+  // 13c. Templates: the file picker (mocked) adds a template to the shelf.
+  const templatesBefore = await page.locator('[data-testid="template-row"]').count();
+  await page.locator('[data-testid="add-template"]').click();
+  await page.waitForFunction((n) => document.querySelectorAll('[data-testid="template-row"]').length === n + 1, templatesBefore, { timeout: STEP_TIMEOUT_MS });
+  const templateAdded = await page.locator('[data-testid="template-row"]', { hasText: "DLL Template" }).count();
+  record("Settings: choosing a file adds it to the template shelf", templateAdded === 1, JSON.stringify({ templatesBefore, templateAdded }));
+
   // 14. A sorted download arriving in the background shows a toast and the new row.
   await page.evaluate(() => window.__deskMock.simulateDownload());
   await page.locator('[data-testid="nav-find"]').click();

@@ -36,6 +36,9 @@ Hard constraints:
 | UI language | Plain English labels | Taglish labels remain an option after watching her use it. |
 | Visual direction | Forest-green sidebar, pale canvas, white cards, from Lex's reference image | Adjusted by the binding design checklist (section 7). |
 | First run | Guided walkthrough with arrows, five steps, skippable, replayable from Settings | Requested by Lex 2026-10-12. |
+| Folder changes | Add and remove in Settings through a native picker; they apply after a restart | The watchers and the scan are built once at startup; a restart button keeps it simple and predictable. Documents and Downloads cannot be removed because filing depends on them. |
+| Dry runs | `DESK_ROOTS` and `DESK_DATA_DIR` environment overrides, no autostart in that mode | Lets the real app be exercised on copied folders without touching anything real (section 8). |
+| Retry schedule | 5 s, 5 s, 10 s, 20 s, 60 s, 2 min, then 15 min | Fresh downloads are held briefly by the antivirus; the first retries are quick. Changed from 5 s, 30 s, 2 min on 2026-10-12. |
 
 ## 4. Scope
 

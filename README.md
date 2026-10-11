@@ -10,6 +10,7 @@ What it does:
 - Organizing by hand when she wants to: Move to, Rename (extension locked), New folder, Recycle Bin, Pin. Every change is logged in Activity with Undo.
 - Clean up: duplicate copies, loose Desktop files and old downloads, each with a suggestion. Nothing moves until she clicks.
 - A Templates shelf that makes a dated copy of a master file instead of editing the original.
+- Settings: start at login, notifications, school-year dates, templates (native file picker), and the folders Desk looks in (add with a native folder picker, remove all but Documents and Downloads; changes apply after a restart).
 - A five-step walkthrough with arrows on first run, replayable from Settings.
 - No network access at all.
 
@@ -45,6 +46,24 @@ drives the renderer with Playwright and writes evidence to `reports/ui-verificat
 ```bash
 cd src-tauri && cargo test && cargo clippy --all-targets -- -D warnings
 ```
+
+The real app, on throwaway folders, driven through its own window:
+
+```bash
+npm run verify:native
+```
+
+needs a release `desk.exe` (see Release). It seeds `%LOCALAPPDATA%\desk-native-check` with fake messy files, launches the app in test mode, drops downloads with real `Zone.Identifier` streams, and checks filing, search, move, rename, pin, Recycle Bin, Undo, Clean up and Settings against the disk and the database. Evidence lands in `reports/native-check/<stamp>/`.
+
+### Test mode
+
+Two environment variables keep a dry run away from real files:
+
+- `DESK_ROOTS=<desktop>;<documents>;<downloads>[;<more>...]` replaces the detected folders.
+- `DESK_DATA_DIR=<folder>` keeps the index and settings for that run apart.
+- `DESK_DEBUG_PORT=<port>` (only together with `DESK_ROOTS`) opens the WebView2 debugging port so the native check can drive the window. A normal start never opens one.
+
+In test mode the app never registers itself to start at login and logs at debug level.
 
 ## Release
 

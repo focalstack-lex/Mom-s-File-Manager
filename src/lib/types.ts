@@ -50,11 +50,15 @@ export interface Settings {
   tourDone: boolean;
   schoolYear: DateRange | null;
   quarters: DateRange[];
+  extraFolders: string[];
+  excludedFolders: string[];
 }
 
 export interface AppInfo {
   version: string;
   roots: string[];
+  removableRoots: string[];
+  testMode: boolean;
   schoolFiles: string;
   downloads: string | null;
   settings: Settings;

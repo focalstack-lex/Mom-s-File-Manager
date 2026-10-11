@@ -70,7 +70,7 @@ const ops: OpRow[] = [
 ];
 let nextOp = 4;
 let templates: Template[] = [{ id: 1, path: `${DOCS}\\Forms\\SF9 Template.docx`, name: "SF9 Template", missing: false }];
-let settings: Settings = { startAtLogin: true, notifications: true, tourDone: false, schoolYear: null, quarters: [] };
+let settings: Settings = { startAtLogin: true, notifications: true, tourDone: false, schoolYear: null, quarters: [], extraFolders: [], excludedFolders: [] };
 const listeners = new Map<string, Set<(payload: unknown) => void>>();
 const calls: { command: string; args: Record<string, unknown> }[] = [];
 
@@ -149,7 +149,9 @@ function moveTo(path: string, destination: string, kind: OpRow["kind"]): string 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   get_app_info: () => ({
     version: "0.1.0-mock",
-    roots: [DESKTOP, DOCS, DOWNLOADS],
+    roots: [DESKTOP, DOCS, DOWNLOADS, ...settings.extraFolders].filter((r) => !settings.excludedFolders.includes(r)),
+    removableRoots: [DESKTOP, ...settings.extraFolders].filter((r) => !settings.excludedFolders.includes(r)),
+    testMode: false,
     schoolFiles: SCHOOL,
     downloads: DOWNLOADS,
     settings,
@@ -250,9 +252,25 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
   get_settings: () => settings,
   set_settings: (a) => {
-    settings = a.settings as Settings;
+    const next = a.settings as Settings;
+    settings = { ...next, extraFolders: settings.extraFolders, excludedFolders: settings.excludedFolders };
     return settings;
   },
+  add_folder: (a) => {
+    const path = String(a.path);
+    settings = { ...settings, extraFolders: [...settings.extraFolders, path], excludedFolders: settings.excludedFolders.filter((p) => p !== path) };
+    return settings;
+  },
+  remove_folder: (a) => {
+    const path = String(a.path);
+    if (path === DOCS || path === DOWNLOADS) throw { code: "validation", message: "Documents and Downloads are where filing happens, so they stay." };
+    const wasExtra = settings.extraFolders.includes(path);
+    settings = { ...settings, extraFolders: settings.extraFolders.filter((p) => p !== path), excludedFolders: wasExtra ? settings.excludedFolders : [...settings.excludedFolders, path] };
+    return settings;
+  },
+  restart_app: () => undefined,
+  pick_folder: () => `${DOCS}\\Lesson Plans`,
+  pick_file: () => `${DOCS}\\Forms\\DLL Template.docx`,
   index_status: () => ({ scanning: false, scanned: files.length, total: files.length, files: files.length }),
 };
 

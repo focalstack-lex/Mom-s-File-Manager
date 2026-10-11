@@ -4,6 +4,7 @@
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   AppInfo,
   CleanupReport,
@@ -66,4 +67,23 @@ export const ipc = {
   useTemplate: (id: number) => invoke<string>("use_template", { id }),
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
+  addFolder: (path: string) => invoke<Settings>("add_folder", { path }),
+  removeFolder: (path: string) => invoke<Settings>("remove_folder", { path }),
+  restart: () => invoke<void>("restart_app"),
+  /** Native folder picker; null when she cancels. */
+  pickFolder: async (): Promise<string | null> => {
+    if (window.__deskMock) return (await window.__deskMock.invoke("pick_folder", {})) as string | null;
+    const picked = await openDialog({ directory: true, multiple: false, title: "Choose a folder for Desk to look in" });
+    return typeof picked === "string" ? picked : null;
+  },
+  /** Native file picker for templates; null when she cancels. */
+  pickFile: async (): Promise<string | null> => {
+    if (window.__deskMock) return (await window.__deskMock.invoke("pick_file", {})) as string | null;
+    const picked = await openDialog({
+      multiple: false,
+      title: "Choose a master file for the template shelf",
+      filters: [{ name: "Documents", extensions: ["docx", "doc", "xlsx", "xls", "pptx", "ppt", "pdf", "odt", "ods"] }],
+    });
+    return typeof picked === "string" ? picked : null;
+  },
 };

@@ -54,4 +54,8 @@ Where things live. Read this before changing anything; update it in the same cha
 
 ## Gates (`scripts`)
 
-`verify-text.mjs` (no emoji, no em or en dash in tracked files), `verify-contrast.mjs` (tokens), `verify-ui.mjs` (Playwright drive, evidence in `reports/ui-verification/`). ESLint invariants live in `eslint-rules/desk-invariants.js`.
+`verify-text.mjs` (no emoji, no em or en dash in tracked files), `verify-contrast.mjs` (tokens), `verify-ui.mjs` (Playwright drive of the mocked renderer, evidence in `reports/ui-verification/`), `verify-native.mjs` (the release app on throwaway folders over CDP, evidence in `reports/native-check/`). ESLint invariants live in `eslint-rules/desk-invariants.js`.
+
+## Rules learned the hard way
+
+- `Core.db()` returns a guard on a plain `std::sync::Mutex`. Never call anything that locks it again (such as `commands::settings_of`) while a guard is alive; the worker and `get_app_info` both deadlocked that way on 2026-10-12. Read settings first, then lock.

@@ -29,7 +29,8 @@ use tauri::Manager;
 /// process exits with status 1 instead of panicking, because release builds
 /// abort on panic with no console.
 pub fn run() {
-    let log_level = if cfg!(debug_assertions) { log::LevelFilter::Debug } else { log::LevelFilter::Info };
+    // Debug logging in a debug build or during a dry run (DESK_ROOTS), Info otherwise.
+    let log_level = if cfg!(debug_assertions) || paths::Roots::test_mode() { log::LevelFilter::Debug } else { log::LevelFilter::Info };
     let minimized = std::env::args().any(|a| a == "--minimized");
 
     let builder = tauri::Builder::default()
@@ -45,11 +46,16 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            let data_dir = app.path().app_local_data_dir().map_err(|e| {
-                log::error!("no app data folder: {e}");
-                e
-            })?;
+            // DESK_DATA_DIR keeps a dry run's index away from the real one.
+            let data_dir = match std::env::var_os("DESK_DATA_DIR") {
+                Some(dir) => std::path::PathBuf::from(dir),
+                None => app.path().app_local_data_dir().map_err(|e| {
+                    log::error!("no app data folder: {e}");
+                    e
+                })?,
+            };
             let opened = match db::open(&data_dir) {
                 Ok(opened) => opened,
                 Err(error) => {
@@ -57,7 +63,10 @@ pub fn run() {
                     std::process::exit(1);
                 }
             };
-            let roots = paths::Roots::detect();
+            let roots = paths::Roots::detect(&commands::root_choices(&opened.connection));
+            if paths::Roots::test_mode() {
+                log::info!("test mode: roots {:?}, data in {}", roots.all(), data_dir.display());
+            }
             if let Ok(school) = roots.school_files() {
                 if let Err(error) = std::fs::create_dir_all(&school) {
                     log::warn!("cannot create {}: {error}", school.display());
@@ -70,6 +79,27 @@ pub fn run() {
                 recovered: opened.recovered,
             });
             app.manage(state::AppState(core.clone()));
+
+            // The window is built here rather than in tauri.conf.json so a dry
+            // run (DESK_ROOTS plus DESK_DEBUG_PORT) can open the WebView2
+            // debugging port for scripts/verify-native.mjs. A normal start never does.
+            let window = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+                .title("Desk")
+                .inner_size(1180.0, 760.0)
+                .min_inner_size(640.0, 480.0)
+                .center()
+                .visible(false);
+            #[cfg(windows)]
+            let window = match std::env::var("DESK_DEBUG_PORT").ok().filter(|_| paths::Roots::test_mode()) {
+                Some(port) if port.chars().all(|c| c.is_ascii_digit()) => {
+                    log::info!("test mode: WebView2 debugging port {port}");
+                    window.additional_browser_args(&format!(
+                        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port}"
+                    ))
+                }
+                _ => window,
+            };
+            window.build()?;
 
             if let Err(error) = tray::setup(app.handle()) {
                 log::warn!("tray icon: {error}");
@@ -116,6 +146,9 @@ pub fn run() {
             commands::use_template,
             commands::get_settings,
             commands::set_settings,
+            commands::add_folder,
+            commands::remove_folder,
+            commands::restart_app,
             commands::index_status,
         ]);
 

@@ -51,8 +51,9 @@ pub fn start(core: Arc<Core>, app: AppHandle) -> Result<()> {
             Err(error) => log::warn!("downloads watcher: {error}"),
         })
         .map_err(|e| crate::error::DeskError::new(crate::error::ErrorCode::Io, e.to_string()))?;
-        if let Err(error) = debouncer.watcher().watch(&downloads, RecursiveMode::NonRecursive) {
-            log::warn!("cannot watch {}: {error}", downloads.display());
+        match debouncer.watcher().watch(&downloads, RecursiveMode::NonRecursive) {
+            Ok(()) => log::info!("watching downloads at {}", downloads.display()),
+            Err(error) => log::warn!("cannot watch {}: {error}", downloads.display()),
         }
         debouncers.push(debouncer);
     }
@@ -67,8 +68,9 @@ pub fn start(core: Arc<Core>, app: AppHandle) -> Result<()> {
             Err(error) => log::warn!("index watcher: {error}"),
         })
         .map_err(|e| crate::error::DeskError::new(crate::error::ErrorCode::Io, e.to_string()))?;
-        if let Err(error) = debouncer.watcher().watch(&root, RecursiveMode::Recursive) {
-            log::warn!("cannot watch {}: {error}", root.display());
+        match debouncer.watcher().watch(&root, RecursiveMode::Recursive) {
+            Ok(()) => log::info!("watching {}", root.display()),
+            Err(error) => log::warn!("cannot watch {}: {error}", root.display()),
         }
         debouncers.push(debouncer);
     }
@@ -89,6 +91,7 @@ fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<Msg>) {
     loop {
         match rx.recv_timeout(Duration::from_secs(2)) {
             Ok(Msg::Candidate(path)) => {
+                log::debug!("download candidate {}", path.display());
                 let now = Instant::now();
                 match std::fs::metadata(&path) {
                     Ok(meta) if meta.is_file() => {
@@ -100,6 +103,7 @@ fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<Msg>) {
                 }
             }
             Ok(Msg::IndexChange(path)) => {
+                log::debug!("index change {}", path.display());
                 if let Ok(conn) = core.db() {
                     if let Err(error) = index::refresh_path(&conn, &path) {
                         log::warn!("index refresh {}: {error}", path.display());
@@ -136,8 +140,17 @@ fn tick(core: &Arc<Core>, app: &AppHandle, pending: &mut HashMap<PathBuf, Pendin
             pending.remove(&path);
             continue;
         }
-        if !(state.is_quiet(now) && stability::can_open_exclusively(&path)) {
+        let quiet = state.is_quiet(now);
+        let free = quiet && stability::can_open_exclusively(&path);
+        if !free {
             state.defer(now);
+            log::debug!(
+                "waiting on {} ({}), attempt {}, next look in {:?}",
+                path.display(),
+                if quiet { "another program has it open" } else { "still growing" },
+                state.attempts,
+                state.next_try.saturating_duration_since(now)
+            );
             continue;
         }
         pending.remove(&path);
@@ -161,16 +174,25 @@ fn sort_one(core: &Arc<Core>, app: &AppHandle, path: &Path) {
         }
     };
     let dest = sorter::destination(&school, kind, chrono::Local::now());
-    let Ok(conn) = core.db() else { return };
-    match ops::move_file(&conn, &core.roots, path, &dest, ops::OpKind::AutoSort) {
-        Ok(new_path) => {
-            if let Err(error) = index::set_origin(&conn, &new_path, &origin, crate::db::now()) {
+    // Settings are read before the database lock is taken: the mutex is not
+    // reentrant, and reading them inside the locked block deadlocked the worker.
+    let notifications = crate::commands::settings_of(core).notifications;
+    let moved = {
+        let Ok(conn) = core.db() else { return };
+        ops::move_file(&conn, &core.roots, path, &dest, ops::OpKind::AutoSort).inspect(|new_path| {
+            if let Err(error) = index::set_origin(&conn, new_path, &origin, crate::db::now()) {
                 log::warn!("origin for {}: {error}", new_path.display());
             }
+        })
+    };
+    match moved {
+        Ok(new_path) => {
             let name = new_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let folder = format!("School Files > {}", kind.folder_name());
             log::info!("sorted {} into {} (from {})", name, folder, origin.label);
-            notify(app, core, &name, &folder);
+            if notifications {
+                notify(app, &name, &folder);
+            }
             let _ = app.emit(SORTED_EVENT, Sorted { name, folder, path: new_path.to_string_lossy().into_owned() });
             let _ = app.emit(CHANGED_EVENT, ());
         }
@@ -181,10 +203,7 @@ fn sort_one(core: &Arc<Core>, app: &AppHandle, path: &Path) {
     }
 }
 
-fn notify(app: &AppHandle, core: &Arc<Core>, name: &str, folder: &str) {
-    if !crate::commands::settings_of(core).notifications {
-        return;
-    }
+fn notify(app: &AppHandle, name: &str, folder: &str) {
     use tauri_plugin_notification::NotificationExt;
     if let Err(error) = app.notification().builder().title("Saved for you").body(format!("{name} is in {folder}.")).show() {
         log::warn!("notification: {error}");

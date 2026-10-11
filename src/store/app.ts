@@ -18,7 +18,10 @@ interface AppStore {
   view: View;
   info: AppInfo | null;
   toasts: Toast[];
+  /** Folder choices changed; the watchers pick them up after a restart. */
+  foldersChanged: boolean;
   setView(view: View): void;
+  markFoldersChanged(): void;
   loadInfo(): Promise<void>;
   saveSettings(settings: Settings): Promise<void>;
   toast(text: string, kind?: Toast["kind"], undoId?: number): void;
@@ -32,7 +35,9 @@ export const useApp = create<AppStore>((set, get) => ({
   view: "find",
   info: null,
   toasts: [],
+  foldersChanged: false,
   setView: (view) => set({ view }),
+  markFoldersChanged: () => set({ foldersChanged: true }),
   loadInfo: async () => {
     try {
       const info = await ipc.appInfo();

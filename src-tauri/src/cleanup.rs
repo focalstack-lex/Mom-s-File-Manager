@@ -53,7 +53,8 @@ fn duplicates(conn: &Connection) -> Result<Vec<Group>> {
 fn loose_files(conn: &Connection, roots: &Roots, folder: Option<&std::path::Path>, older_than: Option<i64>) -> Result<Vec<Suggestion>> {
     let Some(folder) = folder else { return Ok(Vec::new()) };
     let school = roots.school_files()?;
-    let parent = folder.to_string_lossy().into_owned();
+    // Rows store resolved paths (Roots::all), so compare against the resolved folder.
+    let parent = crate::paths::resolve(folder).unwrap_or_else(|_| folder.to_path_buf()).to_string_lossy().into_owned();
     let sql = "SELECT path FROM files WHERE parent = ?1 AND (?2 IS NULL OR modified < ?2) ORDER BY modified DESC LIMIT 300";
     let paths: Vec<String> = {
         let mut stmt = conn.prepare(sql)?;

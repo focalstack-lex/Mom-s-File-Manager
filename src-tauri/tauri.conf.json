@@ -10,18 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Desk",
-        "width": 1180,
-        "height": 760,
-        "minWidth": 640,
-        "minHeight": 480,
-        "center": true,
-        "visible": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'",
       "devCsp": "default-src 'self' ws://localhost:1430; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-inline'",

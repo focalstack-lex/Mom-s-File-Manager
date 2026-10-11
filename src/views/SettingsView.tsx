@@ -18,13 +18,39 @@ export function SettingsView({ info }: { info: AppInfo }) {
   const startTour = useTour((s) => s.start);
   const templates = useFind((s) => s.templates);
   const loadTemplates = useFind((s) => s.loadTemplates);
+  const loadInfo = useApp((s) => s.loadInfo);
   const [draft, setDraft] = useState<Settings>(info.settings);
-  const [templatePath, setTemplatePath] = useState("");
+  const needsRestart = useApp((s) => s.foldersChanged);
+  const setNeedsRestart = useApp((s) => s.markFoldersChanged);
 
   const update = (patch: Partial<Settings>) => {
     const next = { ...draft, ...patch };
     setDraft(next);
     void save(next);
+  };
+
+  const addFolder = async () => {
+    try {
+      const picked = await ipc.pickFolder();
+      if (!picked) return;
+      await ipc.addFolder(picked);
+      await loadInfo();
+      setNeedsRestart();
+      toast("Desk will look in that folder after it restarts.");
+    } catch (error) {
+      fail(error);
+    }
+  };
+
+  const removeFolder = async (path: string) => {
+    try {
+      await ipc.removeFolder(path);
+      await loadInfo();
+      setNeedsRestart();
+      toast("Desk will stop looking in that folder after it restarts.");
+    } catch (error) {
+      fail(error);
+    }
   };
 
   const quarter = (i: number): DateRange => draft.quarters[i] ?? { name: QUARTERS[i], start: "", end: "" };
@@ -35,8 +61,9 @@ export function SettingsView({ info }: { info: AppInfo }) {
 
   const addTemplate = async () => {
     try {
-      await ipc.addTemplate(templatePath.trim());
-      setTemplatePath("");
+      const picked = await ipc.pickFile();
+      if (!picked) return;
+      await ipc.addTemplate(picked);
       await loadTemplates();
       toast("Added to the template shelf.");
     } catch (error) {
@@ -125,9 +152,9 @@ export function SettingsView({ info }: { info: AppInfo }) {
         <h2 className="card-title" id="templates-title">
           Templates
         </h2>
-        <p className="field-note">Master files that are copied, never edited. Paste the full path of a file inside Documents, Desktop or Downloads.</p>
+        <p className="field-note">Master files that are copied, never edited. Clicking one on the Find screen makes a dated copy.</p>
         {templates.map((t) => (
-          <div key={t.id} className="toggle">
+          <div key={t.id} className="toggle" data-testid="template-row">
             <span className="toggle-text">
               {t.name}
               <span>{t.missing ? "The file is missing" : t.path}</span>
@@ -137,12 +164,8 @@ export function SettingsView({ info }: { info: AppInfo }) {
             </button>
           </div>
         ))}
-        <div className="field">
-          <label htmlFor="template-path">Add a template</label>
-          <input id="template-path" placeholder="C:\Users\...\Documents\Lesson Plan.docx" value={templatePath} onChange={(e) => setTemplatePath(e.target.value)} onKeyDown={(e) => e.key === "Enter" && templatePath.trim() && void addTemplate()} />
-        </div>
-        <button type="button" className="button" onClick={() => void addTemplate()} disabled={templatePath.trim() === ""} style={{ alignSelf: "flex-start" }}>
-          Add to the shelf
+        <button type="button" className="button" onClick={() => void addTemplate()} style={{ alignSelf: "flex-start" }} data-testid="add-template">
+          Choose a file to add
         </button>
       </section>
 
@@ -150,12 +173,36 @@ export function SettingsView({ info }: { info: AppInfo }) {
         <h2 className="card-title" id="folders-title">
           Folders Desk looks in
         </h2>
-        <ul className="roots-list">
-          {info.roots.map((root) => (
-            <li key={root}>{root}</li>
-          ))}
-        </ul>
-        <p className="field-note">Downloads are filed into {info.schoolFiles}.</p>
+        {info.roots.map((root) => (
+          <div key={root} className="toggle" data-testid="root-row">
+            <span className="toggle-text">
+              {root.split("\\").pop()}
+              <span>{root}</span>
+            </span>
+            {info.removableRoots.includes(root) ? (
+              <button type="button" className="button button-quiet" onClick={() => void removeFolder(root)}>
+                Remove
+              </button>
+            ) : (
+              <span className="field-note">always</span>
+            )}
+          </div>
+        ))}
+        <button type="button" className="button" onClick={() => void addFolder()} style={{ alignSelf: "flex-start" }} data-testid="add-folder">
+          Add a folder
+        </button>
+        {needsRestart && (
+          <div className="toggle" data-testid="restart-note">
+            <span className="toggle-text">
+              Folder changes take effect after a restart
+              <span>Desk keeps filing downloads meanwhile.</span>
+            </span>
+            <button type="button" className="button button-primary" onClick={() => void ipc.restart().catch(fail)}>
+              Restart Desk
+            </button>
+          </div>
+        )}
+        <p className="field-note">Downloads are filed into {info.schoolFiles}.{info.testMode ? " Test mode: these are the DESK_ROOTS folders." : ""}</p>
       </section>
     </div>
   );

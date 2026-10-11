@@ -37,7 +37,17 @@ let requestId = 0;
 let debounce: number | undefined;
 
 function settingsNow(): Settings {
-  return useApp.getState().info?.settings ?? { startAtLogin: true, notifications: true, tourDone: false, schoolYear: null, quarters: [] };
+  return (
+    useApp.getState().info?.settings ?? {
+      startAtLogin: true,
+      notifications: true,
+      tourDone: false,
+      schoolYear: null,
+      quarters: [],
+      extraFolders: [],
+      excludedFolders: [],
+    }
+  );
 }
 
 export const useFind = create<FindStore>((set, get) => ({

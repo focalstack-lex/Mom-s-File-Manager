@@ -11,41 +11,93 @@ pub struct Roots {
     pub documents: Option<PathBuf>,
     pub downloads: Option<PathBuf>,
     pub onedrive: Option<PathBuf>,
+    /// Folders she added in Settings.
+    pub extra: Vec<PathBuf>,
+}
+
+/// What Settings says about the roots: folders added, defaults switched off.
+#[derive(Debug, Clone, Default)]
+pub struct RootChoices {
+    pub extra: Vec<PathBuf>,
+    pub excluded: Vec<PathBuf>,
 }
 
 impl Roots {
-    /// Resolves the roots through the platform's known-folder API.
-    pub fn detect() -> Self {
+    /// Resolves the roots through the platform's known-folder API, honouring
+    /// the Settings choices. `DESK_ROOTS` (test mode) replaces all of it.
+    pub fn detect(choices: &RootChoices) -> Self {
+        if let Some(roots) = Self::from_env() {
+            return roots;
+        }
+        let keep = |folder: Option<PathBuf>| folder.filter(|p| !choices.excluded.iter().any(|e| same_path(e, p)));
         let onedrive = dirs::home_dir().map(|home| home.join("OneDrive")).filter(|p| p.is_dir());
         Self {
-            desktop: dirs::desktop_dir(),
+            desktop: keep(dirs::desktop_dir()),
             documents: dirs::document_dir(),
             downloads: dirs::download_dir(),
-            onedrive,
+            onedrive: keep(onedrive),
+            extra: choices.extra.iter().filter(|p| p.is_dir()).cloned().collect(),
         }
+    }
+
+    /// `DESK_ROOTS=<desktop>;<documents>;<downloads>[;<extra>...]` points the
+    /// whole app at copied folders for a dry run (spec 8). Nothing real is touched.
+    pub fn from_env() -> Option<Self> {
+        let raw = std::env::var("DESK_ROOTS").ok()?;
+        let parts: Vec<PathBuf> = raw.split(';').map(str::trim).filter(|s| !s.is_empty()).map(PathBuf::from).collect();
+        if parts.len() < 3 {
+            log::error!("DESK_ROOTS needs desktop;documents;downloads, got {raw:?}");
+            return None;
+        }
+        Some(Self {
+            desktop: Some(parts[0].clone()),
+            documents: Some(parts[1].clone()),
+            downloads: Some(parts[2].clone()),
+            onedrive: None,
+            extra: parts[3..].to_vec(),
+        })
+    }
+
+    /// True while `DESK_ROOTS` is set: no autostart registration, separate data.
+    pub fn test_mode() -> bool {
+        std::env::var_os("DESK_ROOTS").is_some()
     }
 
     /// Roots built from explicit folders, used by tests.
     #[cfg(test)]
     pub fn explicit(desktop: PathBuf, documents: PathBuf, downloads: PathBuf) -> Self {
-        Self { desktop: Some(desktop), documents: Some(documents), downloads: Some(downloads), onedrive: None }
+        Self { desktop: Some(desktop), documents: Some(documents), downloads: Some(downloads), onedrive: None, extra: Vec::new() }
     }
 
-    /// Every root that exists, in display order.
+    /// Every root that exists, in display order, in resolved form so the
+    /// paths the scanner stores match the ones `confine` produces for moves.
     pub fn all(&self) -> Vec<PathBuf> {
         [&self.desktop, &self.documents, &self.downloads, &self.onedrive]
             .into_iter()
             .flatten()
+            .chain(self.extra.iter())
             .filter(|p| p.is_dir())
-            .cloned()
+            .map(|p| resolve(p).unwrap_or_else(|_| p.clone()))
             .collect()
+    }
+
+    /// Documents and Downloads are where sorting happens, so they stay.
+    /// Desktop, OneDrive and added folders can be switched off.
+    pub fn removable(&self, path: &Path) -> bool {
+        let wanted = resolve(path).unwrap_or_else(|_| path.to_path_buf());
+        let required = [&self.documents, &self.downloads];
+        !required
+            .into_iter()
+            .flatten()
+            .map(|r| resolve(r).unwrap_or_else(|_| r.clone()))
+            .any(|r| same_path(&r, &wanted) || same_path(&r, path))
     }
 
     /// `Documents\School Files`, where sorted downloads go (spec 5.1).
     pub fn school_files(&self) -> Result<PathBuf> {
         self.documents
             .as_ref()
-            .map(|d| d.join("School Files"))
+            .map(|d| resolve(d).unwrap_or_else(|_| d.clone()).join("School Files"))
             .ok_or_else(|| DeskError::new(ErrorCode::NotFound, "The Documents folder could not be found."))
     }
 
@@ -63,10 +115,15 @@ impl Roots {
         }
         Err(DeskError::new(
             ErrorCode::OutsideRoots,
-            "Desk only works with files in Desktop, Documents, Downloads and OneDrive.",
+            "Desk only works with files in the folders listed in Settings.",
         )
         .with_path(display(path)))
     }
+}
+
+/// Windows paths compare without case.
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    a.to_string_lossy().trim_end_matches('\\').eq_ignore_ascii_case(b.to_string_lossy().trim_end_matches('\\'))
 }
 
 /// Canonicalizes the deepest existing ancestor and appends the rest, with the
@@ -167,6 +224,26 @@ mod tests {
         assert_eq!(roots.confine(&outside).unwrap_err().code, ErrorCode::OutsideRoots);
         let sneaky = documents.join("..").join("Elsewhere").join("x.txt");
         assert_eq!(roots.confine(&sneaky).unwrap_err().code, ErrorCode::InvalidPath);
+    }
+
+    #[test]
+    fn extra_roots_count_and_required_roots_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let desktop = dir.path().join("Desktop");
+        let documents = dir.path().join("Documents");
+        let downloads = dir.path().join("Downloads");
+        let extra = dir.path().join("Lesson Plans");
+        for d in [&desktop, &documents, &downloads, &extra] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let mut roots = Roots::explicit(desktop.clone(), documents.clone(), downloads.clone());
+        roots.extra.push(extra.clone());
+        assert_eq!(roots.all().len(), 4);
+        assert!(roots.confine(&extra.join("plan.docx")).is_ok());
+        assert!(roots.removable(&desktop));
+        assert!(roots.removable(&extra));
+        assert!(!roots.removable(&documents));
+        assert!(!roots.removable(&PathBuf::from(downloads.to_string_lossy().to_uppercase())));
     }
 
     #[test]

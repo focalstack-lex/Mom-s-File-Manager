@@ -46,12 +46,16 @@ impl Pending {
     }
 }
 
-/// 5 s, 30 s, 2 min, then every 15 min.
+/// 5 s, 5 s, 10 s, 20 s, 60 s, 2 min, then every 15 min. The first retries are
+/// quick because an antivirus scan of a fresh download holds it only briefly;
+/// the long tail covers a file she opened straight away in Word.
 pub fn next_delay(attempt: u32) -> Duration {
     match attempt {
-        0 | 1 => Duration::from_secs(5),
-        2 => Duration::from_secs(30),
-        3 => Duration::from_secs(120),
+        0..=2 => Duration::from_secs(5),
+        3 => Duration::from_secs(10),
+        4 => Duration::from_secs(20),
+        5 => Duration::from_secs(60),
+        6 => Duration::from_secs(120),
         _ => Duration::from_secs(15 * 60),
     }
 }
@@ -88,9 +92,10 @@ mod tests {
     #[test]
     fn backoff_grows_then_plateaus() {
         assert_eq!(next_delay(1), Duration::from_secs(5));
-        assert_eq!(next_delay(2), Duration::from_secs(30));
-        assert_eq!(next_delay(3), Duration::from_secs(120));
-        assert_eq!(next_delay(4), Duration::from_secs(900));
+        assert_eq!(next_delay(2), Duration::from_secs(5));
+        assert_eq!(next_delay(3), Duration::from_secs(10));
+        assert_eq!(next_delay(5), Duration::from_secs(60));
+        assert_eq!(next_delay(7), Duration::from_secs(900));
         assert_eq!(next_delay(40), Duration::from_secs(900));
         let start = Instant::now();
         let mut pending = Pending::new(1, start);

@@ -220,11 +220,37 @@ fn restore_from_recycle_bin(original: &Path) -> Result<()> {
     use trash::os_limited;
     let items = os_limited::list().map_err(|e| DeskError::new(ErrorCode::Io, e.to_string()))?;
     let wanted = original.to_string_lossy().to_lowercase();
-    let matching: Vec<trash::TrashItem> = items.into_iter().filter(|i| i.original_path().to_string_lossy().to_lowercase() == wanted).collect();
+    // The shell reports the item name the way Explorer shows it, which can be
+    // without the extension, so the match accepts the full name or the stem.
+    let wanted_parent = original.parent().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let wanted_name = original.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let wanted_stem = original.file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let mut matching: Vec<trash::TrashItem> = items
+        .into_iter()
+        .filter(|i| {
+            let parent = i.original_parent.to_string_lossy().to_lowercase();
+            let name = i.name.to_string_lossy().to_lowercase();
+            i.original_path().to_string_lossy().to_lowercase() == wanted
+                || (parent == wanted_parent && (name == wanted_name || name == wanted_stem))
+        })
+        .collect();
     if matching.is_empty() {
+        log::warn!("restore: nothing in the Recycle Bin has the original path {wanted}");
         return Err(DeskError::new(ErrorCode::NotFound, "That file is not in the Recycle Bin any more. Open the Recycle Bin to check."));
     }
-    os_limited::restore_all(matching).map_err(|e| DeskError::new(ErrorCode::Io, format!("Windows could not restore it: {e}")))?;
+    // Several recycled copies can share one original path; Undo brings back
+    // the one recycled most recently (restoring all of them is refused by Windows).
+    matching.sort_by_key(|i| i.time_deleted);
+    let latest = matching.pop().ok_or_else(|| DeskError::new(ErrorCode::NotFound, "Nothing to restore."))?;
+    log::info!("restoring {} from the Recycle Bin to {wanted}", latest.id.to_string_lossy());
+    let restored_as = latest.original_path();
+    os_limited::restore_all(vec![latest]).map_err(|e| DeskError::new(ErrorCode::Io, format!("Windows could not restore it: {e}")))?;
+    // When Explorer hides extensions the item comes back as "Name" instead of
+    // "Name.pdf"; put the recorded name back.
+    if !original.exists() && restored_as != original && restored_as.exists() {
+        std::fs::rename(&restored_as, original)?;
+        log::info!("renamed the restored item back to {}", original.display());
+    }
     Ok(())
 }
 

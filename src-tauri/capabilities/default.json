@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: core defaults only. Every file action goes through a validated Rust command.",
+  "description": "The main window: core defaults plus the native open dialog for picking folders and template files. Every file action goes through a validated Rust command.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-set-focus",
-    "core:window:allow-show"
+    "core:window:allow-show",
+    "dialog:allow-open"
   ]
 }

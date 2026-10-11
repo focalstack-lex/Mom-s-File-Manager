@@ -23,6 +23,8 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-notification = "2"
+# Native folder and file pickers for Settings (folders to look in, templates).
+tauri-plugin-dialog = "2"
 # IPC serialization.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

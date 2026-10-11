@@ -891,12 +891,8 @@ button {
   border-radius: var(--radius);
   box-shadow: var(--shadow-float);
   padding: var(--space-3) var(--space-4);
-  border-left: 4px solid var(--accent);
+  border: 1px solid var(--border);
   font-size: 16px;
-}
-
-.toast-error {
-  border-left-color: var(--coral);
 }
 
 .toast-error svg {

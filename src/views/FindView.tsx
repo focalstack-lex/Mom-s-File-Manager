@@ -1,7 +1,8 @@
 // The one screen she opens (spec 5.3): search, pinned, templates, recent
 // downloads, results grouped by copy.
 
-import { FilePlus, Search, X } from "lucide-react";
+import { FilePlus, Info, Search, X } from "lucide-react";
+import { browserNotice } from "../lib/browsers";
 import { useEffect, useRef, useState } from "react";
 import { ActionBar } from "../components/ActionBar";
 import { Chips } from "../components/Chips";
@@ -59,6 +60,8 @@ export function FindView({ info }: { info: AppInfo }) {
   const tourActive = useTour((s) => s.active);
   const toast = useApp((s) => s.toast);
   const fail = useApp((s) => s.fail);
+  const setView = useApp((s) => s.setView);
+  const notice = browserNotice(useApp((s) => s.browsers));
   const inputRef = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
 
@@ -97,6 +100,15 @@ export function FindView({ info }: { info: AppInfo }) {
         <p className="status-line" data-testid="status-line">
           {status}
         </p>
+        {notice && (
+          <p className="notice" data-testid="browser-notice">
+            <Info size={18} aria-hidden />
+            <span>{notice}</span>
+            <button type="button" className="button button-quiet" onClick={() => setView("settings")}>
+              How to fix
+            </button>
+          </p>
+        )}
       </div>
 
       <div className="search" data-tour="search">

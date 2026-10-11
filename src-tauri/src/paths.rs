@@ -11,6 +11,9 @@ pub struct Roots {
     pub documents: Option<PathBuf>,
     pub downloads: Option<PathBuf>,
     pub onedrive: Option<PathBuf>,
+    /// Pictures, Videos and Music: searched, and downloads saved there are
+    /// noticed, but nothing in them is ever moved automatically.
+    pub media: Vec<PathBuf>,
     /// Folders she added in Settings.
     pub extra: Vec<PathBuf>,
 }
@@ -31,11 +34,13 @@ impl Roots {
         }
         let keep = |folder: Option<PathBuf>| folder.filter(|p| !choices.excluded.iter().any(|e| same_path(e, p)));
         let onedrive = dirs::home_dir().map(|home| home.join("OneDrive")).filter(|p| p.is_dir());
+        let media = [dirs::picture_dir(), dirs::video_dir(), dirs::audio_dir()].into_iter().filter_map(keep).collect();
         Self {
             desktop: keep(dirs::desktop_dir()),
             documents: dirs::document_dir(),
             downloads: dirs::download_dir(),
             onedrive: keep(onedrive),
+            media,
             extra: choices.extra.iter().filter(|p| p.is_dir()).cloned().collect(),
         }
     }
@@ -54,6 +59,7 @@ impl Roots {
             documents: Some(parts[1].clone()),
             downloads: Some(parts[2].clone()),
             onedrive: None,
+            media: Vec::new(),
             extra: parts[3..].to_vec(),
         })
     }
@@ -66,7 +72,7 @@ impl Roots {
     /// Roots built from explicit folders, used by tests.
     #[cfg(test)]
     pub fn explicit(desktop: PathBuf, documents: PathBuf, downloads: PathBuf) -> Self {
-        Self { desktop: Some(desktop), documents: Some(documents), downloads: Some(downloads), onedrive: None, extra: Vec::new() }
+        Self { desktop: Some(desktop), documents: Some(documents), downloads: Some(downloads), onedrive: None, media: Vec::new(), extra: Vec::new() }
     }
 
     /// Every root that exists, in display order, in resolved form so the
@@ -75,6 +81,7 @@ impl Roots {
         [&self.desktop, &self.documents, &self.downloads, &self.onedrive]
             .into_iter()
             .flatten()
+            .chain(self.media.iter())
             .chain(self.extra.iter())
             .filter(|p| p.is_dir())
             .map(|p| resolve(p).unwrap_or_else(|_| p.clone()))

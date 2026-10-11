@@ -50,6 +50,11 @@ function seedLab() {
   writeFileSync(join(LAB, "Desktop", "Lesson Plan (2).docx"), "xy");
   writeFileSync(join(LAB, "Desktop", "notes.txt"), "Santos Reyes attendance Grade 7");
   writeFileSync(join(LAB, "Documents", "Forms", "SF9 Template.docx"), "master");
+  // A code project in Documents: its build output must stay out of the index.
+  mkdirSync(join(LAB, "Documents", "app", "target", "release"), { recursive: true });
+  writeFileSync(join(LAB, "Documents", "app", "Cargo.toml"), "[package]");
+  writeFileSync(join(LAB, "Documents", "app", "target", "release", "zebrajunk.lib"), "x");
+  mkdirSync(join(LAB, "Desktop", "Saved Here"), { recursive: true });
   const old = join(LAB, "Downloads", "old attendance.pdf");
   writeFileSync(old, "old");
   const past = new Date(Date.now() - 90 * 86_400_000);
@@ -57,8 +62,8 @@ function seedLab() {
 }
 
 /** Writes a file plus the Zone.Identifier stream a browser would leave. */
-function fakeDownload(name, body, hostUrl, referrer) {
-  const path = join(LAB, "Downloads", name);
+function fakeDownload(name, body, hostUrl, referrer, folder = join(LAB, "Downloads")) {
+  const path = join(folder, name);
   writeFileSync(path, body);
   const zone = `[ZoneTransfer]\r\nZoneId=3\r\n${referrer ? `ReferrerUrl=${referrer}\r\n` : ""}HostUrl=${hostUrl}\r\n`;
   execFileSync("powershell", ["-NoProfile", "-Command", `Set-Content -LiteralPath '${path.replace(/'/g, "''")}' -Stream Zone.Identifier -Value '${zone.replace(/'/g, "''")}'`]);
@@ -114,7 +119,18 @@ async function main() {
     const marked = await page.locator('[data-testid="results"] .row-snippet mark').first().textContent().catch(() => null);
     await capture("02-search");
     record("Real index: 'santos' finds notes.txt by its contents with a marked snippet", hit && marked?.toLowerCase() === "santos", JSON.stringify({ hit, marked }));
+    // 2b. Build output beside a project file is not indexed.
+    await page.locator('[data-testid="search-input"]').fill("zebrajunk");
+    await sleep(1500);
+    const junkHits = await page.locator('[data-testid="results"] [data-testid="file-row"]').count();
+    record("Build output beside Cargo.toml stays out of search", junkHits === 0, `hits=${junkHits}`);
     await page.locator('[data-testid="search-input"]').fill("");
+
+    // 2c. A browser that saved to another folder: the stamped file joins Recent downloads and stays put.
+    const elsewhere = fakeDownload("Me at the zoo.mp3", "ID3 fake", "https://files.example.org/zoo.mp3", "https://www.example.org/", join(LAB, "Desktop", "Saved Here"));
+    const noticed = await until(async () => (await page.locator('[data-testid="recent"] .row-name-text', { hasText: "Me at the zoo.mp3" }).count()) === 1, 20_000);
+    const where = noticed ? await page.locator('[data-testid="recent"] [data-testid="file-row"]', { hasText: "Me at the zoo.mp3" }).locator(".row-where").textContent() : null;
+    record("A download saved outside Downloads appears in Recent downloads and is not moved", noticed && existsSync(elsewhere) && String(where).includes("Saved Here"), JSON.stringify({ noticed, stayed: existsSync(elsewhere), where }));
 
     // 3. Two downloads land (Messenger and DepEd streams) and are filed with their sources; an installer stays.
     fakeDownload("Grade 7 Quiz 2.docx", "Grade 7 Science Quiz Photosynthesis", "https://cdn.fbsbx.com/v/t59/quiz.docx?x=1", "https://www.facebook.com/messages/t/123");
@@ -194,7 +210,7 @@ async function main() {
     if (browser) await browser.close().catch(() => undefined);
     spawn("taskkill", ["/pid", String(app.pid), "/T", "/F"], { stdio: "ignore" });
     await sleep(800);
-    const logPath = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.desk", "logs", "desk.log");
+    const logPath = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.desk", "logs", "desk-test.log");
     if (existsSync(logPath)) writeFileSync(join(EVIDENCE_DIR, "desk.log"), readFileSync(logPath, "utf8").split("\n").slice(-200).join("\n"));
     writeFileSync(join(EVIDENCE_DIR, "summary.json"), `${JSON.stringify({ stamp, lab: LAB, steps: results, pageErrors, downloadsLeft: readdirSync(join(LAB, "Downloads")) }, null, 2)}\n`);
   }

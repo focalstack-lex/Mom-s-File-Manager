@@ -20,6 +20,21 @@ use tauri::{AppHandle, Emitter};
 pub const CHANGED_EVENT: &str = "desk://changed";
 pub const SORTED_EVENT: &str = "desk://sorted";
 
+/// A stamped file created this recently, anywhere Desk watches, counts as a download.
+const LIVE_DOWNLOAD_WINDOW_SECS: i64 = 10 * 60;
+/// On the first scan, stamped files from the last month fill Recent downloads.
+const SCAN_DOWNLOAD_WINDOW_SECS: i64 = 30 * 86_400;
+
+/// Windows reports a write to `file.mp3:Zone.Identifier` with the stream
+/// name attached; the file itself is what matters.
+fn without_stream(path: PathBuf) -> PathBuf {
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { return path };
+    match name.split_once(':') {
+        Some((file, _stream)) if !file.is_empty() => path.with_file_name(file),
+        _ => path,
+    }
+}
+
 enum Msg {
     Candidate(PathBuf),
     IndexChange(PathBuf),
@@ -88,9 +103,11 @@ pub fn start(core: Arc<Core>, app: AppHandle) -> Result<()> {
 fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<Msg>) {
     let mut pending: HashMap<PathBuf, Pending> = HashMap::new();
     let mut index_dirty = false;
+    let roots = core.roots.all();
     loop {
         match rx.recv_timeout(Duration::from_secs(2)) {
             Ok(Msg::Candidate(path)) => {
+                let path = without_stream(path);
                 log::debug!("download candidate {}", path.display());
                 let now = Instant::now();
                 match std::fs::metadata(&path) {
@@ -103,10 +120,21 @@ fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<Msg>) {
                 }
             }
             Ok(Msg::IndexChange(path)) => {
+                let path = without_stream(path);
                 log::debug!("index change {}", path.display());
+                if index::under_skipped_dir(&path, &roots) {
+                    continue;
+                }
                 if let Ok(conn) = core.db() {
                     if let Err(error) = index::refresh_path(&conn, &path) {
                         log::warn!("index refresh {}: {error}", path.display());
+                    }
+                    // A browser that saved outside Downloads still stamps the
+                    // file; it joins Recent downloads where it is (spec 5.1.3).
+                    match index::note_if_downloaded(&conn, &path, LIVE_DOWNLOAD_WINDOW_SECS) {
+                        Ok(true) => log::info!("noticed a download saved outside Downloads: {}", path.display()),
+                        Ok(false) => {}
+                        Err(error) => log::warn!("download check {}: {error}", path.display()),
                     }
                 }
                 index_dirty = true;
@@ -227,11 +255,21 @@ pub fn start_scan(core: Arc<Core>, app: AppHandle) {
         let total = entries.len();
         core.set_status(|s| s.total = total);
         let mut scanned = 0;
+        let mut noticed = 0;
+        let now = crate::db::now();
         for chunk in entries.chunks(25) {
             if let Ok(conn) = core.db() {
                 for entry in chunk {
                     if let Err(error) = index::upsert(&conn, entry) {
                         log::warn!("index {}: {error}", entry.path.display());
+                        continue;
+                    }
+                    if now - entry.created <= SCAN_DOWNLOAD_WINDOW_SECS {
+                        match index::note_if_downloaded(&conn, &entry.path, SCAN_DOWNLOAD_WINDOW_SECS) {
+                            Ok(true) => noticed += 1,
+                            Ok(false) => {}
+                            Err(error) => log::warn!("download check {}: {error}", entry.path.display()),
+                        }
                     }
                 }
             }
@@ -247,14 +285,18 @@ pub fn start_scan(core: Arc<Core>, app: AppHandle) {
             // Yield so her laptop stays responsive while the first scan runs.
             std::thread::sleep(Duration::from_millis(5));
         }
+        let seen: std::collections::HashSet<String> = entries.iter().map(|e| e.path.to_string_lossy().into_owned()).collect();
         if let Ok(conn) = core.db() {
             for root in core.roots.all() {
-                match index::prune_missing(&conn, &root) {
-                    Ok(n) if n > 0 => log::info!("pruned {n} missing files under {}", root.display()),
+                match index::prune_except(&conn, &root, &seen) {
+                    Ok(n) if n > 0 => log::info!("pruned {n} rows under {} (gone, or in skipped folders)", root.display()),
                     Ok(_) => {}
                     Err(error) => log::warn!("prune {}: {error}", root.display()),
                 }
             }
+        }
+        if noticed > 0 {
+            log::info!("first scan found {noticed} recent downloads saved outside Downloads or before Desk ran");
         }
         let files = core.db().and_then(|c| index::count(&c)).unwrap_or(0);
         core.set_status(|s| {

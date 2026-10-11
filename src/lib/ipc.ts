@@ -7,6 +7,7 @@ import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   AppInfo,
+  BrowserStatus,
   CleanupReport,
   Destination,
   FindResult,
@@ -70,6 +71,7 @@ export const ipc = {
   addFolder: (path: string) => invoke<Settings>("add_folder", { path }),
   removeFolder: (path: string) => invoke<Settings>("remove_folder", { path }),
   restart: () => invoke<void>("restart_app"),
+  browserCheck: () => invoke<BrowserStatus[]>("browser_check"),
   /** Native folder picker; null when she cancels. */
   pickFolder: async (): Promise<string | null> => {
     if (window.__deskMock) return (await window.__deskMock.invoke("pick_folder", {})) as string | null;

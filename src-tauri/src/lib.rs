@@ -2,6 +2,7 @@
 //! here behind `#[tauri::command]` functions that validate their input; the
 //! renderer only displays what these commands return.
 
+mod browsers;
 mod cleanup;
 mod clipboard;
 mod commands;
@@ -33,16 +34,24 @@ pub fn run() {
     let log_level = if cfg!(debug_assertions) || paths::Roots::test_mode() { log::LevelFilter::Debug } else { log::LevelFilter::Info };
     let minimized = std::env::args().any(|a| a == "--minimized");
 
-    let builder = tauri::Builder::default()
-        .plugin(
-            tauri_plugin_log::Builder::new()
-                .targets([tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: Some("desk".into()) })])
-                .level(log_level)
-                .max_file_size(5 * 1024 * 1024)
-                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
-                .build(),
-        )
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show(app)))
+    // A dry run must be able to sit beside the installed app, so it gets its
+    // own log file and skips the single-instance rule (which would hand the
+    // launch to the running copy and exit).
+    let test_mode = paths::Roots::test_mode();
+    let log_file = if test_mode { "desk-test" } else { "desk" };
+
+    let mut builder = tauri::Builder::default().plugin(
+        tauri_plugin_log::Builder::new()
+            .targets([tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: Some(log_file.into()) })])
+            .level(log_level)
+            .max_file_size(5 * 1024 * 1024)
+            .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
+            .build(),
+    );
+    if !test_mode {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show(app)));
+    }
+    let builder = builder
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
@@ -89,8 +98,12 @@ pub fn run() {
                 .min_inner_size(640.0, 480.0)
                 .center()
                 .visible(false);
+            // WebView2 refuses to share its browser data folder between two
+            // processes started with different options, so a dry run beside
+            // the installed app keeps its own folder next to its database.
+            let window = if test_mode { window.data_directory(data_dir.join("webview")) } else { window };
             #[cfg(windows)]
-            let window = match std::env::var("DESK_DEBUG_PORT").ok().filter(|_| paths::Roots::test_mode()) {
+            let window = match std::env::var("DESK_DEBUG_PORT").ok().filter(|_| test_mode) {
                 Some(port) if port.chars().all(|c| c.is_ascii_digit()) => {
                     log::info!("test mode: WebView2 debugging port {port}");
                     window.additional_browser_args(&format!(
@@ -99,7 +112,11 @@ pub fn run() {
                 }
                 _ => window,
             };
-            window.build()?;
+            // A failed window used to end the process with nothing in the log.
+            if let Err(error) = window.build() {
+                log::error!("the window could not be created: {error}");
+                return Err(error.into());
+            }
 
             if let Err(error) = tray::setup(app.handle()) {
                 log::warn!("tray icon: {error}");
@@ -149,6 +166,7 @@ pub fn run() {
             commands::add_folder,
             commands::remove_folder,
             commands::restart_app,
+            commands::browser_check,
             commands::index_status,
         ]);
 

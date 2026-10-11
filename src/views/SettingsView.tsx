@@ -1,7 +1,9 @@
 // Settings (spec 5.8): the few switches that exist, the school-year dates
 // that unlock two chips, templates, and the walkthrough replay.
 
+import { CircleAlert, CircleCheck } from "lucide-react";
 import { useState } from "react";
+import { browserLabel } from "../lib/browsers";
 import { ipc } from "../lib/ipc";
 import type { AppInfo, DateRange, Settings } from "../lib/types";
 import { useApp } from "../store/app";
@@ -19,6 +21,8 @@ export function SettingsView({ info }: { info: AppInfo }) {
   const templates = useFind((s) => s.templates);
   const loadTemplates = useFind((s) => s.loadTemplates);
   const loadInfo = useApp((s) => s.loadInfo);
+  const browsers = useApp((s) => s.browsers);
+  const checkBrowsers = useApp((s) => s.checkBrowsers);
   const [draft, setDraft] = useState<Settings>(info.settings);
   const needsRestart = useApp((s) => s.foldersChanged);
   const setNeedsRestart = useApp((s) => s.markFoldersChanged);
@@ -113,6 +117,33 @@ export function SettingsView({ info }: { info: AppInfo }) {
             Show me again
           </button>
         </div>
+      </section>
+
+      <section className="card settings-list" aria-labelledby="browsers-title" data-testid="browsers-card">
+        <h2 className="card-title" id="browsers-title">
+          Browsers
+        </h2>
+        <p className="field-note">
+          Desk files what lands in Downloads. A browser that asks where to save, or saves somewhere else, means those files stay where they were saved. Desk still lists them under Recent downloads.
+        </p>
+        {browsers === null ? (
+          <p className="field-note">Checking...</p>
+        ) : browsers.length === 0 ? (
+          <p className="field-note">No Chrome, Edge, Brave or Firefox settings were found on this computer.</p>
+        ) : (
+          browsers.map((b) => (
+            <div key={`${b.browser}-${b.profile}`} className={`browser-row${b.ok ? "" : " needs-change"}`} data-testid="browser-row">
+              {b.ok ? <CircleCheck size={22} aria-hidden /> : <CircleAlert size={22} aria-hidden />}
+              <span className="toggle-text">
+                {browserLabel(b, browsers)}
+                <span>{b.advice}</span>
+              </span>
+            </div>
+          ))
+        )}
+        <button type="button" className="button" onClick={() => void checkBrowsers()} style={{ alignSelf: "flex-start" }} data-testid="browsers-recheck">
+          Check again
+        </button>
       </section>
 
       <section className="card settings-list" aria-labelledby="year-title">

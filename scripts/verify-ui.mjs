@@ -282,6 +282,19 @@ async function drive(browser) {
   await capture(page, "12-settings");
   record("Settings opens and 'Show me again' replays the walkthrough; Escape skips it", settingsOk && replayed && skipped, JSON.stringify({ settingsOk, replayed, skipped }));
 
+  // 13a. Browsers: Find shows one notice for the mock's Edge (asks where to save); Settings lists both browsers.
+  await page.locator('[data-testid="nav-find"]').click();
+  const noticeText = (await visible(page, '[data-testid="browser-notice"]')) ? await page.locator('[data-testid="browser-notice"] span').textContent() : null;
+  await page.locator('[data-testid="browser-notice"]').getByRole("button", { name: "How to fix" }).click();
+  const browsersCard = await visible(page, '[data-testid="browsers-card"]');
+  const browserRows = await page.locator('[data-testid="browser-row"]').count();
+  const flagged = await page.locator('[data-testid="browser-row"].needs-change').count();
+  await page.locator('[data-testid="browsers-card"]').scrollIntoViewIfNeeded();
+  await capture(page, "12a-settings-browsers");
+  record("Find warns about the browser that asks where to save; How to fix opens Settings with each browser's status",
+    noticeText?.startsWith("Edge saves some downloads outside Downloads") && browsersCard && browserRows === 2 && flagged === 1,
+    JSON.stringify({ noticeText, browsersCard, browserRows, flagged }));
+
   // 13b. Folders: Add a folder (native picker, mocked) lists it and asks for a restart; Remove works; Documents cannot be removed.
   await page.locator('[data-testid="nav-settings"]').click();
   await visible(page, '[data-testid="settings-view"]');

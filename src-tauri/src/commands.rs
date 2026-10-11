@@ -571,6 +571,18 @@ pub fn apply_autostart(app: &tauri::AppHandle, enabled: bool) {
     }
 }
 
+/// Which browsers would save downloads outside Downloads (spec 5.1.2).
+/// Always compared with the real Downloads folder, also in test mode,
+/// because the browsers' settings refer to the real one.
+#[tauri::command]
+pub async fn browser_check() -> Result<Vec<crate::browsers::BrowserStatus>> {
+    blocking("browser_check", move || {
+        let downloads = dirs::download_dir().ok_or_else(|| DeskError::new(ErrorCode::NotFound, "The Downloads folder could not be found."))?;
+        Ok(crate::browsers::check(&downloads, dirs::desktop_dir().as_deref()))
+    })
+    .await
+}
+
 #[tauri::command]
 pub fn index_status(state: State<'_, AppState>) -> Result<IndexStatus> {
     Ok(state.0.status())

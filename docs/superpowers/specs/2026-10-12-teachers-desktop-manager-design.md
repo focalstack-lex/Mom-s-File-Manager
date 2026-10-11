@@ -38,6 +38,9 @@ Hard constraints:
 | First run | Guided walkthrough with arrows, five steps, skippable, replayable from Settings | Requested by Lex 2026-10-12. |
 | Folder changes | Add and remove in Settings through a native picker; they apply after a restart | The watchers and the scan are built once at startup; a restart button keeps it simple and predictable. Documents and Downloads cannot be removed because filing depends on them. |
 | Dry runs | `DESK_ROOTS` and `DESK_DATA_DIR` environment overrides, no autostart in that mode | Lets the real app be exercised on copied folders without touching anything real (section 8). |
+| Downloads saved outside Downloads | Noticed by the browser's web stamp, listed in Recent downloads, never moved; plus a browser settings check | Found on 2026-10-12 when Lex's own test download went to a Videos subfolder and Desk never saw it. Moving a file she saved on purpose would override her choice. |
+| Pictures, Videos, Music | Indexed and watched, never sorted | Downloads often land there through Save As; old photos and videos must not move. |
+| Build folders | Skipped only beside a project file | Lex's Documents held 32,208 indexed files, mostly Rust build output; a teacher's own folder named "build" must still be found. |
 | Retry schedule | 5 s, 5 s, 10 s, 20 s, 60 s, 2 min, then 15 min | Fresh downloads are held briefly by the antivirus; the first retries are quick. Changed from 5 s, 30 s, 2 min on 2026-10-12. |
 
 ## 4. Scope
@@ -114,10 +117,18 @@ Browsers on Windows write a `Zone.Identifier` alternate data stream on downloads
 
 Limits stated in the UI where relevant: the origin tells which site, never which person sent it. Files saved by apps that do not write the stream show "Unknown source". The mapping table lives in one module so it can be extended.
 
+#### 5.1.2 Browser check
+
+Desk reads each browser's own settings file, read only: Chrome, Edge and Brave (`Preferences` in every profile) and Firefox (`prefs.js`). A browser that asks where to save each file, or saves somewhere other than Downloads, gets a coral mark and one sentence saying where to change it in Settings > Browsers. While any browser needs a change, the Find screen shows one quiet line with a "How to fix" button. The check runs at start and whenever the window gets focus. Setting her browsers is also step one of the installation checklist in the README.
+
+#### 5.1.3 Downloads saved elsewhere
+
+A browser stamps every download with `Zone.Identifier` (Internet zone 3 or untrusted zone 4), wherever it saves it. A stamped file that appears in any watched folder within 10 minutes of being created counts as a download: it joins Recent downloads with its source, and it stays where she saved it. Only files that land in Downloads are moved. On the first scan, stamped files created in the last 30 days are marked the same way, so Recent downloads is useful from the first minute.
+
 ### 5.2 Search index
 
-- Indexed roots: Desktop, Documents, Downloads, and OneDrive when present. All resolved through known-folder APIs.
-- Skipped: hidden and system files and folders, `AppData`, `node_modules`, `.git`, files over 50 MB for content extraction (still indexed by name).
+- Indexed roots: Desktop, Documents, Downloads, Pictures, Videos, Music, and OneDrive when present. All resolved through known-folder APIs. Pictures, Videos and Music are searched and watched for downloads, never sorted.
+- Skipped: hidden and system files and folders, `AppData`, `node_modules`, `.git`, `__pycache__`, Python `venv` folders, build output folders (`target`, `dist`, `build`, `out`, `bin`, `obj`) only when they sit beside a project file such as `Cargo.toml` or `package.json`, and files over 50 MB for content extraction (still indexed by name). Rows left from files or folders that are now skipped are pruned at the end of each scan.
 - Content extraction for `.docx`, `.xlsx`, `.pptx` (zip archives of XML), `.pdf`, `.txt`, `.csv`. Older `.doc`, `.xls`, `.ppt` are indexed by name only in v1. Each extraction has a size limit; a file that fails is indexed by name only and never blocks the rest.
 - Initial scan runs on a low-priority background thread, newest files first. Progress shows as one quiet line on the Find screen until done.
 - After the scan, a recursive watcher on each root keeps the index current, debounced.

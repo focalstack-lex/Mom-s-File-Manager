@@ -22,11 +22,21 @@ impl Origin {
 /// Reads the stream and maps it. Missing or unreadable streams are a normal
 /// case (apps that save files directly), not an error.
 pub fn read_origin(path: &Path) -> Origin {
+    read_zone(path).unwrap_or_else(Origin::unknown)
+}
+
+/// The origin when the file carries the browser's web stamp at all, None
+/// otherwise. A stamp with no URL inside still means "came from the internet".
+pub fn read_zone(path: &Path) -> Option<Origin> {
     let stream = format!("{}:Zone.Identifier", path.to_string_lossy());
-    match std::fs::read_to_string(stream) {
-        Ok(text) => from_zone_text(&text),
-        Err(_) => Origin::unknown(),
+    let text = std::fs::read_to_string(stream).ok()?;
+    // Zone 3 is the Internet and 4 untrusted sites; 0 to 2 are this computer
+    // and the local network, which are copies rather than downloads.
+    let zone = text.lines().find_map(|l| l.trim().strip_prefix("ZoneId=")).and_then(|z| z.trim().parse::<u8>().ok());
+    if matches!(zone, Some(0..=2)) {
+        return None;
     }
+    Some(from_zone_text(&text))
 }
 
 /// Parses the INI-like stream text. `HostUrl` is preferred; `ReferrerUrl`
@@ -144,5 +154,19 @@ mod tests {
         let file = dir.path().join("plain.txt");
         std::fs::write(&file, b"x").unwrap();
         assert_eq!(read_origin(&file), Origin::unknown());
+        assert_eq!(read_zone(&file), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn web_stamp_is_read_and_local_zones_are_not_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("quiz.docx");
+        std::fs::write(&file, b"x").unwrap();
+        let stream = format!("{}:Zone.Identifier", file.to_string_lossy());
+        std::fs::write(&stream, "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://www.deped.gov.ph/x.docx\r\n").unwrap();
+        assert_eq!(read_zone(&file).unwrap().label, "DepEd");
+        std::fs::write(&stream, "[ZoneTransfer]\r\nZoneId=1\r\n").unwrap();
+        assert_eq!(read_zone(&file), None);
     }
 }

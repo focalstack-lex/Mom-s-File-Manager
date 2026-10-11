@@ -24,7 +24,9 @@ Every surface a user can reach, where it lives, and which verify step proves it.
 | Test mode (DESK_ROOTS, DESK_DATA_DIR) | 8 | none | `paths::Roots::from_env`, `lib.rs` | native 1 |
 | Sorted folders (opens School Files) | 5.1 | `src/App.tsx` | `commands::open_school_files` | manual |
 | Background sorting, origin, notification | 5.1 | toast on `desk://sorted` | `worker`, `stability`, `sorter`, `origin` | cargo test, UI drive 14 (event), native 4 |
-| Index scan and live updates | 5.2 | status line | `worker::start_scan`, `index::walk` | cargo test index |
+| Index scan and live updates, build folders skipped | 5.2 | status line | `worker::start_scan`, `index::walk`, `index::prune_except` | cargo test index, native 2b |
+| Downloads saved outside Downloads (web stamp) | 5.1.3 | Recent downloads | `index::note_if_downloaded`, `origin::read_zone` | cargo test index, native 2c |
+| Browser check (Find notice, Settings > Browsers) | 5.1.2 | `src/lib/browsers.ts`, `FindView.tsx`, `SettingsView.tsx` | `browsers`, `commands::browser_check` | cargo test browsers, vitest browsers, UI drive 13a |
 | Tray icon, close hides, Quit | 5.1 | none | `tray` | manual |
 | Narrow windows (rail at 900 px, no overflow to 640 px) | 7 | `src/styles.css` | none | UI drive 15 |
 

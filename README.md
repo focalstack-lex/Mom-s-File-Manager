@@ -5,7 +5,8 @@ Desk finds a teacher's files and keeps new downloads filed, with no new routines
 What it does:
 
 - Watches Downloads and files every finished download into `Documents\School Files\<Type>\<YYYY-MM>`, remembering where it came from (Messenger, Gmail, Google Drive, DepEd, or the site).
-- Indexes Desktop, Documents, Downloads and OneDrive, including the words inside Word, Excel, PowerPoint, PDF and text files, so typing a student's name finds `Book1.xlsx`.
+- Indexes Desktop, Documents, Downloads, Pictures, Videos, Music and OneDrive, including the words inside Word, Excel, PowerPoint, PDF and text files, so typing a student's name finds `Book1.xlsx`. Build output inside code projects is skipped.
+- Notices downloads a browser saved somewhere else (by the browser's web stamp) and lists them under Recent downloads without moving them, and checks each browser's download settings.
 - One Find screen: a big search box, Recent downloads, pinned files, date and type and source filters, copies grouped with the newest marked Latest, a quick preview, and Copy to paste a file into a message.
 - Organizing by hand when she wants to: Move to, Rename (extension locked), New folder, Recycle Bin, Pin. Every change is logged in Activity with Undo.
 - Clean up: duplicate copies, loose Desktop files and old downloads, each with a suggestion. Nothing moves until she clicks.
@@ -63,7 +64,21 @@ Two environment variables keep a dry run away from real files:
 - `DESK_DATA_DIR=<folder>` keeps the index and settings for that run apart.
 - `DESK_DEBUG_PORT=<port>` (only together with `DESK_ROOTS`) opens the WebView2 debugging port so the native check can drive the window. A normal start never opens one.
 
+A test-mode run logs to `desk-test.log` and can run beside the installed app (the single-instance rule is off in test mode).
+
 In test mode the app never registers itself to start at login and logs at debug level.
+
+## Installing on her laptop
+
+1. Run `Desk_<version>_x64-setup.exe`. It installs for the current user; no admin password.
+2. **Set every browser she uses to save straight to Downloads.** Desk files only what lands there.
+   - Chrome, Edge, Brave: Settings > Downloads > Location: Downloads, and turn off "Ask where to save each file".
+   - Firefox: Settings > General > Files and Applications > Save files to: Downloads, and turn off "Always ask you where to save files".
+   - Desk checks this itself: Settings > Browsers shows each browser and profile, and the Find screen shows one line while any of them needs a change.
+3. In Desk's Settings, confirm the folders, enter the school year and quarter dates, and add her templates.
+4. Let her run the five-step walkthrough.
+
+Downloads a browser saves elsewhere are still noticed (by the browser's web stamp) and listed under Recent downloads, but they stay where they were saved.
 
 ## Release
 

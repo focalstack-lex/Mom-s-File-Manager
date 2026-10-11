@@ -63,10 +63,60 @@ pub struct Entry {
     pub path: PathBuf,
     pub size: u64,
     pub modified: i64,
+    /// When the file was created on this computer; a download's arrival time.
+    pub created: i64,
     pub content_available: bool,
 }
 
-const SKIP_DIRS: &[&str] = &["AppData", "node_modules", ".git", "$RECYCLE.BIN", "System Volume Information"];
+const SKIP_DIRS: &[&str] = &["AppData", "node_modules", ".git", "$RECYCLE.BIN", "System Volume Information", "__pycache__"];
+
+/// Build output folders, skipped only when they sit next to a project file,
+/// so a teacher's own folder that happens to be called "build" or "out" stays.
+const BUILD_DIRS: &[&str] = &["target", "dist", "build", "out", "bin", "obj"];
+const PROJECT_MARKERS: &[&str] = &[
+    "Cargo.toml",
+    "package.json",
+    "pyproject.toml",
+    "setup.py",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "CMakeLists.txt",
+];
+const PROJECT_EXTENSIONS: &[&str] = &["csproj", "sln", "vcxproj", "fsproj"];
+
+fn is_project_dir(dir: &Path) -> bool {
+    if PROJECT_MARKERS.iter().any(|m| dir.join(m).is_file()) {
+        return true;
+    }
+    std::fs::read_dir(dir)
+        .map(|read| read.flatten().any(|e| PROJECT_EXTENSIONS.contains(&sorter::extension(&e.path()).as_str())))
+        .unwrap_or(false)
+}
+
+/// Name-based skip rules (no attribute check), safe to apply to ancestors.
+fn skipped_by_name(dir: &Path) -> bool {
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+        return true;
+    }
+    if name == "venv" && dir.join("pyvenv.cfg").is_file() {
+        return true;
+    }
+    BUILD_DIRS.contains(&name.as_str()) && dir.parent().map(is_project_dir).unwrap_or(false)
+}
+
+/// True when a folder between the watched root and `path` is one the scanner
+/// skips, so live change events from build output do not sneak back into the
+/// index. Folders above the root never count: a root may itself live under
+/// AppData (test mode) or a hidden folder.
+pub fn under_skipped_dir(path: &Path, roots: &[PathBuf]) -> bool {
+    let Some(root) = roots.iter().filter(|r| path.starts_with(r)).max_by_key(|r| r.components().count()) else {
+        return false;
+    };
+    path.ancestors().skip(1).take_while(|a| a != root).any(skipped_by_name)
+}
 
 /// Metadata for a path, or None when it should not be indexed.
 pub fn entry_for(path: &Path) -> Option<Entry> {
@@ -83,7 +133,13 @@ pub fn entry_for(path: &Path) -> Option<Entry> {
         return None;
     }
     let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
-    Some(Entry { path: path.to_path_buf(), size: meta.len(), modified, content_available: content_present(&meta) })
+    let created = meta
+        .created()
+        .ok()
+        .and_then(|c| c.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(modified);
+    Some(Entry { path: path.to_path_buf(), size: meta.len(), modified, created, content_available: content_present(&meta) })
 }
 
 #[cfg(windows)]
@@ -115,8 +171,7 @@ fn content_present(_meta: &std::fs::Metadata) -> bool {
 }
 
 fn should_skip_dir(path: &Path) -> bool {
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+    if skipped_by_name(path) {
         return true;
     }
     std::fs::metadata(path).map(|m| is_hidden_or_system(&m)).unwrap_or(true)
@@ -186,6 +241,9 @@ pub fn upsert(conn: &Connection, entry: &Entry) -> Result<i64> {
 
 /// Indexes a path from disk if it is indexable, otherwise removes any stale row.
 pub fn refresh_path(conn: &Connection, path: &Path) -> Result<()> {
+    if path.is_dir() && should_skip_dir(path) {
+        return remove(conn, path);
+    }
     match entry_for(path) {
         Some(entry) => upsert(conn, &entry).map(|_| ()),
         None => {
@@ -259,8 +317,9 @@ pub fn count(conn: &Connection) -> Result<usize> {
     Ok(n as usize)
 }
 
-/// Removes rows whose files no longer exist under `root`.
-pub fn prune_missing(conn: &Connection, root: &Path) -> Result<usize> {
+/// Removes rows under `root` that the latest walk did not see: files that
+/// are gone, and files inside folders the scanner now skips.
+pub fn prune_except(conn: &Connection, root: &Path, seen: &std::collections::HashSet<String>) -> Result<usize> {
     let like = format!("{}\\%", escape_like(&root.to_string_lossy()));
     let paths: Vec<String> = {
         let mut stmt = conn.prepare("SELECT path FROM files WHERE path LIKE ?1 ESCAPE '!'")?;
@@ -269,12 +328,32 @@ pub fn prune_missing(conn: &Connection, root: &Path) -> Result<usize> {
     };
     let mut removed = 0;
     for p in paths {
-        if !Path::new(&p).is_file() {
+        if !seen.contains(&p) {
             remove(conn, Path::new(&p))?;
             removed += 1;
         }
     }
     Ok(removed)
+}
+
+/// Marks a file as a download when the browser stamped it and it arrived
+/// within `max_age_secs`, wherever she saved it (spec 5.1.3). The file is not
+/// moved; it only joins Recent downloads with its source. Returns true when marked.
+pub fn note_if_downloaded(conn: &Connection, path: &Path, max_age_secs: i64) -> Result<bool> {
+    let path_text = path.to_string_lossy().into_owned();
+    let unmarked: Option<i64> = conn
+        .query_row("SELECT id FROM files WHERE path = ?1 AND downloaded_at IS NULL", [&path_text], |r| r.get(0))
+        .optional()?;
+    if unmarked.is_none() {
+        return Ok(false);
+    }
+    let Some(entry) = entry_for(path) else { return Ok(false) };
+    if db::now() - entry.created > max_age_secs {
+        return Ok(false);
+    }
+    let Some(origin) = crate::origin::read_zone(path) else { return Ok(false) };
+    set_origin(conn, path, &origin, entry.created)?;
+    Ok(true)
 }
 
 const SELECT: &str = "SELECT f.id, f.path, f.parent, f.name, f.ext, f.kind, f.size, f.modified, f.origin_label, f.downloaded_at, f.group_key, (p.path IS NOT NULL) FROM files f LEFT JOIN pins p ON p.path = f.path";
@@ -538,6 +617,61 @@ mod tests {
         remove(&conn, &dir.path().join("sub")).unwrap();
         assert_eq!(count(&conn).unwrap(), 1);
         assert_eq!(orphan_pins(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn build_output_is_skipped_only_beside_a_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("app");
+        std::fs::create_dir_all(project.join("target").join("release")).unwrap();
+        std::fs::write(project.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(project.join("target").join("release").join("junk.lib"), "x").unwrap();
+        std::fs::write(project.join("main.rs"), "fn main() {}").unwrap();
+        let teacher = dir.path().join("Lessons").join("build");
+        std::fs::create_dir_all(&teacher).unwrap();
+        std::fs::write(teacher.join("Robotics Plan.docx"), "x").unwrap();
+        let mut entries = Vec::new();
+        walk(dir.path(), &mut entries);
+        let names: Vec<String> = entries.iter().map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert!(names.contains(&"main.rs".to_string()));
+        assert!(names.contains(&"Robotics Plan.docx".to_string()), "a teacher's own 'build' folder stays");
+        assert!(!names.contains(&"junk.lib".to_string()), "target beside Cargo.toml is skipped");
+        let roots = vec![dir.path().to_path_buf()];
+        assert!(under_skipped_dir(&project.join("target").join("release").join("junk.lib"), &roots));
+        assert!(!under_skipped_dir(&teacher.join("Robotics Plan.docx"), &roots), "the temp root sits under AppData; that must not count");
+    }
+
+    #[test]
+    fn prune_except_drops_rows_the_walk_did_not_see() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = seed(dir.path());
+        let keep = dir.path().join("Grade 7 Quiz.docx").to_string_lossy().into_owned();
+        let seen: std::collections::HashSet<String> = [keep.clone()].into_iter().collect();
+        assert_eq!(prune_except(&conn, dir.path(), &seen).unwrap(), 2);
+        assert_eq!(count(&conn).unwrap(), 1);
+        assert!(by_path(&conn, &keep).unwrap().is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stamped_files_anywhere_join_recent_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_memory().unwrap();
+        let saved = dir.path().join("Videos").join("Me at the zoo.mp3");
+        std::fs::create_dir_all(saved.parent().unwrap()).unwrap();
+        std::fs::write(&saved, "x").unwrap();
+        let plain = dir.path().join("Videos").join("my own.mp3");
+        std::fs::write(&plain, "x").unwrap();
+        std::fs::write(format!("{}:Zone.Identifier", saved.to_string_lossy()), "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://example.com/zoo.mp3\r\n").unwrap();
+        refresh_path(&conn, &saved).unwrap();
+        refresh_path(&conn, &plain).unwrap();
+        assert!(note_if_downloaded(&conn, &saved, 600).unwrap());
+        assert!(!note_if_downloaded(&conn, &saved, 600).unwrap(), "only once");
+        assert!(!note_if_downloaded(&conn, &plain, 600).unwrap(), "no stamp, not a download");
+        let recent = recent_downloads(&conn, 30, 10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].origin_label.as_deref(), Some("example.com"));
+        assert!(saved.is_file(), "it stays where she saved it");
     }
 
     #[test]

@@ -135,6 +135,15 @@ export interface DeskError {
   path?: string;
 }
 
+export interface BrowserStatus {
+  browser: string;
+  profile: string;
+  ok: boolean;
+  asks: boolean;
+  folder: string | null;
+  advice: string;
+}
+
 export interface SortedEvent {
   name: string;
   folder: string;

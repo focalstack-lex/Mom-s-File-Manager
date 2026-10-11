@@ -19,6 +19,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | `index.rs` | `walk`, `upsert`, `relocate`, `remove`, `search`, `recent_downloads`, pins, `group`. |
 | `ops.rs` | Logged operations: move, rename, new folder, recycle, undo, `transfer`. |
 | `cleanup.rs` | The three Clean up lists. |
+| `browsers.rs` | Reads Chrome, Edge, Brave and Firefox download settings (read only) and says which need a change. |
 | `templates.rs` | Shelf storage and dated copies. |
 | `clipboard.rs` | Files on the clipboard (CF_HDROP). |
 | `worker.rs` | Downloads watcher and sorting loop, index watchers, initial scan, notification. |
@@ -38,6 +39,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | `lib/format.ts` | Relative times, location words, sizes, stems. |
 | `lib/dates.ts` | Date chips and spans, quarter and school year. |
 | `lib/errors.ts` | Error code to plain sentence. |
+| `lib/browsers.ts` | Browser check labels and the Find notice text. |
 | `store/app.ts` | View, app info, settings save, toasts. |
 | `store/find.ts` | Query, chips, results, selection, preview. |
 | `store/tour.ts` | Walkthrough steps and state, `placeCard`. |

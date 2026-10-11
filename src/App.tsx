@@ -30,9 +30,14 @@ export default function App() {
   const fail = useApp((s) => s.fail);
   const refreshFind = useFind((s) => s.refresh);
   const startTour = useTour((s) => s.start);
+  const checkBrowsers = useApp((s) => s.checkBrowsers);
 
   useEffect(() => {
     void loadInfo();
+    void checkBrowsers();
+    // Settings can change while Desk sits in the tray; look again when she comes back.
+    const onFocus = () => void checkBrowsers();
+    window.addEventListener("focus", onFocus);
     const unlisten = [
       listen(CHANGED_EVENT, () => {
         void loadInfo();
@@ -41,9 +46,10 @@ export default function App() {
       listen<SortedEvent>(SORTED_EVENT, (e) => toast(`${e.name} is in ${e.folder}.`)),
     ];
     return () => {
+      window.removeEventListener("focus", onFocus);
       for (const u of unlisten) u.then((fn) => fn()).catch(() => undefined);
     };
-  }, [loadInfo, refreshFind, toast]);
+  }, [loadInfo, refreshFind, toast, checkBrowsers]);
 
   useEffect(() => {
     if (info && !info.settings.tourDone) startTour();

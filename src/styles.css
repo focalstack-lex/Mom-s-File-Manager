@@ -255,6 +255,42 @@ button {
   margin: 0;
 }
 
+.notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.notice svg {
+  color: var(--text-muted);
+  flex: none;
+}
+
+.notice .button {
+  min-height: 36px;
+}
+
+.browser-row {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  align-items: start;
+  gap: var(--space-3);
+  min-height: 44px;
+}
+
+.browser-row svg {
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.browser-row.needs-change svg {
+  color: var(--coral);
+}
+
 /* Search */
 
 .search {

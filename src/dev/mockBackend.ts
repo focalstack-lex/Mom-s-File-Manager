@@ -269,6 +269,17 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     return settings;
   },
   restart_app: () => undefined,
+  browser_check: () => [
+    { browser: "Chrome", profile: "Teacher", ok: true, asks: false, folder: null, advice: "Saves to Downloads. Nothing to change." },
+    {
+      browser: "Edge",
+      profile: "Default",
+      ok: false,
+      asks: true,
+      folder: null,
+      advice: "Asks where to save each file. In Edge, open Settings > Downloads and turn that off, with the location set to Downloads.",
+    },
+  ],
   pick_folder: () => `${DOCS}\\Lesson Plans`,
   pick_file: () => `${DOCS}\\Forms\\DLL Template.docx`,
   index_status: () => ({ scanning: false, scanned: files.length, total: files.length, files: files.length }),

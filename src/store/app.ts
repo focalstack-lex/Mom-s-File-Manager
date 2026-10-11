@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { ipc } from "../lib/ipc";
 import { describeError } from "../lib/errors";
-import type { AppInfo, Settings } from "../lib/types";
+import type { AppInfo, BrowserStatus, Settings } from "../lib/types";
 
 export type View = "find" | "cleanup" | "activity" | "settings";
 
@@ -20,8 +20,11 @@ interface AppStore {
   toasts: Toast[];
   /** Folder choices changed; the watchers pick them up after a restart. */
   foldersChanged: boolean;
+  /** Browser download settings; null until the first check returns. */
+  browsers: BrowserStatus[] | null;
   setView(view: View): void;
   markFoldersChanged(): void;
+  checkBrowsers(): Promise<void>;
   loadInfo(): Promise<void>;
   saveSettings(settings: Settings): Promise<void>;
   toast(text: string, kind?: Toast["kind"], undoId?: number): void;
@@ -36,8 +39,18 @@ export const useApp = create<AppStore>((set, get) => ({
   info: null,
   toasts: [],
   foldersChanged: false,
+  browsers: null,
   setView: (view) => set({ view }),
   markFoldersChanged: () => set({ foldersChanged: true }),
+  checkBrowsers: async () => {
+    try {
+      set({ browsers: await ipc.browserCheck() });
+    } catch (error) {
+      // The check is advice only; a failure is logged and the notice stays hidden.
+      console.warn("Desk: browser check failed", error);
+      set({ browsers: [] });
+    }
+  },
   loadInfo: async () => {
     try {
       const info = await ipc.appInfo();

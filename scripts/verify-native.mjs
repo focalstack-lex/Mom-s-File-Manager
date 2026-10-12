@@ -173,7 +173,7 @@ async function main() {
       const hit = r ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
       return { bar: Boolean(bar), button: r ? { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) } : null, hitTag: hit?.tagName, hitClass: hit?.className, inner: window.innerHeight };
     });
-    process.stdout.write(`action bar geometry: ${JSON.stringify(barBox)}\n`);
+    if (!barBox.bar || barBox.hitTag !== "BUTTON") record("The Move to... button is reachable and uncovered", false, JSON.stringify(barBox));
     await page.getByRole("button", { name: "Move to..." }).click({ timeout: 10_000 });
     await page.locator(".folder-option", { hasText: "Documents > Forms" }).click();
     await page.locator('[data-testid="move-confirm"]').click();

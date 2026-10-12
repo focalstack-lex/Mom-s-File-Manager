@@ -63,6 +63,25 @@ let files: FileRow[] = [
   file(`${DOCS}\\Forms`, "SF9 Template.docx", { modified: NOW - 200 * DAY }),
 ];
 
+// Enough files that the lists need "Show more" (spec 5.10): 9 more recent
+// downloads over the last weeks, and 13 more old downloads for Clean up.
+const MORE_RECENT: [string, string, number][] = [
+  ["Reading Log Week 3.docx", "Messenger", 2],
+  ["Seat Plan 7-Mabini.xlsx", "Gmail", 3],
+  ["Science Fair Rubric.pdf", "Google Drive", 4],
+  ["Parent Letter October.docx", "Messenger", 8],
+  ["Quarter 1 Grades.xlsx", "Gmail", 9],
+  ["Math Drill Sheet 4.pdf", "Messenger", 11],
+  ["Faculty Meeting Notes.docx", "Gmail", 15],
+  ["Field Trip Consent.pdf", "Messenger", 18],
+  ["Spelling Bee Words.docx", "Google Drive", 21],
+];
+for (const [name, origin, days] of MORE_RECENT) {
+  const kind = name.endsWith(".pdf") ? "PDF" : name.endsWith(".xlsx") ? "Excel" : "Word";
+  files.push(file(`${SCHOOL}\\${kind}\\2026-10`, name, { originLabel: origin, downloadedAt: NOW - days * DAY, modified: NOW - days * DAY }));
+}
+for (let i = 1; i <= 13; i += 1) files.push(file(DOWNLOADS, `old handout ${i}.pdf`, { modified: NOW - (70 + i) * DAY }));
+
 const ops: OpRow[] = [
   { id: 1, kind: "autoSort", src: `${DOWNLOADS}\\Grade 7 Quiz 2.docx`, dst: `${SCHOOL}\\Word\\2026-10\\Grade 7 Quiz 2.docx`, status: "done", message: null, automatic: true, createdAt: NOW - 2 * 3600 },
   { id: 2, kind: "autoSort", src: `${DOWNLOADS}\\DepEd Order 2026-014.pdf`, dst: `${SCHOOL}\\PDF\\2026-10\\DepEd Order 2026-014.pdf`, status: "done", message: null, automatic: true, createdAt: NOW - DAY },

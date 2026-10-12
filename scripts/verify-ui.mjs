@@ -163,8 +163,19 @@ async function drive(browser) {
   const pinned = await page.locator('[data-testid="pinned"] [data-testid="file-row"]').count();
   await capture(page, "03-find-home");
   record("Find shows pinned files, recent downloads with source and location, and the quiet status line",
-    rows === 5 && firstMeta?.startsWith("from Messenger") && firstWhere?.includes("School Files > Word") && status?.includes("filed for you") && pinned === 1,
+    rows === 10 && firstMeta?.startsWith("from Messenger") && firstWhere?.includes("School Files > Word") && status?.includes("filed for you") && pinned === 1,
     JSON.stringify({ rows, firstMeta, firstWhere, status, pinned }));
+
+  // 3b. Show a little, offer more: 10 of 14 downloads under day headings, then the rest on request.
+  const days = await page.locator('[data-testid="recent-day"] .day-title').allTextContents();
+  const moreText = await page.locator('[data-testid="recent-more"]').textContent();
+  await page.locator('[data-testid="recent-more"]').getByRole("button").click();
+  const afterMore = await page.locator('[data-testid="recent"] [data-testid="file-row"]').count();
+  const moreGone = (await page.locator('[data-testid="recent-more"]').count()) === 0;
+  await capture(page, "03b-recent-all");
+  record("Recent downloads opens on 10 rows under day headings; Show 4 more reveals the rest and the button goes away",
+    days[0] === "Today" && days.includes("Earlier") && moreText?.includes("Showing 10 of 14") && moreText?.includes("Show 4 more") && afterMore === 14 && moreGone,
+    JSON.stringify({ days, moreText, afterMore, moreGone }));
 
   // 4. Typing a student's name finds a spreadsheet by its contents, with a snippet.
   await page.locator('[data-testid="search-input"]').fill("santos");
@@ -271,6 +282,21 @@ async function drive(browser) {
   const suggestionMoved = await page.evaluate(() => window.__deskMock.calls.filter((c) => c.command === "move_files").at(-1)?.args.destination);
   await capture(page, "11-cleanup");
   record("Clean up shows duplicates, Desktop clutter and old downloads with nothing ticked, and a suggestion moves on click", cleanupOk && cards === 3 && tickedByDefault === 0 && recycleDisabled && String(suggestionMoved).includes("School Files"), JSON.stringify({ cards, tickedByDefault, recycleDisabled, suggestionMoved }));
+
+  // 12b. A long card starts folded with its count; opening it shows 10 rows and Show 4 more.
+  const oldToggle = page.locator('[data-testid="old-card-toggle"]');
+  const foldedAtStart = (await oldToggle.getAttribute("aria-expanded")) === "false" && (await page.locator('[data-testid="old-downloads-list"]').count()) === 0;
+  const oldCount = await oldToggle.locator(".section-count").textContent();
+  await oldToggle.click();
+  const oldRows = await page.locator('[data-testid="old-downloads-list"] .suggestion').count();
+  const oldMore = await page.locator('[data-testid="old-card-more"]').textContent();
+  await page.locator('[data-testid="old-card-more"]').getByRole("button").click();
+  const oldAll = await page.locator('[data-testid="old-downloads-list"] .suggestion').count();
+  const shortOpen = (await page.locator('[data-testid="desktop-card-toggle"]').getAttribute("aria-expanded")) === "true";
+  await capture(page, "11b-cleanup-folded");
+  record("A long Clean up card starts folded with its count and opens 10 at a time; short cards start open",
+    foldedAtStart && oldCount === "14" && oldRows === 10 && oldMore?.includes("Show 4 more") && oldAll === 14 && shortOpen,
+    JSON.stringify({ foldedAtStart, oldCount, oldRows, oldMore, oldAll, shortOpen }));
 
   // 13. Settings can replay the walkthrough.
   await page.locator('[data-testid="nav-settings"]').click();

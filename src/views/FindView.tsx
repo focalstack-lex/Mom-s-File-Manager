@@ -8,7 +8,9 @@ import { ActionBar } from "../components/ActionBar";
 import { Chips } from "../components/Chips";
 import { PreviewPanel } from "../components/PreviewPanel";
 import { ResultRow } from "../components/ResultRow";
+import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
+import { groupByDay, PAGE, takeRows, useShown } from "../lib/paging";
 import { ipc } from "../lib/ipc";
 import type { AppInfo, FileRow } from "../lib/types";
 import { useApp } from "../store/app";
@@ -98,6 +100,18 @@ export function FindView({ info }: { info: AppInfo }) {
   const totalGroups = result?.groups.length ?? 0;
   const countLabel = totalGroups === 1 ? "1 file" : `${totalGroups.toLocaleString()} files`;
 
+  // Show a little, offer more (spec 5.10). A new search or filter starts at
+  // the first page again; background refreshes keep what she opened.
+  const filterKey = useFind((s) => JSON.stringify([s.query.trim(), s.dateChip, s.kinds, s.sources]));
+  const [resultsShown, moreResults] = useShown(PAGE.results, PAGE.results, filterKey);
+  const [recentShown, moreRecent] = useShown(PAGE.recent, PAGE.recent);
+  const recentRows = showSamples ? SAMPLE_ROWS : recent;
+  const recentDays = takeRows(
+    groupByDay(recentRows, (f) => f.downloadedAt ?? f.modified),
+    recentShown,
+  );
+  const visibleGroups = result?.groups.slice(0, resultsShown) ?? [];
+
   return (
     <div className="main-inner" data-testid="find-view">
       <div className="view-head">
@@ -172,20 +186,23 @@ export function FindView({ info }: { info: AppInfo }) {
                   )}
                 </div>
               ) : (
-                <div className="rows">
-                  {result?.groups.map((group) => (
-                    <ResultRow
-                      key={group.latest.path}
-                      file={group.latest}
-                      roots={roots}
-                      latest
-                      others={group.others}
-                      renaming={renaming === group.latest.path}
-                      onRenamed={() => setRenaming(null)}
-                      onCancelRename={() => setRenaming(null)}
-                    />
-                  ))}
-                </div>
+                <>
+                  <div className="rows">
+                    {visibleGroups.map((group) => (
+                      <ResultRow
+                        key={group.latest.path}
+                        file={group.latest}
+                        roots={roots}
+                        latest
+                        others={group.others}
+                        renaming={renaming === group.latest.path}
+                        onRenamed={() => setRenaming(null)}
+                        onCancelRename={() => setRenaming(null)}
+                      />
+                    ))}
+                  </div>
+                  <ShowMore shown={visibleGroups.length} total={totalGroups} step={PAGE.results} onMore={moreResults} testId="results-more" />
+                </>
               )}
             </section>
           ) : (
@@ -242,20 +259,30 @@ export function FindView({ info }: { info: AppInfo }) {
                     New downloads appear here, newest first, already filed in School Files.
                   </div>
                 ) : (
-                  <div className="rows">
-                    {(showSamples ? SAMPLE_ROWS : recent).map((file, i) => (
-                      <ResultRow
-                        key={file.path}
-                        file={file}
-                        roots={roots}
-                        sample={showSamples}
-                        tourOpen={i === 0}
-                        renaming={renaming === file.path}
-                        onRenamed={() => setRenaming(null)}
-                        onCancelRename={() => setRenaming(null)}
-                      />
-                    ))}
-                  </div>
+                  <>
+                    <div className="day-groups">
+                      {recentDays.map((day, d) => (
+                        <div key={day.title} className="day-group" data-testid="recent-day">
+                          <h3 className="day-title">{day.title}</h3>
+                          <div className="rows">
+                            {day.items.map((file, i) => (
+                              <ResultRow
+                                key={file.path}
+                                file={file}
+                                roots={roots}
+                                sample={showSamples}
+                                tourOpen={d === 0 && i === 0}
+                                renaming={renaming === file.path}
+                                onRenamed={() => setRenaming(null)}
+                                onCancelRename={() => setRenaming(null)}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <ShowMore shown={Math.min(recentShown, recentRows.length)} total={recentRows.length} step={PAGE.recent} onMore={moreRecent} testId="recent-more" />
+                  </>
                 )}
               </section>
             </>

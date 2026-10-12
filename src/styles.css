@@ -1360,6 +1360,67 @@ kbd {
   gap: var(--space-3);
 }
 
+/* Long lists open short (spec 5.10): day headings inside Recent downloads,
+   the "Show more" foot, and folded Clean up cards. */
+.day-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.day-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.day-title {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.show-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+}
+
+.show-more-count {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.card-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+
+.card-toggle svg {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.card-toggle .section-count {
+  margin-left: auto;
+}
+
 .activity-group-title {
   margin: 0;
   font-size: var(--text-sm);

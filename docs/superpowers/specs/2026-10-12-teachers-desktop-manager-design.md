@@ -195,6 +195,12 @@ Minimal: start at login (on by default), notifications (on by default), indexed 
 - Settings stay behind a sidebar footer link, never on the Find screen.
 - Confirmations only for the Recycle Bin and for moving old files. Everything else is undoable instead of confirmed.
 - Error messages are one sentence in plain words, with what to do next.
+- Long lists open short and grow on request ("show a little, offer more"), with a "Showing 10 of 84" line and one "Show N more" button:
+  - Recent downloads: the first 10, under day headings (Today, Yesterday, Earlier this week, Earlier).
+  - Search results: the first 20 copy groups; a new search or filter starts again at 20.
+  - Clean up: a card with more than 5 entries starts folded, its heading showing the count; opened, it shows 10 at a time. "Move all N as suggested" names how many files it acts on, including those not yet shown.
+  - Activity: Today and Yesterday first (between 10 and 30 rows), then 20 older at a time.
+  - Background refreshes keep what she has opened; nothing collapses while the scan runs.
 
 ## 6. Architecture
 

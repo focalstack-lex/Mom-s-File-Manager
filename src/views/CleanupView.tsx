@@ -3,12 +3,14 @@
 // that is an extra copy is only offered for the Recycle Bin, never also for a
 // move, so she is never asked two opposite things about the same file.
 
-import { CheckCheck, CircleCheck, Trash } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { CheckCheck, ChevronDown, ChevronRight, CircleCheck, Trash } from "lucide-react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Dialog } from "../components/Dialog";
 import { FolderPicker } from "../components/FolderPicker";
 import { KindTile } from "../components/icons";
+import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
+import { OPEN_CARD_MAX, PAGE, useShown } from "../lib/paging";
 import { locationLine, monthName, relativeTime } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import type { AppInfo, CleanupReport, Suggestion } from "../lib/types";
@@ -16,6 +18,39 @@ import { moveOpIds, useApp } from "../store/app";
 
 function dirLabel(dir: string, roots: string[]): string {
   return locationLine(dir, roots).replace(/^in /, "");
+}
+
+/**
+ * One Clean up card. A short card starts open; a long one starts folded with
+ * its count, and opens to 10 rows at a time (spec 5.10). `children` gets how
+ * many rows to draw.
+ */
+function FoldCard({ id, title, lead, count, action, testId, children }: { id: string; title: string; lead: string; count: number; action?: ReactNode; testId: string; children(shown: number): ReactNode }) {
+  const [open, setOpen] = useState(count <= OPEN_CARD_MAX);
+  const [shown, more] = useShown(PAGE.cleanup, PAGE.cleanup);
+  return (
+    <section className="card section" aria-labelledby={`${id}-title`} data-testid={testId}>
+      <div className="cleanup-head">
+        <div>
+          <h2 className="card-title" id={`${id}-title`}>
+            <button type="button" className="card-toggle" aria-expanded={open} aria-controls={`${id}-body`} onClick={() => setOpen((v) => !v)} data-testid={`${testId}-toggle`}>
+              {open ? <ChevronDown size={20} aria-hidden /> : <ChevronRight size={20} aria-hidden />}
+              <span>{title}</span>
+              <span className="section-count">{count.toLocaleString()}</span>
+            </button>
+          </h2>
+          <p>{lead}</p>
+        </div>
+        {open && action}
+      </div>
+      {open && (
+        <div id={`${id}-body`} className="section">
+          {children(shown)}
+          <ShowMore shown={Math.min(shown, count)} total={count} step={PAGE.cleanup} onMore={more} testId={`${testId}-more`} />
+        </div>
+      )}
+    </section>
+  );
 }
 
 export function CleanupView({ info }: { info: AppInfo }) {
@@ -75,9 +110,7 @@ export function CleanupView({ info }: { info: AppInfo }) {
 
   const SuggestionList = ({ items, testId }: { items: Suggestion[]; testId: string }) => (
     <div className="rows" data-testid={testId}>
-      {items
-        .filter((s) => !skipped.includes(s.file.path))
-        .map((s) => (
+      {items.map((s) => (
           <div key={s.file.path} className="suggestion">
             <KindTile kind={s.file.kind} ext={s.file.ext} />
             <div className="suggestion-text">
@@ -98,15 +131,17 @@ export function CleanupView({ info }: { info: AppInfo }) {
               </button>
             </div>
           </div>
-        ))}
+      ))}
     </div>
   );
 
   // Extra copies belong to the Recycle Bin question only.
   const extraCopies = new Set(report?.duplicates.flatMap((g) => g.others.map((o) => o.path)) ?? []);
   const notCopies = (items: Suggestion[]) => items.filter((s) => !extraCopies.has(s.file.path));
-  const desktop = notCopies(report?.desktop ?? []);
-  const oldDownloads = notCopies(report?.oldDownloads ?? []);
+  const notSkipped = (items: Suggestion[]) => items.filter((s) => !skipped.includes(s.file.path));
+  const desktop = notSkipped(notCopies(report?.desktop ?? []));
+  const oldDownloads = notSkipped(notCopies(report?.oldDownloads ?? []));
+  const moveAllLabel = (n: number) => (n === 1 ? "Move it as suggested" : `Move all ${n.toLocaleString()} as suggested`);
   const tidy = (report?.duplicates.length ?? 0) === 0 && desktop.length === 0 && oldDownloads.length === 0;
 
   return (
@@ -128,84 +163,78 @@ export function CleanupView({ info }: { info: AppInfo }) {
       ) : (
         <div className="cleanup-cards">
           {report.duplicates.length > 0 && (
-            <section className="card section" aria-labelledby="dupes-title">
-              <div className="cleanup-head">
-                <div>
-                  <h2 className="card-title" id="dupes-title">
-                    Duplicate copies
-                  </h2>
-                  <p>The newest copy is marked Latest. Tick the extra copies you no longer need.</p>
-                </div>
+            <FoldCard
+              id="dupes"
+              title="Duplicate copies"
+              lead="The newest copy is marked Latest. Tick the extra copies you no longer need."
+              count={report.duplicates.length}
+              testId="dupes-card"
+              action={
                 <button type="button" className="button button-danger" disabled={ticked.length === 0} onClick={() => setConfirm(true)} data-testid="recycle-ticked">
                   <Trash size={18} aria-hidden />
                   {ticked.length === 0 ? "Recycle ticked copies" : `Recycle ${ticked.length} ${ticked.length === 1 ? "copy" : "copies"}`}
                 </button>
-              </div>
-              {report.duplicates.map((group) => (
-                <div key={group.latest.groupKey} className="dupe-group">
-                  <div className="suggestion">
-                    <KindTile kind={group.latest.kind} ext={group.latest.ext} />
-                    <div className="suggestion-text">
-                      <strong>
-                        <span>{group.latest.name}</span> <span className="latest">Latest</span>
-                      </strong>
-                      <span>
-                        edited {relativeTime(group.latest.modified)} · {locationLine(group.latest.parent, info.roots)}
-                      </span>
-                    </div>
-                    <span className="keep-mark">
-                      <CircleCheck size={18} aria-hidden />
-                      Keeping
-                    </span>
-                  </div>
-                  {group.others.map((copy) => (
-                    <div key={copy.path} className="suggestion is-copy">
-                      <label className="row-check">
-                        <input type="checkbox" checked={ticked.includes(copy.path)} onChange={() => setTicked((list) => (list.includes(copy.path) ? list.filter((p) => p !== copy.path) : [...list, copy.path]))} aria-label={`Recycle ${copy.name}`} />
-                      </label>
+              }
+            >
+              {(shown) =>
+                report.duplicates.slice(0, shown).map((group) => (
+                  <div key={group.latest.groupKey} className="dupe-group">
+                    <div className="suggestion">
+                      <KindTile kind={group.latest.kind} ext={group.latest.ext} />
                       <div className="suggestion-text">
-                        <strong>{copy.name}</strong>
+                        <strong>
+                          <span>{group.latest.name}</span> <span className="latest">Latest</span>
+                        </strong>
                         <span>
-                          edited {relativeTime(copy.modified)} · {locationLine(copy.parent, info.roots)}
+                          edited {relativeTime(group.latest.modified)} · {locationLine(group.latest.parent, info.roots)}
                         </span>
                       </div>
-                      <button type="button" className="button button-subtle" onClick={() => void ipc.open(copy.path).catch(fail)}>
-                        Open
-                      </button>
+                      <span className="keep-mark">
+                        <CircleCheck size={18} aria-hidden />
+                        Keeping
+                      </span>
                     </div>
-                  ))}
-                </div>
-              ))}
-            </section>
+                    {group.others.map((copy) => (
+                      <div key={copy.path} className="suggestion is-copy">
+                        <label className="row-check">
+                          <input type="checkbox" checked={ticked.includes(copy.path)} onChange={() => setTicked((list) => (list.includes(copy.path) ? list.filter((p) => p !== copy.path) : [...list, copy.path]))} aria-label={`Recycle ${copy.name}`} />
+                        </label>
+                        <div className="suggestion-text">
+                          <strong>{copy.name}</strong>
+                          <span>
+                            edited {relativeTime(copy.modified)} · {locationLine(copy.parent, info.roots)}
+                          </span>
+                        </div>
+                        <button type="button" className="button button-subtle" onClick={() => void ipc.open(copy.path).catch(fail)}>
+                          Open
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ))
+              }
+            </FoldCard>
           )}
           {desktop.length > 0 && (
-            <section className="card section" aria-labelledby="desktop-title">
-              <div className="cleanup-head">
-                <div>
-                  <h2 className="card-title" id="desktop-title">
-                    Loose files on the Desktop
-                  </h2>
-                  <p>Each one has a suggested home in School Files.</p>
-                </div>
-                <button type="button" className="button button-primary" onClick={() => void acceptAll(desktop)}>
-                  Move all as suggested
+            <FoldCard
+              id="desktop"
+              title="Loose files on the Desktop"
+              lead="Each one has a suggested home in School Files."
+              count={desktop.length}
+              testId="desktop-card"
+              action={
+                <button type="button" className="button button-primary" onClick={() => void acceptAll(desktop)} data-testid="desktop-move-all">
+                  {moveAllLabel(desktop.length)}
                 </button>
-              </div>
-              <SuggestionList items={desktop} testId="desktop-list" />
-            </section>
+              }
+            >
+              {(shown) => <SuggestionList items={desktop.slice(0, shown)} testId="desktop-list" />}
+            </FoldCard>
           )}
           {oldDownloads.length > 0 && (
-            <section className="card section" aria-labelledby="old-title">
-              <div className="cleanup-head">
-                <div>
-                  <h2 className="card-title" id="old-title">
-                    Old downloads
-                  </h2>
-                  <p>Untouched for two months or more.</p>
-                </div>
-              </div>
-              <SuggestionList items={oldDownloads} testId="old-downloads-list" />
-            </section>
+            <FoldCard id="old" title="Old downloads" lead="Untouched for two months or more." count={oldDownloads.length} testId="old-card">
+              {(shown) => <SuggestionList items={oldDownloads.slice(0, shown)} testId="old-downloads-list" />}
+            </FoldCard>
           )}
         </div>
       )}

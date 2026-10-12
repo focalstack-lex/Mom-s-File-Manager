@@ -28,6 +28,7 @@ Every surface a user can reach, where it lives, and which verify step proves it.
 | Downloads saved outside Downloads (web stamp) | 5.1.3 | Recent downloads | `index::note_if_downloaded`, `origin::read_zone` | cargo test index, native 2c |
 | Browser check (Find notice, Settings > Browsers) | 5.1.2 | `src/lib/browsers.ts`, `FindView.tsx`, `SettingsView.tsx` | `browsers`, `commands::browser_check` | cargo test browsers, vitest browsers, UI drive 13a |
 | Undo in the toast after Move, Recycle Bin and Clean up moves | 5.7 | `src/components/Toasts.tsx`, `src/store/app.ts` (`moveOpIds`) | `ops::undo`, `ops::list` | UI drive 10 (toast shows Undo) |
+| Long lists open short: Recent downloads by day (10), results (20), folded Clean up cards (10), Activity (Today and Yesterday) | 5.10 | `src/lib/paging.ts`, `src/components/ShowMore.tsx`, `FindView.tsx`, `CleanupView.tsx`, `ActivityView.tsx` | none | vitest paging, UI drive 3b, 12b |
 | Tray icon, close hides, Quit | 5.1 | none | `tray` | manual |
 | Narrow windows (rail at 900 px, preview drawer, two-line Clean up rows, no overflow to 640 px) | 7 | `src/styles.css` | none | UI drive 15 |
 

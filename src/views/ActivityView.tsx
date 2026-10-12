@@ -5,7 +5,9 @@ import { CircleAlert, Copy, FolderInput, FolderOpen, FolderPlus, History, Pencil
 import { useEffect, useState } from "react";
 import { locationLine, relativeTime } from "../lib/format";
 import { ipc } from "../lib/ipc";
+import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
+import { activityFirstPage, groupByDay, PAGE, takeRows, useShown } from "../lib/paging";
 import type { AppInfo, OpRow } from "../lib/types";
 import { useApp } from "../store/app";
 import { useFind } from "../store/find";
@@ -39,26 +41,6 @@ export function describeOp(op: OpRow, roots: string[]): { title: string; detail:
   }
 }
 
-/** "Today", "Yesterday", "Earlier this week", "Earlier": the order she remembers things in. */
-export function dayGroup(unixSeconds: number, now: Date = new Date()): string {
-  const start = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((start(now) - start(new Date(unixSeconds * 1000))) / 86_400_000);
-  if (days <= 0) return "Today";
-  if (days === 1) return "Yesterday";
-  if (days < 7) return "Earlier this week";
-  return "Earlier";
-}
-
-function groupByDay(ops: OpRow[]): { title: string; ops: OpRow[] }[] {
-  const groups: { title: string; ops: OpRow[] }[] = [];
-  for (const op of ops) {
-    const title = dayGroup(op.createdAt);
-    const last = groups[groups.length - 1];
-    if (last && last.title === title) last.ops.push(op);
-    else groups.push({ title, ops: [op] });
-  }
-  return groups;
-}
 
 function OpIcon({ op }: { op: OpRow }) {
   const props = { size: 20, "aria-hidden": true };
@@ -96,6 +78,13 @@ export function ActivityView({ info }: { info: AppInfo }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Today and Yesterday first (10 to 30 rows), then older on request.
+  const days = groupByDay(ops ?? [], (op) => op.createdAt);
+  const first = activityFirstPage(days);
+  const [shownRaw, showOlder] = useShown(first, PAGE.activity * 2, ops === null ? "loading" : "loaded");
+  const shown = Math.max(shownRaw, first);
+  const visibleDays = takeRows(days, shown);
+
   const undo = async (op: OpRow) => {
     try {
       await ipc.undo(op.id);
@@ -124,11 +113,12 @@ export function ActivityView({ info }: { info: AppInfo }) {
           When a download is filed or you move a file, it shows up here.
         </div>
       ) : (
-        groupByDay(ops).map((group) => (
+        <>
+        {visibleDays.map((group) => (
           <section key={group.title} className="activity-group" aria-label={group.title}>
             <h2 className="activity-group-title">{group.title}</h2>
             <div className="rows">
-              {group.ops.map((op) => {
+              {group.items.map((op) => {
                 const { title, detail } = describeOp(op, info.roots);
                 return (
                   <div key={op.id} className={`activity-row${op.status === "failed" ? " is-failed" : ""}${op.status === "undone" ? " is-undone" : ""}`} data-testid="activity-row">
@@ -167,7 +157,9 @@ export function ActivityView({ info }: { info: AppInfo }) {
               })}
             </div>
           </section>
-        ))
+        ))}
+        <ShowMore shown={Math.min(shown, ops.length)} total={ops.length} step={PAGE.activity * 2} onMore={showOlder} testId="activity-more" />
+        </>
       )}
     </div>
   );

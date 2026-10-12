@@ -12,6 +12,7 @@ mod error;
 mod extract;
 mod index;
 mod ops;
+mod organize;
 mod origin;
 mod paths;
 mod sorter;
@@ -185,6 +186,10 @@ pub fn run() {
             commands::remove_folder,
             commands::restart_app,
             commands::browser_check,
+            commands::organize_plan,
+            commands::organize_run,
+            commands::undo_batch,
+            commands::default_subject_rules,
             commands::index_status,
         ]);
 

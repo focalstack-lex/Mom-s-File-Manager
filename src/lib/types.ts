@@ -52,6 +52,47 @@ export interface Settings {
   quarters: DateRange[];
   extraFolders: string[];
   excludedFolders: string[];
+  /** Empty means the standard DepEd list. */
+  subjectRules: SubjectRule[];
+}
+
+export interface SubjectRule {
+  folder: string;
+  words: string[];
+}
+
+export interface PlannedMove {
+  path: string;
+  name: string;
+  ext: string;
+  kind: Kind;
+  modified: number;
+  destDir: string;
+  reason: string;
+}
+
+export interface FolderCount {
+  dir: string;
+  count: number;
+  exists: boolean;
+}
+
+export interface OrganizePlan {
+  moves: PlannedMove[];
+  folders: FolderCount[];
+  skipped: number;
+}
+
+export interface OrganizeResult {
+  batch: string;
+  moved: number;
+  folders: number;
+  failed: string[];
+}
+
+export interface BatchUndo {
+  undone: number;
+  failed: string[];
 }
 
 export interface AppInfo {
@@ -99,6 +140,8 @@ export interface OpRow {
   message: string | null;
   automatic: boolean;
   createdAt: number;
+  /** Set when the change was part of an Organize run. */
+  batch: string | null;
 }
 
 export interface Suggestion {

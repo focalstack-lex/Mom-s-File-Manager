@@ -41,6 +41,8 @@ pub struct Settings {
     pub extra_folders: Vec<String>,
     /// Default folders she switched off (Desktop or OneDrive).
     pub excluded_folders: Vec<String>,
+    /// Her subject words for Organize; empty means the standard DepEd list.
+    pub subject_rules: Vec<crate::organize::SubjectRule>,
 }
 
 impl Default for Settings {
@@ -53,8 +55,15 @@ impl Default for Settings {
             quarters: Vec::new(),
             extra_folders: Vec::new(),
             excluded_folders: Vec::new(),
+            subject_rules: Vec::new(),
         }
     }
+}
+
+/// The subject rules in effect. Takes its own short lock (via settings_of),
+/// so call it before taking `core.db()`.
+fn rules_of(core: &Core) -> Vec<crate::organize::SubjectRule> {
+    crate::organize::effective_rules(&settings_of(core).subject_rules)
 }
 
 pub fn settings_from(conn: &rusqlite::Connection) -> Settings {
@@ -433,8 +442,9 @@ pub async fn undo(state: State<'_, AppState>, id: i64) -> Result<()> {
 pub async fn cleanup_report(state: State<'_, AppState>) -> Result<CleanupReport> {
     let core = core_of(&state);
     blocking("cleanup_report", move || {
+        let rules = rules_of(&core);
         let conn = core.db()?;
-        cleanup::report(&conn, &core.roots)
+        cleanup::report(&conn, &core.roots, &rules)
     })
     .await
 }
@@ -581,6 +591,45 @@ pub async fn browser_check() -> Result<Vec<crate::browsers::BrowserStatus>> {
         Ok(crate::browsers::check(&downloads, dirs::desktop_dir().as_deref()))
     })
     .await
+}
+
+/// What Organize would do right now, for her to check first (spec 5.11).
+#[tauri::command]
+pub async fn organize_plan(state: State<'_, AppState>) -> Result<crate::organize::Plan> {
+    let core = core_of(&state);
+    blocking("organize_plan", move || {
+        let rules = rules_of(&core);
+        crate::organize::plan(&core.roots, &rules)
+    })
+    .await
+}
+
+/// Moves the files she confirmed. Destinations are recomputed here.
+#[tauri::command]
+pub async fn organize_run(state: State<'_, AppState>, paths: Vec<String>) -> Result<crate::organize::RunResult> {
+    let core = core_of(&state);
+    blocking("organize_run", move || {
+        let rules = rules_of(&core);
+        crate::organize::run(&core, &rules, &paths)
+    })
+    .await
+}
+
+/// One Undo for a whole Organize run.
+#[tauri::command]
+pub async fn undo_batch(state: State<'_, AppState>, batch: String) -> Result<ops::BatchUndo> {
+    let core = core_of(&state);
+    blocking("undo_batch", move || {
+        let conn = core.db()?;
+        ops::undo_batch(&conn, &core.roots, &batch)
+    })
+    .await
+}
+
+/// The standard subject list, for "Use the standard list" in Settings.
+#[tauri::command]
+pub fn default_subject_rules() -> Vec<crate::organize::SubjectRule> {
+    crate::organize::default_rules()
 }
 
 #[tauri::command]

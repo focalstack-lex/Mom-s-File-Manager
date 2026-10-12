@@ -52,6 +52,10 @@ function seedLab() {
   writeFileSync(join(LAB, "Desktop", "Lesson Plan.docx"), "x");
   writeFileSync(join(LAB, "Desktop", "Lesson Plan (2).docx"), "xy");
   writeFileSync(join(LAB, "Desktop", "notes.txt"), "Santos Reyes attendance Grade 7");
+  // For Organize: names that carry a grade and a subject, and a shortcut that must stay.
+  writeFileSync(join(LAB, "Desktop", "Grade 7 Science Quiz.docx"), "quiz");
+  writeFileSync(join(LAB, "Desktop", "AP 8 Reviewer.docx"), "reviewer");
+  writeFileSync(join(LAB, "Desktop", "Zoom.lnk"), "shortcut");
   writeFileSync(join(LAB, "Documents", "Forms", "SF9 Template.docx"), "master");
   // A code project in Documents: its build output must stay out of the index.
   mkdirSync(join(LAB, "Documents", "app", "target", "release"), { recursive: true });
@@ -217,6 +221,28 @@ async function main() {
     const old = await page.locator('[data-testid="old-downloads-list"] .suggestion').count();
     await capture("05-cleanup");
     record("Clean up lists the duplicate lesson plans and the 90-day-old download", dupes >= 1 && old === 1, JSON.stringify({ dupes, old }));
+
+    // 8b. Organize now on real files: grade and subject folders are made, the shortcut stays, Undo all reverses it.
+    const school = join(LAB, "Documents", "School Files");
+    await page.locator('[data-testid="organize-open"]').click();
+    await page.waitForSelector('[data-testid="organize-dialog"]', { timeout: STEP_TIMEOUT_MS });
+    const planTitle = await page.locator('[data-testid="organize-dialog"] #dialog-title').textContent();
+    await page.locator('[data-testid="organize-confirm"]').click();
+    const quizHome = join(school, "Grade 7", "Science", "Grade 7 Science Quiz.docx");
+    const apHome = join(school, "Grade 8", "Araling Panlipunan", "AP 8 Reviewer.docx");
+    const organized = await until(() => existsSync(quizHome) && existsSync(apHome), 15_000);
+    const shortcutStayed = existsSync(join(LAB, "Desktop", "Zoom.lnk"));
+    const desktopLeft = readdirSync(join(LAB, "Desktop")).filter((n) => !["Zoom.lnk", "Saved Here"].includes(n));
+    await capture("05b-organized");
+    await page.locator('[data-testid="nav-activity"]').click();
+    await page.waitForSelector('[data-testid="activity-batch"]', { timeout: STEP_TIMEOUT_MS });
+    await page.locator('[data-testid="undo-batch"]').first().click();
+    const restored = await until(() => existsSync(join(LAB, "Desktop", "Grade 7 Science Quiz.docx")) && existsSync(join(LAB, "Desktop", "AP 8 Reviewer.docx")), 15_000);
+    const emptyRemoved = await until(() => !existsSync(join(school, "Grade 7")) && !existsSync(join(school, "Grade 8")), 5_000);
+    await capture("05c-organize-undone");
+    record("Organize files real grade and subject names into new folders, leaves the shortcut, and Undo all puts every file back and removes the empty folders",
+      organized && shortcutStayed && desktopLeft.length === 0 && restored && emptyRemoved,
+      JSON.stringify({ planTitle, organized, shortcutStayed, desktopLeft, restored, emptyRemoved }));
 
     // 9. Settings persist to the real database: notifications off survives a reload of app info.
     await page.locator('[data-testid="nav-settings"]').click();

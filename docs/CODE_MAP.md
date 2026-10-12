@@ -19,6 +19,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | `index.rs` | `walk`, `upsert`, `relocate`, `remove`, `search`, `recent_downloads`, pins, `group`. |
 | `ops.rs` | Logged operations: move, rename, new folder, recycle, undo, `transfer`. |
 | `cleanup.rs` | The three Clean up lists. |
+| `organize.rs` | Organize now: grade and subject rules, `destination_for`, `plan` (read from disk), `run` (one batch, lock per file). |
 | `browsers.rs` | Reads Chrome, Edge, Brave and Firefox download settings (read only) and says which need a change. |
 | `templates.rs` | Shelf storage and dated copies. |
 | `clipboard.rs` | Files on the clipboard (CF_HDROP). |
@@ -40,6 +41,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | `lib/dates.ts` | Date chips and spans, quarter and school year. |
 | `lib/errors.ts` | Error code to plain sentence. |
 | `lib/browsers.ts` | Browser check labels and the Find notice text. |
+| `lib/organize.ts` | Folder labels, plan summary, word lists, folding a run into one Activity entry. |
 | `lib/paging.ts` | Page sizes, day grouping, `takeRows`, `useShown` (grow on request, reset on a new search). |
 | `lib/focus.ts` | Tab trapping for the dialog and walkthrough; arrow-key movement between file rows. |
 | `store/app.ts` | View, app info, settings save, toasts. |
@@ -49,6 +51,8 @@ Where things live. Read this before changing anything; update it in the same cha
 | `components/Chips.tsx` | Date chips and More filters. |
 | `components/ActionBar.tsx` | Bottom bar for selected files. |
 | `components/FolderPicker.tsx` | Move to dialog with New folder. |
+| `components/OrganizeDialog.tsx` | The Organize plan: folders with counts, every file and why, one button. |
+| `components/SubjectRules.tsx` | Settings editor for the subject folders and their words. |
 | `components/PreviewPanel.tsx` | Quick preview. |
 | `components/Tour.tsx` | Walkthrough overlay with mask, ring and arrow. |
 | `components/Dialog.tsx`, `Toasts.tsx`, `icons.tsx`, `Skeleton.tsx`, `ShowMore.tsx` | Shared pieces: modal with focus trap, toasts with Undo, kind tiles and the Desk mark, loading rows, the "Showing 10 of 84" foot with Show more. |

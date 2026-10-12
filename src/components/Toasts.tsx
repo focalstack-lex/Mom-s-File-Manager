@@ -17,6 +17,7 @@ export function Toasts() {
     dismiss(item.id);
     try {
       // Newest first, so a chain of moves unwinds in the right order.
+      if (item.undoBatch) await ipc.undoBatch(item.undoBatch);
       for (const id of [...(item.undoIds ?? [])].reverse()) await ipc.undo(id);
       await refreshFind();
       toast("Put back where it was.");
@@ -32,7 +33,7 @@ export function Toasts() {
         <div key={item.id} className={`toast${item.kind === "error" ? " toast-error" : ""}`} role={item.kind === "error" ? "alert" : "status"}>
           {item.kind === "error" ? <CircleAlert size={22} aria-hidden /> : <CircleCheck size={22} aria-hidden />}
           <span className="toast-text">{item.text}</span>
-          {item.undoIds && item.undoIds.length > 0 && (
+          {((item.undoIds && item.undoIds.length > 0) || item.undoBatch) && (
             <button type="button" className="button button-quiet" onClick={() => void undo(item)} data-testid="toast-undo">
               <Undo2 size={18} aria-hidden />
               Undo

@@ -119,7 +119,7 @@ export default function App() {
         ) : view === "activity" ? (
           <ActivityView info={info} />
         ) : (
-          <SettingsView key={JSON.stringify(info.settings)} info={info} />
+          <SettingsView info={info} />
         )}
       </main>
       <Toasts />

@@ -13,6 +13,8 @@ export interface Toast {
   kind: "info" | "error";
   /** Activity entries the toast's Undo button reverses. */
   undoIds?: number[];
+  /** An Organize run the toast's Undo reverses as a whole. */
+  undoBatch?: string;
 }
 
 interface AppStore {
@@ -28,7 +30,7 @@ interface AppStore {
   checkBrowsers(): Promise<void>;
   loadInfo(): Promise<void>;
   saveSettings(settings: Settings): Promise<void>;
-  toast(text: string, kind?: Toast["kind"], undoIds?: number[]): void;
+  toast(text: string, kind?: Toast["kind"], undoIds?: number[], undoBatch?: string): void;
   fail(error: unknown): void;
   dismissToast(id: number): void;
 }
@@ -69,11 +71,11 @@ export const useApp = create<AppStore>((set, get) => ({
       get().fail(error);
     }
   },
-  toast: (text, kind = "info", undoIds) => {
+  toast: (text, kind = "info", undoIds, undoBatch) => {
     const id = nextToast++;
-    set((state) => ({ toasts: [...state.toasts.slice(-2), { id, text, kind, undoIds }] }));
+    set((state) => ({ toasts: [...state.toasts.slice(-2), { id, text, kind, undoIds, undoBatch }] }));
     // A toast that can be undone stays long enough to reach the button.
-    window.setTimeout(() => get().dismissToast(id), kind === "error" ? 9000 : undoIds?.length ? 10000 : 6000);
+    window.setTimeout(() => get().dismissToast(id), kind === "error" ? 9000 : undoIds?.length || undoBatch ? 10000 : 6000);
   },
   fail: (error) => {
     console.warn("Desk:", error);

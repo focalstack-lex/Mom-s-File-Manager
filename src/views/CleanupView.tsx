@@ -3,17 +3,19 @@
 // that is an extra copy is only offered for the Recycle Bin, never also for a
 // move, so she is never asked two opposite things about the same file.
 
-import { CheckCheck, ChevronDown, ChevronRight, CircleCheck, Trash } from "lucide-react";
+import { CheckCheck, ChevronDown, ChevronRight, CircleCheck, FolderTree, Trash } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Dialog } from "../components/Dialog";
 import { FolderPicker } from "../components/FolderPicker";
+import { OrganizeDialog } from "../components/OrganizeDialog";
+import { planSummary } from "../lib/organize";
 import { KindTile } from "../components/icons";
 import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
 import { OPEN_CARD_MAX, PAGE, useShown } from "../lib/paging";
 import { locationLine, monthName, relativeTime } from "../lib/format";
 import { ipc } from "../lib/ipc";
-import type { AppInfo, CleanupReport, Suggestion } from "../lib/types";
+import type { AppInfo, CleanupReport, OrganizePlan, Suggestion } from "../lib/types";
 import { moveOpIds, useApp } from "../store/app";
 
 function dirLabel(dir: string, roots: string[]): string {
@@ -59,16 +61,40 @@ export function CleanupView({ info }: { info: AppInfo }) {
   const [skipped, setSkipped] = useState<string[]>([]);
   const [picking, setPicking] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
+  const [plan, setPlan] = useState<OrganizePlan | null>(null);
+  const [organizing, setOrganizing] = useState<"closed" | "open" | "busy">("closed");
   const toast = useApp((s) => s.toast);
   const fail = useApp((s) => s.fail);
 
   const load = useCallback(async () => {
     try {
-      setReport(await ipc.cleanup());
+      const [nextReport, nextPlan] = await Promise.all([ipc.cleanup(), ipc.organizePlan()]);
+      setReport(nextReport);
+      setPlan(nextPlan);
     } catch (error) {
       fail(error);
     }
   }, [fail]);
+
+  // Organize now (spec 5.11): the plan is worked out again on the native side
+  // when it runs; only the confirmed file list travels.
+  const organize = async () => {
+    if (!plan) return;
+    setOrganizing("busy");
+    try {
+      const result = await ipc.organizeRun(plan.moves.map((m) => m.path));
+      setOrganizing("closed");
+      if (result.moved > 0) toast(`Organized ${planSummary(result.moved, result.folders)}.`, "info", undefined, result.batch);
+      if (result.failed.length > 0) {
+        const names = result.failed.slice(0, 3).join(", ");
+        toast(`${result.failed.length === 1 ? "1 file was" : `${result.failed.length} files were`} left where ${result.failed.length === 1 ? "it was" : "they were"}: ${names}${result.failed.length > 3 ? " and more" : ""}. It may be open in another program.`, "error");
+      }
+    } catch (error) {
+      setOrganizing("closed");
+      fail(error);
+    }
+    await load();
+  };
 
   useEffect(() => {
     void load();
@@ -142,7 +168,8 @@ export function CleanupView({ info }: { info: AppInfo }) {
   const desktop = notSkipped(notCopies(report?.desktop ?? []));
   const oldDownloads = notSkipped(notCopies(report?.oldDownloads ?? []));
   const moveAllLabel = (n: number) => (n === 1 ? "Move it as suggested" : `Move all ${n.toLocaleString()} as suggested`);
-  const tidy = (report?.duplicates.length ?? 0) === 0 && desktop.length === 0 && oldDownloads.length === 0;
+  const loose = plan?.moves.length ?? 0;
+  const tidy = (report?.duplicates.length ?? 0) === 0 && desktop.length === 0 && oldDownloads.length === 0 && loose === 0;
 
   return (
     <div className="main-inner" data-testid="cleanup-view">
@@ -162,6 +189,22 @@ export function CleanupView({ info }: { info: AppInfo }) {
         </div>
       ) : (
         <div className="cleanup-cards">
+          {plan && loose > 0 && (
+            <section className="card organize-card" aria-labelledby="organize-title" data-testid="organize-card">
+              <div>
+                <h2 className="card-title" id="organize-title">
+                  Organize the Desktop and Downloads
+                </h2>
+                <p>
+                  Sorts {loose === 1 ? "1 loose file" : `${loose.toLocaleString()} loose files`} into folders by grade and subject, guessed from each name. You see the plan first, and one Undo puts everything back.
+                </p>
+              </div>
+              <button type="button" className="button button-primary" onClick={() => setOrganizing("open")} data-testid="organize-open">
+                <FolderTree size={18} aria-hidden />
+                {loose === 1 ? "Organize 1 file..." : `Organize ${loose.toLocaleString()} files...`}
+              </button>
+            </section>
+          )}
           {report.duplicates.length > 0 && (
             <FoldCard
               id="dupes"
@@ -237,6 +280,9 @@ export function CleanupView({ info }: { info: AppInfo }) {
             </FoldCard>
           )}
         </div>
+      )}
+      {plan && organizing !== "closed" && (
+        <OrganizeDialog plan={plan} schoolFiles={info.schoolFiles} busy={organizing === "busy"} onConfirm={() => void organize()} onClose={() => setOrganizing("closed")} />
       )}
       {picking && <FolderPicker count={1} warnOld onPick={(dir) => void moveTo(picking, dir)} onClose={() => setPicking(null)} />}
       {confirm && (

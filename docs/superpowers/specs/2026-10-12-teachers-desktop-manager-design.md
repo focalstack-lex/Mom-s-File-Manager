@@ -40,6 +40,7 @@ Hard constraints:
 | Dry runs | `DESK_ROOTS` and `DESK_DATA_DIR` environment overrides, no autostart in that mode | Lets the real app be exercised on copied folders without touching anything real (section 8). |
 | Downloads saved outside Downloads | Noticed by the browser's web stamp, listed in Recent downloads, never moved; plus a browser settings check | Found on 2026-10-12 when Lex's own test download went to a Videos subfolder and Desk never saw it. Moving a file she saved on purpose would override her choice. |
 | Pictures, Videos, Music | Indexed and watched, never sorted | Downloads often land there through Save As; old photos and videos must not move. |
+| Organize now | On request, Desktop and Downloads loose files, grade and subject from the name else type and month, plan first, one Undo | Lex's choice on 2026-10-12 between on request, a picked folder or always-on, and between subject, type or school-year folders. |
 | Build folders | Skipped only beside a project file | Lex's Documents held 32,208 indexed files, mostly Rust build output; a teacher's own folder named "build" must still be found. |
 | Retry schedule | 5 s, 5 s, 10 s, 20 s, 60 s, 2 min, then 15 min | Fresh downloads are held briefly by the antivirus; the first retries are quick. Changed from 5 s, 30 s, 2 min on 2026-10-12. |
 
@@ -201,6 +202,20 @@ Minimal: start at login (on by default), notifications (on by default), indexed 
   - Clean up: a card with more than 5 entries starts folded, its heading showing the count; opened, it shows 10 at a time. "Move all N as suggested" names how many files it acts on, including those not yet shown.
   - Activity: Today and Yesterday first (between 10 and 30 rows), then 20 older at a time.
   - Background refreshes keep what she has opened; nothing collapses while the scan runs.
+
+### 5.11 Organize now
+
+Asked for by Lex on 2026-10-12: a way to sort the files that were already messy before Desk, into folders Desk creates. Chosen options: on request only (not automatic), for the loose files directly on the Desktop and in Downloads, by grade and subject guessed from the name.
+
+- Where: the first card in Clean up, "Organize the Desktop and Downloads", with the number of loose files and one button.
+- Plan first: a dialog titled "Organize 84 files into 9 folders?" lists the folders (with file counts and a "new" mark for folders that do not exist yet), can show every file with where it goes and why, and says how many shortcuts, installers and zip files stay. Nothing moves until she clicks "Organize 84 files".
+- Rules, from the file name only:
+  - Grade: "Grade 7", "Grade7", "G7", "Gr 7", "Baitang 7", "Kinder" or "Kindergarten"; also a number 1 to 12 right after a subject word ("AP 8", "Math 7"). A form number after "SF" is not a grade.
+  - Subject: the first rule in the list whose word appears as a whole word. The standard list is DepEd Forms (SF1 to SF10, School Form, Form 137, Form 138), Math, Science, English, Filipino, Araling Panlipunan, MAPEH, ESP and TLE, each with common words and short forms. Settings > Organize: subject folders lets her edit the folders and words, add subjects and return to the standard list (stored as an empty list, so later improvements to the standard list reach her).
+  - Folder: `School Files\Grade 7\Science`, or only the grade, or only the subject. A name with no clue goes to `School Files\<Type>\<YYYY-MM>` by the file's edit month.
+- Never moved: shortcuts (.lnk, .url, .pif), desktop.ini, installers and archives (the 5.1 list). The same rule now also keeps shortcuts out of Clean up's Desktop card, and Clean up's suggested homes use these rules, so the two never disagree.
+- Running: destinations are worked out again on the native side from the rules; only the confirmed file paths come from the screen. Each move is a normal logged move tagged with one batch id, with the database lock taken per file so searches keep answering. Files that cannot be moved (open in another program) stay and are named in one error toast.
+- Undo: the toast after a run has Undo for the whole run; Activity shows the run as one line, "Organized 84 files into 9 folders", with Undo all. Undoing reverses every move newest first, then removes the folders the run created that are now empty, never School Files itself and never a folder that still holds anything.
 
 ## 6. Architecture
 

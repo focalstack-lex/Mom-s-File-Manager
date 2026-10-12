@@ -83,13 +83,13 @@ for (const [name, origin, days] of MORE_RECENT) {
 for (let i = 1; i <= 13; i += 1) files.push(file(DOWNLOADS, `old handout ${i}.pdf`, { modified: NOW - (70 + i) * DAY }));
 
 const ops: OpRow[] = [
-  { id: 1, kind: "autoSort", src: `${DOWNLOADS}\\Grade 7 Quiz 2.docx`, dst: `${SCHOOL}\\Word\\2026-10\\Grade 7 Quiz 2.docx`, status: "done", message: null, automatic: true, createdAt: NOW - 2 * 3600 },
-  { id: 2, kind: "autoSort", src: `${DOWNLOADS}\\DepEd Order 2026-014.pdf`, dst: `${SCHOOL}\\PDF\\2026-10\\DepEd Order 2026-014.pdf`, status: "done", message: null, automatic: true, createdAt: NOW - DAY },
-  { id: 3, kind: "autoSort", src: `${DOWNLOADS}\\budget.xlsx`, dst: null, status: "failed", message: "The file stayed open in another program for a day, so it was left in Downloads.", automatic: true, createdAt: NOW - 2 * DAY },
+  { id: 1, kind: "autoSort", src: `${DOWNLOADS}\\Grade 7 Quiz 2.docx`, dst: `${SCHOOL}\\Word\\2026-10\\Grade 7 Quiz 2.docx`, status: "done", message: null, automatic: true, createdAt: NOW - 2 * 3600, batch: null },
+  { id: 2, kind: "autoSort", src: `${DOWNLOADS}\\DepEd Order 2026-014.pdf`, dst: `${SCHOOL}\\PDF\\2026-10\\DepEd Order 2026-014.pdf`, status: "done", message: null, automatic: true, createdAt: NOW - DAY, batch: null },
+  { id: 3, kind: "autoSort", src: `${DOWNLOADS}\\budget.xlsx`, dst: null, status: "failed", message: "The file stayed open in another program for a day, so it was left in Downloads.", automatic: true, createdAt: NOW - 2 * DAY, batch: null },
 ];
 let nextOp = 4;
 let templates: Template[] = [{ id: 1, path: `${DOCS}\\Forms\\SF9 Template.docx`, name: "SF9 Template", missing: false }];
-let settings: Settings = { startAtLogin: true, notifications: true, tourDone: false, schoolYear: null, quarters: [], extraFolders: [], excludedFolders: [] };
+let settings: Settings = { startAtLogin: true, notifications: true, tourDone: false, schoolYear: null, quarters: [], extraFolders: [], excludedFolders: [], subjectRules: [] };
 const listeners = new Map<string, Set<(payload: unknown) => void>>();
 const calls: { command: string; args: Record<string, unknown> }[] = [];
 
@@ -158,11 +158,39 @@ function moveTo(path: string, destination: string, kind: OpRow["kind"]): string 
     n += 1;
   }
   const dst = `${destination}\\${name}`;
-  ops.unshift({ id: nextOp++, kind, src: row.path, dst, status: "done", message: null, automatic: false, createdAt: NOW });
+  ops.unshift({ id: nextOp++, kind, src: row.path, dst, status: "done", message: null, automatic: false, createdAt: NOW, batch: null });
   row.path = dst;
   row.parent = destination;
   row.name = name;
   return dst;
+}
+
+
+// Organize now in the harness: a small version of src-tauri/src/organize.rs.
+const MOCK_RULES = [
+  { folder: "DepEd Forms", words: ["sf9", "sf 9", "form 137"] },
+  { folder: "Math", words: ["math", "mathematics"] },
+  { folder: "Science", words: ["science"] },
+  { folder: "English", words: ["english", "reading"] },
+];
+const KIND_FOLDER: Record<string, string> = { word: "Word", pdf: "PDF", excel: "Excel", powerpoint: "PowerPoint", images: "Images", videos: "Videos", other: "Other" };
+function organizePlan() {
+  const words = (name: string) => ` ${name.toLowerCase().replace(/\.[^.]+$/, "").replace(/[^a-z0-9]+/g, " ").trim()} `;
+  const loose = files.filter((f) => (f.parent === DESKTOP || f.parent === DOWNLOADS) && !["exe", "lnk", "url", "zip"].includes(f.ext));
+  const skipped = files.filter((f) => (f.parent === DESKTOP || f.parent === DOWNLOADS) && ["exe", "lnk", "url", "zip"].includes(f.ext)).length;
+  const moves = loose.map((f) => {
+    const w = words(f.name);
+    const grade = /\sgrade (\d{1,2})\s/.exec(w)?.[1];
+    const subject = MOCK_RULES.find((r) => r.words.some((x) => w.includes(` ${x} `)))?.folder;
+    const parts = [grade ? `Grade ${grade}` : null, subject ?? null].filter(Boolean) as string[];
+    const destDir = parts.length ? `${SCHOOL}\\${parts.join("\\")}` : `${SCHOOL}\\${KIND_FOLDER[f.kind]}\\2026-10`;
+    const reason = parts.length ? `${parts.join(", ")}, from the name` : "no grade or subject in the name, so by type and month";
+    return { path: f.path, name: f.name, ext: f.ext, kind: f.kind, modified: f.modified, destDir, reason };
+  });
+  const counts = new Map<string, number>();
+  for (const m of moves) counts.set(m.destDir, (counts.get(m.destDir) ?? 0) + 1);
+  const folders = [...counts.entries()].map(([dir, count]) => ({ dir, count, exists: files.some((f) => f.parent === dir) })).sort((a, b) => b.count - a.count);
+  return { moves, folders, skipped };
 }
 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
@@ -202,7 +230,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     if (/[\\/:*?"<>|]/.test(stem)) throw { code: "invalidName", message: "Names cannot contain : or similar characters." };
     const name = `${stem}.${row.ext}`;
     if (files.some((f) => f.parent === row.parent && f.name === name && f !== row)) throw { code: "alreadyExists", message: "A file with that name already exists in this folder." };
-    ops.unshift({ id: nextOp++, kind: "rename", src: row.path, dst: `${row.parent}\\${name}`, status: "done", message: null, automatic: false, createdAt: NOW });
+    ops.unshift({ id: nextOp++, kind: "rename", src: row.path, dst: `${row.parent}\\${name}`, status: "done", message: null, automatic: false, createdAt: NOW, batch: null });
     row.name = name;
     row.path = `${row.parent}\\${name}`;
     return row.path;
@@ -212,7 +240,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     const out: OpRow[] = [];
     for (const path of a.paths as string[]) {
       files = files.filter((f) => f.path !== path);
-      const op: OpRow = { id: nextOp++, kind: "recycle", src: path, dst: null, status: "done", message: null, automatic: false, createdAt: NOW };
+      const op: OpRow = { id: nextOp++, kind: "recycle", src: path, dst: null, status: "done", message: null, automatic: false, createdAt: NOW, batch: null };
       ops.unshift(op);
       out.push(op);
     }
@@ -266,7 +294,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     if (!t) throw { code: "notFound", message: "That template is no longer on the shelf." };
     const copy = file(`${SCHOOL}\\Word\\2026-10`, `${t.name} 2026-10-12.docx`, { modified: NOW });
     files.unshift(copy);
-    ops.unshift({ id: nextOp++, kind: "copy", src: t.path, dst: copy.path, status: "done", message: null, automatic: false, createdAt: NOW });
+    ops.unshift({ id: nextOp++, kind: "copy", src: t.path, dst: copy.path, status: "done", message: null, automatic: false, createdAt: NOW, batch: null });
     return copy.path;
   },
   get_settings: () => settings,
@@ -288,6 +316,38 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     return settings;
   },
   restart_app: () => undefined,
+  default_subject_rules: () => MOCK_RULES,
+  organize_plan: () => organizePlan(),
+  organize_run: (a) => {
+    const wanted = new Set(a.paths as string[]);
+    const batch = `organize-${nextOp}`;
+    const folders = new Set<string>();
+    let moved = 0;
+    for (const m of organizePlan().moves.filter((m) => wanted.has(m.path))) {
+      const row = files.find((f) => f.path === m.path);
+      if (!row) continue;
+      const dst = `${m.destDir}\\${row.name}`;
+      ops.unshift({ id: nextOp++, kind: "move", src: row.path, dst, status: "done", message: null, automatic: false, createdAt: NOW, batch });
+      row.path = dst;
+      row.parent = m.destDir;
+      folders.add(m.destDir);
+      moved += 1;
+    }
+    return { batch, moved, folders: folders.size, failed: [] };
+  },
+  undo_batch: (a) => {
+    let undone = 0;
+    for (const op of ops.filter((o) => o.batch === a.batch && o.status === "done")) {
+      const row = files.find((f) => f.path === op.dst);
+      if (row) {
+        row.path = op.src;
+        row.parent = op.src.slice(0, op.src.lastIndexOf("\\"));
+      }
+      op.status = "undone";
+      undone += 1;
+    }
+    return { undone, failed: [] };
+  },
   browser_check: () => [
     { browser: "Chrome", profile: "Teacher", ok: true, asks: false, folder: null, advice: "Saves to Downloads. Nothing to change." },
     {
@@ -322,7 +382,7 @@ export function installMockBackend(): void {
     simulateDownload() {
       const row = file(`${SCHOOL}\\PDF\\2026-10`, "Reading Assessment Q2.pdf", { originLabel: "Messenger", downloadedAt: NOW, modified: NOW });
       files.unshift(row);
-      ops.unshift({ id: nextOp++, kind: "autoSort", src: `${DOWNLOADS}\\${row.name}`, dst: row.path, status: "done", message: null, automatic: true, createdAt: NOW });
+      ops.unshift({ id: nextOp++, kind: "autoSort", src: `${DOWNLOADS}\\${row.name}`, dst: row.path, status: "done", message: null, automatic: true, createdAt: NOW, batch: null });
       emit("desk://sorted", { name: row.name, folder: "School Files > PDF", path: row.path });
       emit("desk://changed");
     },

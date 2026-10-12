@@ -4,8 +4,6 @@
 use crate::error::Result;
 use crate::index::{self, FileRow, Group};
 use crate::paths::Roots;
-use crate::sorter;
-use chrono::{Local, TimeZone};
 use rusqlite::Connection;
 use serde::Serialize;
 
@@ -27,11 +25,11 @@ pub struct CleanupReport {
 
 pub const OLD_DOWNLOAD_DAYS: i64 = 60;
 
-pub fn report(conn: &Connection, roots: &Roots) -> Result<CleanupReport> {
+pub fn report(conn: &Connection, roots: &Roots, rules: &[crate::organize::SubjectRule]) -> Result<CleanupReport> {
     Ok(CleanupReport {
         duplicates: duplicates(conn)?,
-        desktop: loose_files(conn, roots, roots.desktop.as_deref(), None)?,
-        old_downloads: loose_files(conn, roots, roots.downloads.as_deref(), Some(crate::db::now() - OLD_DOWNLOAD_DAYS * 86_400))?,
+        desktop: loose_files(conn, roots, roots.desktop.as_deref(), None, rules)?,
+        old_downloads: loose_files(conn, roots, roots.downloads.as_deref(), Some(crate::db::now() - OLD_DOWNLOAD_DAYS * 86_400), rules)?,
     })
 }
 
@@ -50,7 +48,7 @@ fn duplicates(conn: &Connection) -> Result<Vec<Group>> {
     Ok(groups)
 }
 
-fn loose_files(conn: &Connection, roots: &Roots, folder: Option<&std::path::Path>, older_than: Option<i64>) -> Result<Vec<Suggestion>> {
+fn loose_files(conn: &Connection, roots: &Roots, folder: Option<&std::path::Path>, older_than: Option<i64>, rules: &[crate::organize::SubjectRule]) -> Result<Vec<Suggestion>> {
     let Some(folder) = folder else { return Ok(Vec::new()) };
     let school = roots.school_files()?;
     // Rows store resolved paths (Roots::all), so compare against the resolved folder.
@@ -64,12 +62,12 @@ fn loose_files(conn: &Connection, roots: &Roots, folder: Option<&std::path::Path
     let mut out = Vec::new();
     for path in paths {
         let Some(file) = index::by_path(conn, &path)? else { continue };
-        if sorter::stays_in_downloads(&file.ext) {
+        // Shortcuts never move (a Desktop is mostly shortcuts); the home is the
+        // same one Organize would choose, so the two never disagree.
+        if !crate::organize::is_movable(&file.name, &file.ext) {
             continue;
         }
-        let when = Local.timestamp_opt(file.modified, 0).single().unwrap_or_else(Local::now);
-        let kind = sorter::classify(&file.ext);
-        let suggested_dir = sorter::destination(&school, kind, when).to_string_lossy().into_owned();
+        let suggested_dir = crate::organize::destination_for(&school, &file.name, file.modified, rules).0.to_string_lossy().into_owned();
         out.push(Suggestion { file, suggested_dir });
     }
     Ok(out)
@@ -105,7 +103,7 @@ mod tests {
         }
         // Age the download in the index so it counts as old.
         conn.execute("UPDATE files SET modified = modified - 100 * 86400 WHERE name = 'old.pdf'", []).unwrap();
-        let report = report(&conn, &roots).unwrap();
+        let report = report(&conn, &roots, &crate::organize::default_rules()).unwrap();
         assert_eq!(report.duplicates.len(), 1);
         assert_eq!(report.duplicates[0].others.len(), 1);
         assert_eq!(report.desktop.len(), 2, "installer is skipped");

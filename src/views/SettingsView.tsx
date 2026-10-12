@@ -4,6 +4,7 @@
 
 import { CircleAlert, CircleCheck } from "lucide-react";
 import { useState } from "react";
+import { SubjectRules } from "../components/SubjectRules";
 import { browserLabel } from "../lib/browsers";
 import { ipc } from "../lib/ipc";
 import type { AppInfo, DateRange, Settings } from "../lib/types";
@@ -170,6 +171,16 @@ export function SettingsView({ info }: { info: AppInfo }) {
             <QuarterRow key={name} index={i} range={quarter(i)} min={draft.schoolYear?.start} max={draft.schoolYear?.end} onChange={(patch) => setQuarter(i, patch)} />
           ))}
         </div>
+      </section>
+
+      <section className="card settings-list" aria-labelledby="organize-title">
+        <h2 className="card-title" id="organize-title">
+          Organize: subject folders
+        </h2>
+        <p className="field-note">
+          Clean up &gt; Organize puts a file in a subject folder when one of these words is in its name. The first match wins. Grades are read from the name on their own (Grade 7, G7, Baitang 7, Kinder).
+        </p>
+        <SubjectRules saved={draft.subjectRules ?? []} onSave={(subjectRules) => update({ subjectRules })} onError={fail} />
       </section>
 
       <section className="card settings-list" aria-labelledby="templates-title">

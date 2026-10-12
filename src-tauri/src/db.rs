@@ -86,7 +86,19 @@ fn open_at(file: &Path) -> Result<Connection> {
         return Err(DeskError::db(format!("integrity check: {ok}")));
     }
     connection.execute_batch(SCHEMA)?;
+    migrate(&connection)?;
     Ok(connection)
+}
+
+/// Columns added after the first release. CREATE TABLE IF NOT EXISTS never
+/// changes an existing table, so each addition is checked and applied here.
+fn migrate(conn: &Connection) -> Result<()> {
+    let has_batch = conn.prepare("SELECT 1 FROM pragma_table_info('ops') WHERE name = 'batch'")?.exists([])?;
+    if !has_batch {
+        conn.execute_batch("ALTER TABLE ops ADD COLUMN batch TEXT; CREATE INDEX IF NOT EXISTS ops_batch ON ops(batch);")?;
+        log::info!("database: added ops.batch");
+    }
+    Ok(())
 }
 
 /// An in-memory database for tests.
@@ -94,6 +106,7 @@ fn open_at(file: &Path) -> Result<Connection> {
 pub fn open_memory() -> Result<Connection> {
     let connection = Connection::open_in_memory()?;
     connection.execute_batch(SCHEMA)?;
+    migrate(&connection)?;
     Ok(connection)
 }
 
@@ -130,6 +143,17 @@ mod tests {
         set_setting(&conn, "tour_done", "1").unwrap();
         set_setting(&conn, "tour_done", "2").unwrap();
         assert_eq!(get_setting(&conn, "tour_done").unwrap().as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn an_older_database_gains_the_batch_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE ops (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, src TEXT NOT NULL, dst TEXT, status TEXT NOT NULL, message TEXT, automatic INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL); INSERT INTO ops(kind, src, status, created_at) VALUES('move', 'a', 'done', 1);").unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let batch: Option<String> = conn.query_row("SELECT batch FROM ops", [], |r| r.get(0)).unwrap();
+        assert_eq!(batch, None, "old rows keep working");
     }
 
     #[test]

@@ -47,6 +47,7 @@ function settingsNow(): Settings {
       quarters: [],
       extraFolders: [],
       excludedFolders: [],
+      subjectRules: [],
     }
   );
 }

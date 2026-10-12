@@ -44,17 +44,25 @@ pub struct OpRow {
     pub message: Option<String>,
     pub automatic: bool,
     pub created_at: i64,
+    /// Set when the change was part of an Organize run.
+    pub batch: Option<String>,
 }
 
 fn record(conn: &Connection, kind: OpKind, src: &Path, dst: Option<&Path>, automatic: bool) -> Result<i64> {
+    record_in(conn, kind, src, dst, automatic, None)
+}
+
+/// `batch` ties the moves of one Organize run together so one Undo reverses them all.
+fn record_in(conn: &Connection, kind: OpKind, src: &Path, dst: Option<&Path>, automatic: bool, batch: Option<&str>) -> Result<i64> {
     conn.execute(
-        "INSERT INTO ops(kind, src, dst, status, automatic, created_at) VALUES(?1, ?2, ?3, 'pending', ?4, ?5)",
+        "INSERT INTO ops(kind, src, dst, status, automatic, created_at, batch) VALUES(?1, ?2, ?3, 'pending', ?4, ?5, ?6)",
         params![
             kind.as_str(),
             src.to_string_lossy().into_owned(),
             dst.map(|d| d.to_string_lossy().into_owned()),
             automatic as i64,
-            crate::db::now()
+            crate::db::now(),
+            batch
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -97,6 +105,15 @@ pub fn transfer(src: &Path, dst: &Path) -> Result<()> {
 
 /// Moves one file into `dst_dir`, clash rule applied. Returns the new path.
 pub fn move_file(conn: &Connection, roots: &Roots, src: &Path, dst_dir: &Path, kind: OpKind) -> Result<PathBuf> {
+    move_inner(conn, roots, src, dst_dir, kind, None)
+}
+
+/// A move that belongs to an Organize run (spec 5.11).
+pub fn move_file_in_batch(conn: &Connection, roots: &Roots, src: &Path, dst_dir: &Path, batch: &str) -> Result<PathBuf> {
+    move_inner(conn, roots, src, dst_dir, OpKind::Move, Some(batch))
+}
+
+fn move_inner(conn: &Connection, roots: &Roots, src: &Path, dst_dir: &Path, kind: OpKind, batch: Option<&str>) -> Result<PathBuf> {
     let src = roots.confine(src)?;
     let dst_dir = roots.confine(dst_dir)?;
     if !src.is_file() {
@@ -108,7 +125,7 @@ pub fn move_file(conn: &Connection, roots: &Roots, src: &Path, dst_dir: &Path, k
         return Ok(src);
     }
     let dst = sorter::unique_path(&wanted);
-    let id = record(conn, kind, &src, Some(&dst), kind == OpKind::AutoSort)?;
+    let id = record_in(conn, kind, &src, Some(&dst), kind == OpKind::AutoSort, batch)?;
     let result = transfer(&src, &dst).map(|_| dst.clone());
     finish(conn, id, &result)?;
     let dst = result?;
@@ -259,13 +276,65 @@ fn restore_from_recycle_bin(_original: &Path) -> Result<()> {
     Err(DeskError::new(ErrorCode::Unsupported, "Restoring from the Recycle Bin is not available here."))
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchUndo {
+    pub undone: usize,
+    pub failed: Vec<String>,
+}
+
+/// Reverses every completed move of one Organize run, newest first, then
+/// removes the folders the run created that are now empty (never a folder
+/// that still holds anything, never School Files itself).
+pub fn undo_batch(conn: &Connection, roots: &Roots, batch: &str) -> Result<BatchUndo> {
+    let rows: Vec<OpRow> = {
+        let mut stmt = conn.prepare("SELECT id, kind, src, dst, status, message, automatic, created_at, batch FROM ops WHERE batch = ?1 AND status = 'done' ORDER BY id DESC")?;
+        let mapped = stmt.query_map([batch], map_op)?;
+        mapped.collect::<std::result::Result<Vec<OpRow>, _>>()?
+    };
+    let mut undone = 0;
+    let mut failed = Vec::new();
+    let mut touched: Vec<PathBuf> = Vec::new();
+    for row in rows {
+        match undo(conn, roots, row.id) {
+            Ok(()) => {
+                undone += 1;
+                if let Some(parent) = row.dst.as_deref().and_then(|d| Path::new(d).parent()) {
+                    touched.push(parent.to_path_buf());
+                }
+            }
+            Err(error) => {
+                log::warn!("undo batch {batch}, op {}: {}", row.id, error.message);
+                failed.push(Path::new(&row.src).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            }
+        }
+    }
+    let school = roots.school_files()?;
+    touched.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    touched.dedup();
+    for dir in touched {
+        let mut current = Some(dir.as_path());
+        while let Some(folder) = current {
+            if folder == school || !folder.starts_with(&school) {
+                break;
+            }
+            let empty = std::fs::read_dir(folder).map(|mut d| d.next().is_none()).unwrap_or(false);
+            if !empty || std::fs::remove_dir(folder).is_err() {
+                break;
+            }
+            current = folder.parent();
+        }
+    }
+    Ok(BatchUndo { undone, failed })
+}
+
 pub fn get(conn: &Connection, id: i64) -> Result<Option<OpRow>> {
-    let mut stmt = conn.prepare("SELECT id, kind, src, dst, status, message, automatic, created_at FROM ops WHERE id = ?1")?;
+    let mut stmt = conn.prepare("SELECT id, kind, src, dst, status, message, automatic, created_at, batch FROM ops WHERE id = ?1")?;
     Ok(stmt.query_row([id], map_op).optional()?)
 }
 
 pub fn list(conn: &Connection, limit: usize) -> Result<Vec<OpRow>> {
-    let mut stmt = conn.prepare("SELECT id, kind, src, dst, status, message, automatic, created_at FROM ops WHERE status <> 'pending' ORDER BY id DESC LIMIT ?1")?;
+    let mut stmt = conn.prepare("SELECT id, kind, src, dst, status, message, automatic, created_at, batch FROM ops WHERE status <> 'pending' ORDER BY id DESC LIMIT ?1")?;
     let rows = stmt.query_map([limit as i64], map_op)?;
     Ok(rows.collect::<std::result::Result<Vec<OpRow>, _>>()?)
 }
@@ -287,6 +356,7 @@ fn map_op(row: &rusqlite::Row<'_>) -> rusqlite::Result<OpRow> {
         message: row.get(5)?,
         automatic: row.get::<_, i64>(6)? != 0,
         created_at: row.get(7)?,
+        batch: row.get(8)?,
     })
 }
 

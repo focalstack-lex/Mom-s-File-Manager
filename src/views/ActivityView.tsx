@@ -8,6 +8,7 @@ import { ipc } from "../lib/ipc";
 import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
 import { activityFirstPage, groupByDay, PAGE, takeRows, useShown } from "../lib/paging";
+import { batchTitle, foldBatches, type ActivityEntry } from "../lib/organize";
 import type { AppInfo, OpRow } from "../lib/types";
 import { useApp } from "../store/app";
 import { useFind } from "../store/find";
@@ -79,11 +80,23 @@ export function ActivityView({ info }: { info: AppInfo }) {
   }, []);
 
   // Today and Yesterday first (10 to 30 rows), then older on request.
-  const days = groupByDay(ops ?? [], (op) => op.createdAt);
+  const entries = foldBatches(ops ?? []);
+  const days = groupByDay(entries, (e) => e.createdAt);
   const first = activityFirstPage(days);
   const [shownRaw, showOlder] = useShown(first, PAGE.activity * 2, ops === null ? "loading" : "loaded");
   const shown = Math.max(shownRaw, first);
   const visibleDays = takeRows(days, shown);
+
+  const undoAll = async (batch: string) => {
+    try {
+      const result = await ipc.undoBatch(batch);
+      toast(result.failed.length === 0 ? "Everything is back where it was." : `Put back ${result.undone}; ${result.failed.length} could not be moved back.`, result.failed.length === 0 ? "info" : "error");
+      await load();
+      await refreshFind();
+    } catch (error) {
+      fail(error);
+    }
+  };
 
   const undo = async (op: OpRow) => {
     try {
@@ -118,7 +131,35 @@ export function ActivityView({ info }: { info: AppInfo }) {
           <section key={group.title} className="activity-group" aria-label={group.title}>
             <h2 className="activity-group-title">{group.title}</h2>
             <div className="rows">
-              {group.items.map((op) => {
+              {group.items.map((entry: ActivityEntry) => {
+                if (entry.type === "batch") {
+                  const live = entry.ops.some((o) => o.status === "done");
+                  return (
+                    <div key={entry.batch} className={`activity-row${live ? "" : " is-undone"}`} data-testid="activity-batch">
+                      <span className="op-mark">
+                        <FolderInput size={20} aria-hidden />
+                      </span>
+                      <div className="activity-text">
+                        <strong>{batchTitle(entry.ops)}</strong>
+                        <span>
+                          from the Desktop and Downloads {"\u00b7"} {relativeTime(entry.createdAt)}
+                        </span>
+                      </div>
+                      {live ? (
+                        <button type="button" className="button" onClick={() => void undoAll(entry.batch)} data-testid="undo-batch">
+                          <Undo2 size={18} aria-hidden />
+                          Undo all
+                        </button>
+                      ) : (
+                        <span className="activity-state">
+                          <RotateCcw size={16} aria-hidden />
+                          Undone
+                        </span>
+                      )}
+                    </div>
+                  );
+                }
+                const op = entry.op;
                 const { title, detail } = describeOp(op, info.roots);
                 return (
                   <div key={op.id} className={`activity-row${op.status === "failed" ? " is-failed" : ""}${op.status === "undone" ? " is-undone" : ""}`} data-testid="activity-row">
@@ -158,7 +199,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
             </div>
           </section>
         ))}
-        <ShowMore shown={Math.min(shown, ops.length)} total={ops.length} step={PAGE.activity * 2} onMore={showOlder} testId="activity-more" />
+        <ShowMore shown={Math.min(shown, entries.length)} total={entries.length} step={PAGE.activity * 2} onMore={showOlder} testId="activity-more" />
         </>
       )}
     </div>

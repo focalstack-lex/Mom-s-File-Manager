@@ -281,7 +281,7 @@ async function drive(browser) {
   await page.locator('[data-testid="desktop-list"]').getByRole("button", { name: "Move it there" }).first().click();
   const suggestionMoved = await page.evaluate(() => window.__deskMock.calls.filter((c) => c.command === "move_files").at(-1)?.args.destination);
   await capture(page, "11-cleanup");
-  record("Clean up shows duplicates, Desktop clutter and old downloads with nothing ticked, and a suggestion moves on click", cleanupOk && cards === 3 && tickedByDefault === 0 && recycleDisabled && String(suggestionMoved).includes("School Files"), JSON.stringify({ cards, tickedByDefault, recycleDisabled, suggestionMoved }));
+  record("Clean up shows Organize, duplicates, Desktop clutter and old downloads with nothing ticked, and a suggestion moves on click", cleanupOk && cards === 4 && tickedByDefault === 0 && recycleDisabled && String(suggestionMoved).includes("School Files"), JSON.stringify({ cards, tickedByDefault, recycleDisabled, suggestionMoved }));
 
   // 12b. A long card starts folded with its count; opening it shows 10 rows and Show 4 more.
   const oldToggle = page.locator('[data-testid="old-card-toggle"]');
@@ -294,6 +294,32 @@ async function drive(browser) {
   const oldAll = await page.locator('[data-testid="old-downloads-list"] .suggestion').count();
   const shortOpen = (await page.locator('[data-testid="desktop-card-toggle"]').getAttribute("aria-expanded")) === "true";
   await capture(page, "11b-cleanup-folded");
+  // 12c. Organize now: the plan first, then one run, a toast with Undo, and one Activity row with Undo all.
+  await page.locator('[data-testid="organize-open"]').click();
+  const planOk = await visible(page, '[data-testid="organize-dialog"]');
+  const planTitle = await page.locator('[data-testid="organize-dialog"] #dialog-title').textContent();
+  const folderRows = await page.locator('[data-testid="organize-dialog"] .organize-folder').count();
+  const gradeFolder = await page.locator('[data-testid="organize-dialog"] .organize-folder-name', { hasText: "Grade 7" }).count();
+  await page.locator('[data-testid="organize-every-file"]').click();
+  const everyFile = await page.locator('[data-testid="organize-dialog"] .organize-files li').count();
+  await capture(page, "11c-organize-plan");
+  await page.locator('[data-testid="organize-confirm"]').click();
+  const planClosed = await hidden(page, '[data-testid="organize-dialog"]');
+  const organizedToast = await page.locator(".toast", { hasText: "Organized" }).count();
+  const toastUndo = await page.locator(".toast", { hasText: "Organized" }).locator('[data-testid="toast-undo"]').count();
+  const cardGone = await hidden(page, '[data-testid="organize-card"]');
+  await page.locator('[data-testid="nav-activity"]').click();
+  await page.waitForSelector('[data-testid="activity-batch"]', { timeout: STEP_TIMEOUT_MS });
+  const batchTitle = await page.locator('[data-testid="activity-batch"] strong').first().textContent();
+  await page.locator('[data-testid="undo-batch"]').first().click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="activity-batch"] .activity-state')?.textContent?.includes("Undone"), null, { timeout: STEP_TIMEOUT_MS });
+  await capture(page, "11d-organize-activity");
+  record("Organize shows the plan with a Grade 7 folder and every file, runs once, offers Undo in the toast, and Activity shows one row whose Undo all reverses it",
+    planOk && /^Organize \d+ files into \d+ folders\?$/.test(planTitle ?? "") && folderRows > 0 && gradeFolder === 1 && everyFile > 0 && planClosed && organizedToast === 1 && toastUndo === 1 && cardGone && batchTitle?.startsWith("Organized"),
+    JSON.stringify({ planTitle, folderRows, gradeFolder, everyFile, organizedToast, toastUndo, cardGone, batchTitle }));
+  await page.locator('[data-testid="nav-cleanup"]').click();
+  await visible(page, '[data-testid="cleanup-view"] section.card');
+
   record("A long Clean up card starts folded with its count and opens 10 at a time; short cards start open",
     foldedAtStart && oldCount === "14" && oldRows === 10 && oldMore?.includes("Show 4 more") && oldAll === 14 && shortOpen,
     JSON.stringify({ foldedAtStart, oldCount, oldRows, oldMore, oldAll, shortOpen }));
@@ -341,6 +367,21 @@ async function drive(browser) {
   await page.waitForFunction((n) => document.querySelectorAll('[data-testid="template-row"]').length === n + 1, templatesBefore, { timeout: STEP_TIMEOUT_MS });
   const templateAdded = await page.locator('[data-testid="template-row"]', { hasText: "DLL Template" }).count();
   record("Settings: choosing a file adds it to the template shelf", templateAdded === 1, JSON.stringify({ templatesBefore, templateAdded }));
+
+  // 13d. Organize words: the standard list shows; adding a subject is saved when she leaves the field.
+  await page.locator('[data-testid="subject-rules"]').scrollIntoViewIfNeeded();
+  const ruleRows = await page.locator('[data-testid="subject-rule"]').count();
+  await page.locator('[data-testid="add-subject"]').click();
+  const last = page.locator('[data-testid="subject-rule"]').last();
+  await last.locator("input").first().fill("Robotics");
+  await last.locator("input").nth(1).fill("Arduino, robot");
+  await last.locator("input").nth(1).blur();
+  const savedRules = await page.evaluate(() => window.__deskMock.calls.filter((c) => c.command === "set_settings").at(-1)?.args.settings?.subjectRules ?? []);
+  const robotics = savedRules.find((r) => r.folder === "Robotics");
+  await capture(page, "12c-settings-subject-words");
+  record("Settings: the subject word list shows the standard rules, and a new subject is saved when she leaves the field",
+    ruleRows === 4 && robotics?.words?.join(",") === "arduino,robot" && savedRules.length === 5,
+    JSON.stringify({ ruleRows, robotics, saved: savedRules.length }));
 
   // 14. A sorted download arriving in the background shows a toast and the new row.
   await page.evaluate(() => window.__deskMock.simulateDownload());

@@ -11,7 +11,23 @@ pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 pub const MAX_TEXT_CHARS: usize = 200_000;
 
 /// Extracted text, or None when the type is unsupported or extraction failed.
+///
+/// Third-party readers panic on some malformed files (a scanned PDF on Lex's
+/// machine made pdf-extract panic with "unexpected encoding", 2026-10-12).
+/// Every extraction runs inside `catch_unwind`, which only works because the
+/// release profile unwinds (Cargo.toml, guarded by a compile_error in lib.rs).
+/// A file whose reader panics is indexed by name only.
 pub fn extract_text(path: &Path, ext: &str, size: u64) -> Option<String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| extract_unguarded(path, ext, size))) {
+        Ok(text) => text,
+        Err(_) => {
+            log::warn!("the reader for {} crashed on this file; it is searchable by name only", path.display());
+            None
+        }
+    }
+}
+
+fn extract_unguarded(path: &Path, ext: &str, size: u64) -> Option<String> {
     if size > MAX_FILE_BYTES {
         return None;
     }
@@ -72,15 +88,11 @@ fn pptx_text(path: &Path) -> Option<String> {
 }
 
 fn pdf_text(path: &Path) -> Option<String> {
-    // pdf-extract panics on some malformed files; catching keeps one bad PDF
-    // from taking the indexer down. The hook is restored afterwards.
+    // Panics are caught one level up, in extract_text. The old version also
+    // swapped the global panic hook per call, which raced with other threads.
     let bytes = std::fs::read(path).ok()?;
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let result = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(&bytes));
-    std::panic::set_hook(previous);
-    match result {
-        Ok(Ok(text)) if !text.trim().is_empty() => Some(text),
+    match pdf_extract::extract_text_from_mem(&bytes) {
+        Ok(text) if !text.trim().is_empty() => Some(text),
         _ => None,
     }
 }
@@ -181,6 +193,18 @@ pub mod tests {
         let pptx = dir.path().join("deck.pptx");
         write_zip(&pptx, &[("ppt/slides/slide1.xml", "<a:t>Photosynthesis</a:t>"), ("ppt/slides/slide2.xml", "<a:t>Review</a:t>")]);
         assert_eq!(extract_text(&pptx, "pptx", 10).unwrap(), "Photosynthesis Review");
+    }
+
+    #[test]
+    fn a_reader_that_panics_degrades_to_name_only() {
+        // A PDF whose structure is half there: pdf-extract may error or panic;
+        // either way extract_text must return None and the caller must live on.
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("scan.pdf");
+        std::fs::write(&pdf, b"%PDF-1.4\n1 0 obj << /Type /Font /Subtype /Type1 /Encoding /StandardEncoding >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF").unwrap();
+        assert_eq!(extract_text(&pdf, "pdf", 120), None);
+        let caught = std::panic::catch_unwind(|| ());
+        assert!(caught.is_ok(), "unwinding is available in this profile");
     }
 
     #[test]

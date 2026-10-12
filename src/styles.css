@@ -1309,9 +1309,11 @@ kbd {
 /* Toasts */
 
 .toasts {
+  /* Top right, away from the action bar that sits at the bottom: a "filed
+     for you" toast used to land on top of Move to... (native check, 2026-10-12). */
   position: fixed;
   right: var(--space-5);
-  bottom: var(--space-5);
+  top: var(--space-5);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);

@@ -39,15 +39,22 @@ export default function App() {
     // Settings can change while Desk sits in the tray; look again when she comes back.
     const onFocus = () => void checkBrowsers();
     window.addEventListener("focus", onFocus);
+    // Index changes arrive in bursts (the first scan, a folder being copied);
+    // one quiet refresh per burst keeps the screen steady.
+    let changeTimer: number | undefined;
     const unlisten = [
       listen(CHANGED_EVENT, () => {
-        void loadInfo();
-        if (useApp.getState().view === "find") void refreshFind();
+        window.clearTimeout(changeTimer);
+        changeTimer = window.setTimeout(() => {
+          void loadInfo();
+          if (useApp.getState().view === "find") void refreshFind(true);
+        }, 400);
       }),
       listen<SortedEvent>(SORTED_EVENT, (e) => toast(`${e.name} is in ${e.folder}.`)),
     ];
     return () => {
       window.removeEventListener("focus", onFocus);
+      window.clearTimeout(changeTimer);
       for (const u of unlisten) u.then((fn) => fn()).catch(() => undefined);
     };
   }, [loadInfo, refreshFind, toast, checkBrowsers]);

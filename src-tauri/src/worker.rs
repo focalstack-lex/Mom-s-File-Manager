@@ -125,10 +125,10 @@ fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<Msg>) {
                 if index::under_skipped_dir(&path, &roots) {
                     continue;
                 }
+                if let Err(error) = refresh_unlocked(&core, &path) {
+                    log::warn!("index refresh {}: {error}", path.display());
+                }
                 if let Ok(conn) = core.db() {
-                    if let Err(error) = index::refresh_path(&conn, &path) {
-                        log::warn!("index refresh {}: {error}", path.display());
-                    }
                     // A browser that saved outside Downloads still stamps the
                     // file; it joins Recent downloads where it is (spec 5.1.3).
                     match index::note_if_downloaded(&conn, &path, LIVE_DOWNLOAD_WINDOW_SECS) {
@@ -238,6 +238,42 @@ fn notify(app: &AppHandle, name: &str, folder: &str) {
     }
 }
 
+/// Indexes one file while holding the database lock only for two short
+/// lookups: the slow part (reading the words inside the file) runs with no
+/// lock, so a search never waits on a PDF. The 18,000-file scan on Lex's
+/// machine kept the Find screen on "Searching" because the old upsert held
+/// the lock across extraction (2026-10-12).
+fn index_entry(core: &Arc<Core>, entry: &index::Entry) -> crate::error::Result<i64> {
+    let change = {
+        let conn = core.db()?;
+        index::change_for(&conn, entry)?
+    };
+    if let index::Change::Unchanged(id) = change {
+        return Ok(id);
+    }
+    let content = index::content_for(entry);
+    let conn = core.db()?;
+    index::write(&conn, entry, change, content)
+}
+
+/// `index::refresh_path` with the same short-lock discipline, for live changes.
+fn refresh_unlocked(core: &Arc<Core>, path: &Path) -> crate::error::Result<()> {
+    if path.is_dir() {
+        let conn = core.db()?;
+        return index::refresh_path(&conn, path).or_else(|e| {
+            log::warn!("refresh folder {}: {e}", path.display());
+            Ok(())
+        });
+    }
+    match index::entry_for(path) {
+        Some(entry) => index_entry(core, &entry).map(|_| ()),
+        None => {
+            let conn = core.db()?;
+            index::remove(&conn, path)
+        }
+    }
+}
+
 /// Walks every root, newest files first, and fills the index in small
 /// batches so the database lock is never held long.
 pub fn start_scan(core: Arc<Core>, app: AppHandle) {
@@ -258,28 +294,32 @@ pub fn start_scan(core: Arc<Core>, app: AppHandle) {
         let mut noticed = 0;
         let now = crate::db::now();
         for chunk in entries.chunks(25) {
-            if let Ok(conn) = core.db() {
-                for entry in chunk {
-                    if let Err(error) = index::upsert(&conn, entry) {
-                        log::warn!("index {}: {error}", entry.path.display());
-                        continue;
-                    }
-                    if now - entry.created <= SCAN_DOWNLOAD_WINDOW_SECS {
-                        match index::note_if_downloaded(&conn, &entry.path, SCAN_DOWNLOAD_WINDOW_SECS) {
-                            Ok(true) => noticed += 1,
-                            Ok(false) => {}
-                            Err(error) => log::warn!("download check {}: {error}", entry.path.display()),
-                        }
+            for entry in chunk {
+                if let Err(error) = index_entry(&core, entry) {
+                    log::warn!("index {}: {error}", entry.path.display());
+                    continue;
+                }
+                if now - entry.created <= SCAN_DOWNLOAD_WINDOW_SECS {
+                    let checked = core.db().and_then(|conn| index::note_if_downloaded(&conn, &entry.path, SCAN_DOWNLOAD_WINDOW_SECS));
+                    match checked {
+                        Ok(true) => noticed += 1,
+                        Ok(false) => {}
+                        Err(error) => log::warn!("download check {}: {error}", entry.path.display()),
                     }
                 }
             }
             scanned += chunk.len();
-            let files = core.db().and_then(|c| index::count(&c)).unwrap_or(0);
+            // Progress every chunk; the row count and the event every 200 files,
+            // so the renderer is not asked to refresh on every batch.
+            let milestone = scanned % 200 < 25 || scanned == total;
+            let files = if milestone { core.db().and_then(|c| index::count(&c)).unwrap_or(0) } else { 0 };
             core.set_status(|s| {
                 s.scanned = scanned;
-                s.files = files;
+                if milestone {
+                    s.files = files;
+                }
             });
-            if scanned % 200 < 25 {
+            if milestone {
                 let _ = app.emit(CHANGED_EVENT, ());
             }
             // Yield so her laptop stays responsive while the first scan runs.

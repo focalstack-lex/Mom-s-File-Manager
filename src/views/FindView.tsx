@@ -76,7 +76,9 @@ export function FindView({ info }: { info: AppInfo }) {
   const roots = info.roots;
   const index = result?.index ?? info.index;
   const status = index.scanning
-    ? `Getting to know your files: ${index.scanned.toLocaleString()} of ${index.total.toLocaleString()} so far.`
+    ? index.total === 0
+      ? "Getting to know your files..."
+      : `Getting to know your files: ${index.scanned.toLocaleString()} of ${index.total.toLocaleString()} so far.`
     : info.sortedThisWeek === 1
       ? "1 download filed for you this week."
       : `${info.sortedThisWeek} downloads filed for you this week.`;
@@ -209,7 +211,7 @@ export function FindView({ info }: { info: AppInfo }) {
                       <button type="button" className="button" onClick={() => setQuery((path.split("\\").pop() ?? "").replace(/\.[^.]+$/, ""))}>
                         Search for it
                       </button>
-                      <button type="button" className="button button-quiet" onClick={() => void ipc.forgetPin(path).then(refresh)}>
+                      <button type="button" className="button button-quiet" onClick={() => void ipc.forgetPin(path).then(() => refresh())}>
                         Forget
                       </button>
                     </div>

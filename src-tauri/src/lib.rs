@@ -23,16 +23,34 @@ mod worker;
 
 pub use error::{DeskError, ErrorCode};
 
+// extract.rs relies on catching panics from third-party file readers.
+#[cfg(panic = "abort")]
+compile_error!("Desk must be built with panic = \"unwind\": one malformed file would otherwise crash the app (see Cargo.toml).");
+
+/// Logs every panic with its location, so a crash in any thread leaves a
+/// line in desk.log instead of vanishing.
+fn install_panic_logger() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
+        log::error!("panic in thread {thread}: {info}");
+        if cfg!(debug_assertions) {
+            default(info);
+        }
+    }));
+}
+
 use std::sync::Arc;
 use tauri::Manager;
 
 /// Builds and runs the application. A startup failure is logged and the
-/// process exits with status 1 instead of panicking, because release builds
-/// abort on panic with no console.
+/// process exits with status 1 instead of panicking; a panic anywhere is
+/// logged (install_panic_logger) and file-reader panics are caught.
 pub fn run() {
     // Debug logging in a debug build or during a dry run (DESK_ROOTS), Info otherwise.
     let log_level = if cfg!(debug_assertions) || paths::Roots::test_mode() { log::LevelFilter::Debug } else { log::LevelFilter::Info };
     let minimized = std::env::args().any(|a| a == "--minimized");
+    install_panic_logger();
 
     // A dry run must be able to sit beside the installed app, so it gets its
     // own log file and skips the single-instance rule (which would hand the

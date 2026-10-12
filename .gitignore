@@ -23,3 +23,9 @@ Thumbs.db
 
 # Local tool configuration
 .claude/
+
+# Built installers kept outside target/ so cargo clean does not remove them
+installers/
+
+# Design hook cache and critiques (per machine, not source)
+.impeccable/

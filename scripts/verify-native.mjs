@@ -19,7 +19,10 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const EXE = join(ROOT, "src-tauri", "target", "release", "desk.exe");
+// The fresh build when there is one; otherwise the copy kept in installers/
+// (cargo clean removes target/ to save space).
+const BUILT_EXE = join(ROOT, "src-tauri", "target", "release", "desk.exe");
+const EXE = existsSync(BUILT_EXE) ? BUILT_EXE : join(ROOT, "installers", "desk-release.exe");
 const LAB = resolve(process.env.LOCALAPPDATA ?? ROOT, "desk-native-check");
 const PORT = 9333;
 const STEP_TIMEOUT_MS = 10_000;
@@ -139,17 +142,39 @@ async function main() {
     const quizFiled = await until(() => filed("Word", "Grade 7 Quiz 2.docx"), 40_000);
     const orderFiled = await until(() => filed("PDF", "DepEd Order 014.pdf"), 20_000);
     const exeStayed = existsSync(join(LAB, "Downloads", "printer-setup.exe"));
+    // The rows first show the file where it landed (Downloads), then where it was filed.
+    const rowWhere = async (name) => page.locator('[data-testid="recent"] [data-testid="file-row"]', { hasText: name }).locator(".row-where").first().textContent().catch(() => "");
     const recentOk = await until(async () => {
       const metas = await page.locator('[data-testid="recent"] .row-meta').allTextContents();
-      return metas.some((m) => m.startsWith("from Messenger")) && metas.some((m) => m.startsWith("from DepEd"));
-    });
+      const sources = metas.some((m) => m.startsWith("from Messenger")) && metas.some((m) => m.startsWith("from DepEd"));
+      return sources && (await rowWhere("Grade 7 Quiz 2.docx")).includes("School Files") && (await rowWhere("DepEd Order 014.pdf")).includes("School Files");
+    }, 20_000);
     await capture("03-filed");
-    record("Two downloads are filed by type and month with Messenger and DepEd sources; the installer stays in Downloads", quizFiled && orderFiled && exeStayed && recentOk, JSON.stringify({ quizFiled, orderFiled, exeStayed, recentOk }));
+    record("Two downloads are filed by type and month with Messenger and DepEd sources and the rows show their new place; the installer stays in Downloads", quizFiled && orderFiled && exeStayed && recentOk, JSON.stringify({ quizFiled, orderFiled, exeStayed, recentOk }));
 
     // 4. Move the quiz to Documents > Forms through the real folder picker and command.
     const quizRow = page.locator('[data-testid="recent"] [data-testid="file-row"]', { hasText: "Grade 7 Quiz 2.docx" });
     await quizRow.locator("input[type=checkbox]").check();
-    await page.getByRole("button", { name: "Move to..." }).click();
+    const barShown = await until(async () => (await page.locator('[data-testid="action-bar"]').count()) === 1);
+    if (!barShown) {
+      const state = await page.evaluate(() => ({
+        checked: [...document.querySelectorAll('[data-testid="file-row"] input[type=checkbox]')].filter((c) => c.checked).length,
+        rows: document.querySelectorAll('[data-testid="recent"] [data-testid="file-row"]').length,
+        toasts: [...document.querySelectorAll(".toast")].map((t) => t.textContent),
+      }));
+      await capture("03b-no-action-bar");
+      record("Ticking a row shows the action bar", false, JSON.stringify(state));
+    }
+    await capture("03c-before-move");
+    const barBox = await page.evaluate(() => {
+      const bar = document.querySelector('[data-testid="action-bar"]');
+      const button = [...document.querySelectorAll('[data-testid="action-bar"] button')].find((b) => b.textContent?.includes("Move to"));
+      const r = button?.getBoundingClientRect();
+      const hit = r ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+      return { bar: Boolean(bar), button: r ? { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) } : null, hitTag: hit?.tagName, hitClass: hit?.className, inner: window.innerHeight };
+    });
+    process.stdout.write(`action bar geometry: ${JSON.stringify(barBox)}\n`);
+    await page.getByRole("button", { name: "Move to..." }).click({ timeout: 10_000 });
     await page.locator(".folder-option", { hasText: "Documents > Forms" }).click();
     await page.locator('[data-testid="move-confirm"]').click();
     const movedOnDisk = await until(() => existsSync(join(LAB, "Documents", "Forms", "Grade 7 Quiz 2.docx")));

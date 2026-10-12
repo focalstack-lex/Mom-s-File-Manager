@@ -2,7 +2,7 @@
 //! the scanner reports. Background threads hold an `Arc<Core>`.
 
 use crate::error::Result;
-use crate::index::{self, IndexStatus};
+use crate::index::IndexStatus;
 use crate::paths::Roots;
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -15,8 +15,14 @@ pub struct Core {
 }
 
 impl Core {
+    /// The database lock. A thread that panicked while holding it leaves it
+    /// poisoned; SQLite keeps its own consistency (each statement is atomic),
+    /// so the guard is recovered instead of failing every later command.
     pub fn db(&self) -> Result<MutexGuard<'_, Connection>> {
-        self.db.lock().map_err(|_| index::lock_err())
+        Ok(self.db.lock().unwrap_or_else(|poisoned| {
+            log::warn!("database lock recovered after a panic in another thread");
+            poisoned.into_inner()
+        }))
     }
 
     pub fn status(&self) -> IndexStatus {

@@ -57,7 +57,7 @@ tempfile = "3"
 unsafe_code = "deny"
 
 [lints.clippy]
-# Release builds abort on panic (below), so command code must never panic.
+# Our own code must never panic; panics from third-party readers are caught.
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
@@ -66,5 +66,9 @@ panic = "deny"
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# Unwind, not abort: third-party file readers panic on some malformed files,
+# and extract.rs catches those panics so one bad file costs its content index,
+# not the whole app. With abort, a single scanned PDF crashed Desk on every
+# start (2026-10-12). lib.rs refuses to compile with panic = "abort".
+panic = "unwind"
 strip = true

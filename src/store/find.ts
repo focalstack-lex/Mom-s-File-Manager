@@ -25,7 +25,8 @@ interface FindStore {
   toggleSource(source: string): void;
   setMoreFilters(open: boolean): void;
   clearFilters(): void;
-  refresh(): Promise<void>;
+  /** `quiet` refreshes keep the current answer on screen with no loading state (background changes). */
+  refresh(quiet?: boolean): Promise<void>;
   loadTemplates(): Promise<void>;
   toggleSelected(path: string): void;
   clearSelection(): void;
@@ -85,11 +86,11 @@ export const useFind = create<FindStore>((set, get) => ({
     set({ dateChip: "all", kinds: [], sources: [] });
     void get().refresh();
   },
-  refresh: async () => {
+  refresh: async (quiet = false) => {
     const id = ++requestId;
     const { query, dateChip, kinds, sources } = get();
     const span = spanFor(dateChip, settingsNow());
-    set({ loading: true });
+    if (!quiet) set({ loading: true });
     try {
       const result = await ipc.find(query, { from: span.from, to: span.to, kinds, sources });
       if (id !== requestId) return;
@@ -100,7 +101,8 @@ export const useFind = create<FindStore>((set, get) => ({
     } catch (error) {
       if (id !== requestId) return;
       set({ loading: false });
-      useApp.getState().fail(error);
+      if (!quiet) useApp.getState().fail(error);
+      else console.warn("Desk: background refresh failed", error);
     }
   },
   loadTemplates: async () => {

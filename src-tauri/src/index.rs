@@ -3,7 +3,7 @@
 
 use crate::db;
 use crate::dupes;
-use crate::error::{DeskError, Result};
+use crate::error::Result;
 use crate::extract;
 use crate::origin::Origin;
 use crate::sorter;
@@ -195,28 +195,60 @@ pub fn walk(root: &Path, out: &mut Vec<Entry>) {
     }
 }
 
-/// Inserts or refreshes one file. Text is extracted only when the file is new
-/// or changed. Returns the row id.
-pub fn upsert(conn: &Connection, entry: &Entry) -> Result<i64> {
+/// What the index knows about a file before it is written: nothing, a row
+/// that still matches the disk, or a row that needs refreshing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    Unchanged(i64),
+    New,
+    Modified(i64),
+}
+
+/// A quick lookup, meant to run under a short lock. Text extraction, the
+/// slow part, happens outside the lock between `change_for` and `write`.
+pub fn change_for(conn: &Connection, entry: &Entry) -> Result<Change> {
     let path_text = entry.path.to_string_lossy().into_owned();
     let existing: Option<(i64, i64, i64)> = conn
         .query_row("SELECT id, modified, size FROM files WHERE path = ?1", [&path_text], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .optional()?;
-    if let Some((id, modified, size)) = existing {
-        if modified == entry.modified && size as u64 == entry.size {
-            return Ok(id);
-        }
+    Ok(match existing {
+        Some((id, modified, size)) if modified == entry.modified && size as u64 == entry.size => Change::Unchanged(id),
+        Some((id, _, _)) => Change::Modified(id),
+        None => Change::New,
+    })
+}
+
+/// The slow part, with no lock held: reads the words inside the file.
+pub fn content_for(entry: &Entry) -> Option<String> {
+    if !entry.content_available {
+        return None;
     }
+    extract::extract_text(&entry.path, &sorter::extension(&entry.path), entry.size)
+}
+
+/// Inserts or refreshes one file in one go. Convenient where the lock is
+/// already held briefly (tests, undo); the scanner and watcher use the three
+/// steps separately so extraction never blocks searches.
+pub fn upsert(conn: &Connection, entry: &Entry) -> Result<i64> {
+    match change_for(conn, entry)? {
+        Change::Unchanged(id) => Ok(id),
+        change => write(conn, entry, change, content_for(entry)),
+    }
+}
+
+/// Writes a new or changed row and its searchable text. Returns the row id.
+pub fn write(conn: &Connection, entry: &Entry, change: Change, content: Option<String>) -> Result<i64> {
+    let path_text = entry.path.to_string_lossy().into_owned();
     let name = entry.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let stem = entry.path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let ext = sorter::extension(&entry.path);
     let kind = sorter::classify(&ext).as_str();
     let parent = entry.path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let group_key = dupes::group_key(&stem, &ext);
-    let content = if entry.content_available { extract::extract_text(&entry.path, &ext, entry.size) } else { None };
 
-    let id = match existing {
-        Some((id, _, _)) => {
+    let id = match change {
+        Change::Unchanged(id) => return Ok(id),
+        Change::Modified(id) => {
             conn.execute(
                 "UPDATE files SET size = ?2, modified = ?3, content_indexed = ?4 WHERE id = ?1",
                 params![id, entry.size as i64, entry.modified, content.is_some() as i64],
@@ -224,7 +256,7 @@ pub fn upsert(conn: &Connection, entry: &Entry) -> Result<i64> {
             conn.execute("DELETE FROM files_fts WHERE rowid = ?1", [id])?;
             id
         }
-        None => {
+        Change::New => {
             conn.execute(
                 "INSERT INTO files(path, parent, name, ext, kind, size, modified, group_key, content_indexed) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![path_text, parent, name, ext, kind, entry.size as i64, entry.modified, group_key, content.is_some() as i64],
@@ -556,13 +588,15 @@ pub fn group(rows: Vec<FileRow>) -> Vec<Group> {
 
 /// How many files were sorted since `since`, for the one quiet status line.
 pub fn sorted_since(conn: &Connection, since: i64) -> Result<usize> {
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM files WHERE downloaded_at >= ?1", [since], |r| r.get(0))?;
+    // Files Desk itself filed, not downloads it merely noticed elsewhere.
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM ops WHERE kind = 'autoSort' AND status = 'done' AND created_at >= ?1",
+        [since],
+        |r| r.get(0),
+    )?;
     Ok(n as usize)
 }
 
-pub fn lock_err() -> DeskError {
-    DeskError::db("The app state is busy. Try again.")
-}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -617,6 +651,27 @@ mod tests {
         remove(&conn, &dir.path().join("sub")).unwrap();
         assert_eq!(count(&conn).unwrap(), 1);
         assert_eq!(orphan_pins(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn three_step_upsert_matches_the_one_step_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_memory().unwrap();
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "Santos attendance").unwrap();
+        let entry = entry_for(&file).unwrap();
+        assert_eq!(change_for(&conn, &entry).unwrap(), Change::New);
+        let content = content_for(&entry);
+        assert_eq!(content.as_deref(), Some("Santos attendance"));
+        let id = write(&conn, &entry, Change::New, content).unwrap();
+        assert_eq!(change_for(&conn, &entry).unwrap(), Change::Unchanged(id));
+        assert_eq!(search(&conn, "santos", &Filters::default(), 10).unwrap().len(), 1);
+        std::fs::write(&file, "Reyes attendance, longer now").unwrap();
+        let entry = entry_for(&file).unwrap();
+        assert!(matches!(change_for(&conn, &entry).unwrap(), Change::Modified(i) if i == id));
+        assert_eq!(upsert(&conn, &entry).unwrap(), id);
+        assert_eq!(search(&conn, "reyes", &Filters::default(), 10).unwrap().len(), 1);
+        assert_eq!(search(&conn, "santos", &Filters::default(), 10).unwrap().len(), 0);
     }
 
     #[test]

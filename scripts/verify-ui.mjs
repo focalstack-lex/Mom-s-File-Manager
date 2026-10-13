@@ -272,10 +272,33 @@ async function drive(browser) {
   await capture(page, "10-activity");
   record("Activity lists changes in plain words, marks the failed sort, and Undo marks the row undone", activityOk && activityRows >= 5 && failedRow === 1 && firstTitle?.startsWith("Moved") && undone >= 1, JSON.stringify({ activityRows, failedRow, firstTitle, undone }));
 
-  // 12. Clean up shows the three cards and nothing is ticked by default.
+  // 11b. Two files sent to the Recycle Bin at once are one Activity row with Undo all; a filed file can be shown in its folder.
+  await page.locator('[data-testid="nav-find"]').click();
+  await visible(page, '[data-testid="recent"]');
+  const recentChecks = page.locator('[data-testid="recent"] [data-testid="file-row"] input[type=checkbox]');
+  await recentChecks.nth(0).check();
+  await recentChecks.nth(1).check();
+  await page.getByRole("button", { name: "Recycle Bin" }).click();
+  await page.getByRole("button", { name: "Move to Recycle Bin" }).click();
+  await hidden(page, '[data-testid="recycle-confirm"]');
+  await page.locator('[data-testid="nav-activity"]').click();
+  await visible(page, '[data-testid="activity-batch"]');
+  const batchRowTitle = await page.locator('[data-testid="activity-batch"] strong').first().textContent();
+  const batchUndo = await page.locator('[data-testid="activity-batch"]').first().locator('[data-testid="undo-batch"]').count();
+  const filedMark = await page.locator('[data-testid="activity-row"] .op-mark.is-filed').count();
+  await page.locator('[data-testid="activity-show"]').first().click();
+  const revealed = await page.evaluate(() => window.__deskMock.calls.filter((c) => c.command === "reveal_path").at(-1)?.args.path);
+  await capture(page, "10b-activity-batch");
+  await page.locator('[data-testid="activity-batch"]').first().locator('[data-testid="undo-batch"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="activity-batch"] .activity-state')?.textContent?.includes("Undone"), null, { timeout: STEP_TIMEOUT_MS });
+  record("Two files recycled together are one Activity row with Undo all, filed rows are marked green and can be shown in their folder, and Undo all reverses the batch",
+    batchRowTitle === "Moved 2 files to the Recycle Bin" && batchUndo === 1 && filedMark > 0 && String(revealed).includes("School Files"),
+    JSON.stringify({ batchRowTitle, batchUndo, filedMark, revealed }));
+
+  // 12. Clean up shows the Organize card and one card holding the three sections; nothing is ticked by default.
   await page.locator('[data-testid="nav-cleanup"]').click();
-  const cleanupOk = (await visible(page, '[data-testid="cleanup-view"]')) && (await visible(page, '[data-testid="cleanup-view"] section.card'));
-  const cards = await page.locator('[data-testid="cleanup-view"] section.card').count();
+  const cleanupOk = (await visible(page, '[data-testid="cleanup-view"]')) && (await visible(page, '[data-testid="tidy-card"]'));
+  const cards = (await page.locator('[data-testid="organize-card"]').count()) + (await page.locator('[data-testid="tidy-card"] section.fold').count());
   const tickedByDefault = await page.locator('[data-testid="cleanup-view"] input[type=checkbox]:checked').count();
   const recycleDisabled = await page.locator('[data-testid="recycle-ticked"]').isDisabled();
   await page.locator('[data-testid="desktop-list"]').getByRole("button", { name: "Move it there" }).first().click();
@@ -318,7 +341,7 @@ async function drive(browser) {
     planOk && /^Organize \d+ files into \d+ folders\?$/.test(planTitle ?? "") && folderRows > 0 && gradeFolder === 1 && everyFile > 0 && planClosed && organizedToast === 1 && toastUndo === 1 && cardGone && batchTitle?.startsWith("Organized"),
     JSON.stringify({ planTitle, folderRows, gradeFolder, everyFile, organizedToast, toastUndo, cardGone, batchTitle }));
   await page.locator('[data-testid="nav-cleanup"]').click();
-  await visible(page, '[data-testid="cleanup-view"] section.card');
+  await visible(page, '[data-testid="tidy-card"]');
 
   record("A long Clean up card starts folded with its count and opens 10 at a time; short cards start open",
     foldedAtStart && oldCount === "14" && oldRows === 10 && oldMore?.includes("Show 4 more") && oldAll === 14 && shortOpen,
@@ -391,6 +414,29 @@ async function drive(browser) {
   await page.waitForFunction(() => document.querySelector('[data-testid="recent"] .row-name-text')?.textContent === "Reading Assessment Q2.pdf", null, { timeout: STEP_TIMEOUT_MS });
   const newFirst = await page.locator('[data-testid="recent"] .row-name-text').first().textContent();
   record("A download filed in the background shows a toast and appears at the top of Recent", arrivedToast === 1 && newFirst === "Reading Assessment Q2.pdf", JSON.stringify({ arrivedToast, newFirst }));
+
+  // 14b. The sidebar folds into the icon rail and back; the menu keeps its names for screen readers.
+  const sidebarWidth = () => page.evaluate(() => Math.round(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width));
+  const openWidth = await sidebarWidth();
+  // The active look is one sliding canvas tab: once it settles it sits on the active item.
+  const canvasTab = () => {
+    const tab = document.querySelector('[data-testid="nav-indicator"]');
+    const item = document.querySelector('[data-testid="nav-find"]');
+    return getComputedStyle(tab).backgroundColor === "rgb(238, 242, 238)" && Math.abs(tab.getBoundingClientRect().top - item.getBoundingClientRect().top) < 1;
+  };
+  const activeTab = await page.waitForFunction(canvasTab, null, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  await page.locator('[data-testid="sidebar-toggle"]').click();
+  // The column animates; wait for it to settle before measuring.
+  await page.waitForFunction(() => Math.round(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width) === 64, null, { timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
+  const railWidth = await sidebarWidth();
+  const railNamed = await page.getByRole("button", { name: "Clean up", exact: true }).count();
+  await capture(page, "15-sidebar-rail");
+  await page.locator('[data-testid="sidebar-toggle"]').click();
+  await page.waitForFunction((width) => Math.round(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width) === width, openWidth, { timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
+  const reopened = await sidebarWidth();
+  record("The sidebar folds to a 64 px rail and opens again; the sliding canvas tab sits on the active item and the rail keeps menu names",
+    openWidth > 200 && railWidth === 64 && reopened === openWidth && railNamed === 1 && activeTab,
+    JSON.stringify({ openWidth, railWidth, reopened, railNamed, activeTab }));
 
   record("No error toasts during the drive", (await errorToasts(page)) === 0);
   await context.close();

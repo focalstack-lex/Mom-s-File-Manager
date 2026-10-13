@@ -3,7 +3,7 @@
 // that is an extra copy is only offered for the Recycle Bin, never also for a
 // move, so she is never asked two opposite things about the same file.
 
-import { CheckCheck, ChevronDown, ChevronRight, CircleCheck, FolderTree, Trash } from "lucide-react";
+import { CheckCheck, ChevronRight, CircleCheck, FolderTree, Trash } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Dialog } from "../components/Dialog";
 import { FolderPicker } from "../components/FolderPicker";
@@ -23,30 +23,30 @@ function dirLabel(dir: string, roots: string[]): string {
 }
 
 /**
- * One Clean up card. A short card starts open; a long one starts folded with
- * its count, and opens to 10 rows at a time (spec 5.10). `children` gets how
- * many rows to draw.
+ * One Clean up section, a row of the shared card. A short section starts
+ * open; a long one starts folded with its count, and opens to 10 rows at a
+ * time (spec 5.10). The whole title line opens and closes it; the chevron
+ * sits at the right so the title and its description share one left edge.
+ * `children` gets how many rows to draw.
  */
-function FoldCard({ id, title, lead, count, action, testId, children }: { id: string; title: string; lead: string; count: number; action?: ReactNode; testId: string; children(shown: number): ReactNode }) {
+function FoldSection({ id, title, lead, count, action, testId, children }: { id: string; title: string; lead: string; count: number; action?: ReactNode; testId: string; children(shown: number): ReactNode }) {
   const [open, setOpen] = useState(count <= OPEN_CARD_MAX);
   const [shown, more] = useShown(PAGE.cleanup, PAGE.cleanup);
   return (
-    <section className="card section" aria-labelledby={`${id}-title`} data-testid={testId}>
-      <div className="cleanup-head">
-        <div>
-          <h2 className="card-title" id={`${id}-title`}>
-            <button type="button" className="card-toggle" aria-expanded={open} aria-controls={`${id}-body`} onClick={() => setOpen((v) => !v)} data-testid={`${testId}-toggle`}>
-              {open ? <ChevronDown size={20} aria-hidden /> : <ChevronRight size={20} aria-hidden />}
-              <span>{title}</span>
-              <span className="section-count">{count.toLocaleString()}</span>
-            </button>
-          </h2>
-          <p>{lead}</p>
-        </div>
+    <section className={`fold${open ? " is-open" : ""}`} aria-labelledby={`${id}-title`} data-testid={testId}>
+      <h2 className="fold-title" id={`${id}-title`}>
+        <button type="button" className="fold-toggle" aria-expanded={open} aria-controls={`${id}-body`} onClick={() => setOpen((v) => !v)} data-testid={`${testId}-toggle`}>
+          <span className="fold-name">{title}</span>
+          <span className="count-pill section-count">{count.toLocaleString()}</span>
+          <ChevronRight className="fold-chevron" size={20} aria-hidden />
+        </button>
+      </h2>
+      <div className="fold-sub">
+        <p>{lead}</p>
         {open && action}
       </div>
       {open && (
-        <div id={`${id}-body`} className="section">
+        <div id={`${id}-body`} className="fold-body">
           {children(shown)}
           <ShowMore shown={Math.min(shown, count)} total={count} step={PAGE.cleanup} onMore={more} testId={`${testId}-more`} />
         </div>
@@ -205,79 +205,83 @@ export function CleanupView({ info }: { info: AppInfo }) {
               </button>
             </section>
           )}
-          {report.duplicates.length > 0 && (
-            <FoldCard
-              id="dupes"
-              title="Duplicate copies"
-              lead="The newest copy is marked Latest. Tick the extra copies you no longer need."
-              count={report.duplicates.length}
-              testId="dupes-card"
-              action={
-                <button type="button" className="button button-danger" disabled={ticked.length === 0} onClick={() => setConfirm(true)} data-testid="recycle-ticked">
-                  <Trash size={18} aria-hidden />
-                  {ticked.length === 0 ? "Recycle ticked copies" : `Recycle ${ticked.length} ${ticked.length === 1 ? "copy" : "copies"}`}
-                </button>
-              }
-            >
-              {(shown) =>
-                report.duplicates.slice(0, shown).map((group) => (
-                  <div key={group.latest.groupKey} className="dupe-group">
-                    <div className="suggestion">
-                      <KindTile kind={group.latest.kind} ext={group.latest.ext} />
-                      <div className="suggestion-text">
-                        <strong>
-                          <span>{group.latest.name}</span> <span className="latest">Latest</span>
-                        </strong>
-                        <span>
-                          edited {relativeTime(group.latest.modified)} · {locationLine(group.latest.parent, info.roots)}
-                        </span>
-                      </div>
-                      <span className="keep-mark">
-                        <CircleCheck size={18} aria-hidden />
-                        Keeping
-                      </span>
-                    </div>
-                    {group.others.map((copy) => (
-                      <div key={copy.path} className="suggestion is-copy">
-                        <label className="row-check">
-                          <input type="checkbox" checked={ticked.includes(copy.path)} onChange={() => setTicked((list) => (list.includes(copy.path) ? list.filter((p) => p !== copy.path) : [...list, copy.path]))} aria-label={`Recycle ${copy.name}`} />
-                        </label>
-                        <div className="suggestion-text">
-                          <strong>{copy.name}</strong>
-                          <span>
-                            edited {relativeTime(copy.modified)} · {locationLine(copy.parent, info.roots)}
+          {(report.duplicates.length > 0 || desktop.length > 0 || oldDownloads.length > 0) && (
+            <div className="card fold-group" data-testid="tidy-card">
+              {report.duplicates.length > 0 && (
+                <FoldSection
+                  id="dupes"
+                  title="Duplicate copies"
+                  lead="The newest copy is marked Latest. Tick the extra copies you no longer need."
+                  count={report.duplicates.length}
+                  testId="dupes-card"
+                  action={
+                    <button type="button" className="button button-danger" disabled={ticked.length === 0} onClick={() => setConfirm(true)} data-testid="recycle-ticked">
+                      <Trash size={18} aria-hidden />
+                      {ticked.length === 0 ? "Recycle ticked copies" : `Recycle ${ticked.length} ${ticked.length === 1 ? "copy" : "copies"}`}
+                    </button>
+                  }
+                >
+                  {(shown) =>
+                    report.duplicates.slice(0, shown).map((group) => (
+                      <div key={group.latest.groupKey} className="dupe-group">
+                        <div className="suggestion">
+                          <KindTile kind={group.latest.kind} ext={group.latest.ext} />
+                          <div className="suggestion-text">
+                            <strong>
+                              <span>{group.latest.name}</span> <span className="latest">Latest</span>
+                            </strong>
+                            <span>
+                              edited {relativeTime(group.latest.modified)} · {locationLine(group.latest.parent, info.roots)}
+                            </span>
+                          </div>
+                          <span className="keep-mark">
+                            <CircleCheck size={18} aria-hidden />
+                            Keeping
                           </span>
                         </div>
-                        <button type="button" className="button button-subtle" onClick={() => void ipc.open(copy.path).catch(fail)}>
-                          Open
-                        </button>
+                        {group.others.map((copy) => (
+                          <div key={copy.path} className="suggestion is-copy">
+                            <label className="row-check">
+                              <input type="checkbox" checked={ticked.includes(copy.path)} onChange={() => setTicked((list) => (list.includes(copy.path) ? list.filter((p) => p !== copy.path) : [...list, copy.path]))} aria-label={`Recycle ${copy.name}`} />
+                            </label>
+                            <div className="suggestion-text">
+                              <strong>{copy.name}</strong>
+                              <span>
+                                edited {relativeTime(copy.modified)} · {locationLine(copy.parent, info.roots)}
+                              </span>
+                            </div>
+                            <button type="button" className="button button-subtle" onClick={() => void ipc.open(copy.path).catch(fail)}>
+                              Open
+                            </button>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                ))
-              }
-            </FoldCard>
-          )}
-          {desktop.length > 0 && (
-            <FoldCard
-              id="desktop"
-              title="Loose files on the Desktop"
-              lead="Each one has a suggested home in School Files."
-              count={desktop.length}
-              testId="desktop-card"
-              action={
-                <button type="button" className="button button-primary" onClick={() => void acceptAll(desktop)} data-testid="desktop-move-all">
-                  {moveAllLabel(desktop.length)}
-                </button>
-              }
-            >
-              {(shown) => <SuggestionList items={desktop.slice(0, shown)} testId="desktop-list" />}
-            </FoldCard>
-          )}
-          {oldDownloads.length > 0 && (
-            <FoldCard id="old" title="Old downloads" lead="Untouched for two months or more." count={oldDownloads.length} testId="old-card">
-              {(shown) => <SuggestionList items={oldDownloads.slice(0, shown)} testId="old-downloads-list" />}
-            </FoldCard>
+                    ))
+                  }
+                </FoldSection>
+              )}
+              {desktop.length > 0 && (
+                <FoldSection
+                  id="desktop"
+                  title="Loose files on the Desktop"
+                  lead="Each one has a suggested home in School Files."
+                  count={desktop.length}
+                  testId="desktop-card"
+                  action={
+                    <button type="button" className="button button-primary" onClick={() => void acceptAll(desktop)} data-testid="desktop-move-all">
+                      {moveAllLabel(desktop.length)}
+                    </button>
+                  }
+                >
+                  {(shown) => <SuggestionList items={desktop.slice(0, shown)} testId="desktop-list" />}
+                </FoldSection>
+              )}
+              {oldDownloads.length > 0 && (
+                <FoldSection id="old" title="Old downloads" lead="Untouched for two months or more." count={oldDownloads.length} testId="old-card">
+                  {(shown) => <SuggestionList items={oldDownloads.slice(0, shown)} testId="old-downloads-list" />}
+                </FoldSection>
+              )}
+            </div>
           )}
         </div>
       )}

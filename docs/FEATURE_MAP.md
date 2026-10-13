@@ -16,12 +16,14 @@ Every surface a user can reach, where it lives, and which verify step proves it.
 | Action bar: Rename inline, extension locked | 5.4 | `src/components/ResultRow.tsx` | `ops::rename_file`, `paths::validate_name` | UI drive 9, native 6 |
 | Action bar: Recycle Bin with confirmation listing the files | 5.4 | `src/components/ActionBar.tsx`, `src/components/Dialog.tsx` | `ops::recycle` (trash crate) | UI drive 10, native 8 |
 | Templates shelf | 5.6 | `src/views/FindView.tsx`, `SettingsView.tsx` | `templates` | cargo test templates |
-| Activity with Undo, grouped by day, failures in coral with Show the file | 5.7 | `src/views/ActivityView.tsx` | `ops::list`, `ops::undo` | UI drive 11, native 8 |
-| Clean up: duplicates, Desktop clutter, old downloads (an extra copy is only offered for the Recycle Bin) | 5.5 | `src/views/CleanupView.tsx` | `cleanup::report` | UI drive 12, native 9 |
+| Activity with Undo, grouped by day; several files moved or recycled at once are one row with Undo all; filed and moved rows marked green with Show in folder; quiet Undo that outlines on hover; failures in coral with Show the file | 5.7 | `src/views/ActivityView.tsx`, `src/lib/organize.ts` (`batchTitle`) | `ops::list`, `ops::undo`, `ops::undo_batch`, `ops::new_batch` (Move and Recycle of several files) | UI drive 11, 11b, native 8, cargo test ops |
+| Clean up: duplicates, Desktop clutter, old downloads as divided rows of one card, count pills, chevron at the right (an extra copy is only offered for the Recycle Bin) | 5.5 | `src/views/CleanupView.tsx` | `cleanup::report` | UI drive 12, native 9 |
 | Settings: start at login and notifications (switches), school year and quarters (date pickers), replay | 5.8 | `src/views/SettingsView.tsx` | `commands::set_settings`, autostart plugin | UI drive 13, native 10 |
 | Settings: folders Desk looks in (add via native picker, remove, restart note) | 5.8 | `src/views/SettingsView.tsx` | `commands::add_folder`, `remove_folder`, `restart_app`, dialog plugin | UI drive 13b |
 | Settings: templates via native file picker | 5.6 | `src/views/SettingsView.tsx` | `commands::add_template`, dialog plugin | UI drive 13c |
 | Test mode (DESK_ROOTS, DESK_DATA_DIR) | 8 | none | `paths::Roots::from_env`, `lib.rs` | native 1 |
+| Title bar: the shell's top strip (no Windows frame), drag to move, double-click to maximize, Minimize, Maximize or Restore, Close (hides to the tray) | 7 | `src/components/TitleBar.tsx`, `src/styles.css` | `lib.rs` window builder (`decorations(false)`, `shadow(true)`), window permissions in `capabilities/default.json` | native 12 |
+| Sidebar: green shell, glass menu pills, active item as a canvas tab that slides between items (ink layer keeps the label dark under it), views ease in, folds to an icon rail (remembered) | 7 | `src/App.tsx`, `src/styles.css` | none | UI drive 14b |
 | Sorted folders (opens School Files) | 5.1 | `src/App.tsx` | `commands::open_school_files` | manual |
 | Background sorting, origin, notification | 5.1 | toast on `desk://sorted` | `worker`, `stability`, `sorter`, `origin` | cargo test, UI drive 14 (event), native 4 |
 | Index scan and live updates, build folders skipped | 5.2 | status line | `worker::start_scan`, `index::walk`, `index::prune_except` | cargo test index, native 2b |

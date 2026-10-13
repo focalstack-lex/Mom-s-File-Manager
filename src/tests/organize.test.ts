@@ -44,4 +44,11 @@ describe("activity folding", () => {
     expect(run.type === "batch" && run.ops.length).toBe(3);
     expect(run.type === "batch" && batchTitle(run.ops)).toBe("Organized 3 files into 2 folders");
   });
+
+  it("names a batch of ticked files by what was done to them", () => {
+    const recycled = [op(1, "recycle-1"), op(2, "recycle-1")].map((o) => ({ ...o, kind: "recycle" as const, dst: null }));
+    expect(batchTitle(recycled)).toBe("Moved 2 files to the Recycle Bin");
+    const moved = [op(3, "move-1", `${SCHOOL}\\Word\\2026-10\\a.docx`), op(4, "move-1", `${SCHOOL}\\Word\\2026-10\\b.docx`)];
+    expect(batchTitle(moved)).toBe("Moved 2 files to October 2026");
+  });
 });

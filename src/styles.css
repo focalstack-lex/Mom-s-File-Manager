@@ -1,13 +1,28 @@
 /*
   Desk design tokens and layout.
 
-  Arrangement first: a forest-green sidebar on the left, a pale canvas on the
-  right. Lists sit on one white surface with divided rows; shadows are kept
+  Arrangement first: a deep green shell holds the title bar along the top,
+  the sidebar on the left and the open view on one pale canvas card; the
+  active menu item is a tab of that card. Lists sit on one white surface with divided rows; shadows are kept
   for things that float (preview, action bar, dialogs, toasts). Green is the
   one brand hue (sidebar, primary button, selected chip, Latest mark). Coral
   appears only on failures. Every text token is contrast-checked on every
   surface by scripts/verify-contrast.mjs; change a value here and run it.
 */
+
+/* The sliding tab's place. Registered so the browser can animate it and every
+   menu item can read the in-between values (App.tsx sets them). */
+@property --tab-y {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+@property --tab-h {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
 
 :root {
   /* Surfaces */
@@ -22,6 +37,10 @@
   --text-primary: #17201b;
   --text-muted: #4f5c55;
   --text-faint: #6b7872;
+
+  /* The shell behind the sidebar and the canvas card: top and bottom of its gradient */
+  --bg-shell-top: #1b5a40;
+  --bg-shell-bottom: #06120c;
 
   /* Text on the sidebar */
   --sidebar-text: #eef4ef;
@@ -77,6 +96,7 @@
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
+  --titlebar-height: 44px;
   --sidebar-width: 232px;
   --rail-width: 64px;
   --z-bar: 20;
@@ -115,9 +135,36 @@ body {
   color: var(--accent-text);
 }
 
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  min-height: 48px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgba(23, 32, 27, 0.22) padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(23, 32, 27, 0.4);
+}
+
+/* Keep the thumb clear of the canvas card's rounded corners. */
+.main::-webkit-scrollbar-track {
+  margin: 20px 0;
 }
 
 button,
@@ -158,72 +205,253 @@ kbd {
   white-space: nowrap;
 }
 
-/* App frame */
+/* App frame: a deep green shell; the sidebar sits on it and the open view
+   sits on one canvas card. The active menu item is a tab of that card: it
+   runs into the card with curved inner corners. */
 
 .app {
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-rows: var(--titlebar-height) minmax(0, 1fr);
   height: 100%;
   min-width: 0;
+  padding: 0 var(--space-3) var(--space-3) 0;
+  background:
+    radial-gradient(120% 55% at 0% 0%, rgba(98, 196, 146, 0.22), transparent 62%),
+    linear-gradient(180deg, var(--bg-shell-top) 0%, #123f2d 38%, #0a2117 72%, var(--bg-shell-bottom) 100%);
+}
+
+/* The window's title bar is the top strip of the shell: drag to move,
+   double-click to maximize, Windows-style buttons at the right edge. It sits
+   above the walkthrough so the window can always be moved or closed. */
+.titlebar {
+  grid-column: 1 / -1;
+  position: relative;
+  z-index: calc(var(--z-tour) + 1);
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  min-width: 0;
+  user-select: none;
+}
+
+.window-controls {
+  display: flex;
+  margin-right: calc(var(--space-3) * -1);
+}
+
+.window-button {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 36px;
+  border: 0;
+  background: transparent;
+  color: var(--sidebar-text);
+}
+
+.window-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.window-button:active {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* The Windows close-button red: a platform signal, not Desk's failure coral. */
+.window-button.is-close:hover {
+  background: #c42b1c;
+  color: #ffffff;
+}
+
+.window-button:focus-visible {
+  outline: 2px solid var(--sidebar-text);
+  outline-offset: -4px;
 }
 
 .sidebar {
-  background: var(--bg-sidebar);
+  position: relative;
   color: var(--sidebar-text);
   display: flex;
   flex-direction: column;
-  padding: var(--space-5) var(--space-3);
-  gap: var(--space-1);
+  padding: var(--space-1) 0 var(--space-3) var(--space-3);
+  gap: var(--space-2);
   min-width: 0;
+  overflow: hidden;
+}
+
+/* A few faint specks near the top, fading out, so the shell reads as a surface. */
+.sidebar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, 0.55) 0 1px, transparent 1.6px),
+    radial-gradient(circle, rgba(255, 255, 255, 0.3) 0 1px, transparent 1.4px);
+  background-size: 97px 83px, 61px 71px;
+  background-position: 13px 9px, 41px 37px;
+  mask-image: linear-gradient(180deg, #000 0%, transparent 42%);
+  opacity: 0.6;
 }
 
 .brand {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  margin-bottom: var(--space-5);
+  padding: var(--space-1) var(--space-3) var(--space-1) var(--space-1);
+  margin-bottom: var(--space-4);
   font-weight: 700;
   font-size: var(--text-xl);
   letter-spacing: -0.01em;
 }
 
 .brand-mark {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  background: var(--sidebar-text);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.38), rgba(255, 255, 255, 0.08) 70%);
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 6px 18px rgba(0, 0, 0, 0.25);
   display: grid;
   place-items: center;
-  color: var(--bg-sidebar);
+  color: #ffffff;
   flex: none;
 }
 
-.nav-button {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  width: 100%;
-  min-height: 48px;
-  padding: 0 var(--space-3);
-  border: 0;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--sidebar-muted);
-  font-size: var(--text-md);
-  font-weight: 500;
-  text-align: left;
+.brand-name {
+  flex: 1;
+  min-width: 0;
 }
 
-.nav-button:hover {
-  background: var(--bg-sidebar-hover);
+.sidebar-toggle {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.1);
   color: var(--sidebar-text);
 }
 
-.nav-button.is-active {
-  background: var(--bg-sidebar-active);
-  color: var(--sidebar-active-text);
+.sidebar-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.sidebar-toggle:focus-visible {
+  outline-color: var(--sidebar-text);
+}
+
+.nav-button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 52px;
+  margin-right: var(--space-3);
+  padding: 0 var(--space-4) 0 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--sidebar-text);
+  font-size: var(--text-md);
   font-weight: 700;
+  text-align: left;
+  flex: none;
+  z-index: 1;
+}
+
+.nav-button:hover {
+  background: rgba(255, 255, 255, 0.13);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.nav-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.nav-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The active item is a tab of the canvas card. The tab is one shared shape
+   that slides from item to item, so a switch is a movement rather than a cut.
+   Each item's ink layer (its icon and label in the active colours) is clipped
+   to wherever the tab is at that moment, so the label is dark exactly where
+   the tab is under it, mid-slide included. */
+.nav-indicator {
+  position: absolute;
+  top: 0;
+  left: var(--space-3);
+  right: 0;
+  z-index: 0;
+  height: var(--tab-h);
+  transform: translateY(var(--tab-y));
+  border-radius: 999px 0 0 999px;
+  background: var(--bg-canvas);
+  pointer-events: none;
+}
+
+.sidebar:not([data-tab="on"]) .nav-indicator,
+.sidebar:not([data-tab="on"]) .nav-ink {
+  visibility: hidden;
+}
+
+.nav-ink {
+  position: absolute;
+  inset: -1px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 calc(var(--space-4) + 1px) 0 7px;
+  border-radius: 999px 0 0 999px;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  pointer-events: none;
+  clip-path: inset(
+    max(0px, calc(var(--tab-y) - var(--item-y))) 0 max(0px, calc(var(--item-y) + var(--item-h) - var(--tab-y) - var(--tab-h))) 0 round 999px 0 0 999px
+  );
+}
+
+.nav-ink .nav-icon {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+
+/* Curved inner corners where the tab meets the card, above and below. Each
+   is painted inside its own box with a radial gradient (not the box-shadow
+   trick, whose straight edges showed as light hairlines while the tab sat on
+   in-between pixels mid-slide) and overlaps the tab by 1 px so no seam opens. */
+.nav-indicator::before,
+.nav-indicator::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  width: 20px;
+  height: 21px;
+}
+
+.nav-indicator::before {
+  top: -20px;
+  background: radial-gradient(circle at 0 0, transparent 19.5px, var(--bg-canvas) 20px);
+}
+
+.nav-indicator::after {
+  bottom: -20px;
+  background: radial-gradient(circle at 0 100%, transparent 19.5px, var(--bg-canvas) 20px);
 }
 
 .nav-button:focus-visible {
@@ -237,7 +465,7 @@ kbd {
 .nav-divider {
   height: 1px;
   background: rgba(238, 244, 239, 0.14);
-  margin: var(--space-2) var(--space-3);
+  margin: var(--space-2) var(--space-5) var(--space-2) var(--space-3);
 }
 
 .sidebar-spacer {
@@ -251,6 +479,90 @@ kbd {
   position: relative;
   display: flex;
   flex-direction: column;
+  background: var(--bg-canvas);
+  border-radius: 24px;
+  /* The scrollbar's room is always kept, so a page that grows long enough to
+     scroll (a Clean up section opening) does not shift sideways. */
+  scrollbar-gutter: stable;
+}
+
+/* Folded: the icon rail. The active item is a white circle, as in the
+   folded reference, and the toggle sits under the mark. */
+.app.is-collapsed {
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
+}
+
+.app.is-collapsed .sidebar,
+.app.is-collapsed .brand {
+  align-items: center;
+}
+
+.app.is-collapsed .sidebar {
+  padding: var(--space-1) var(--space-2) var(--space-3);
+}
+
+.app.is-collapsed .brand {
+  flex-direction: column;
+  padding: 0;
+  gap: var(--space-2);
+}
+
+.app.is-collapsed .brand-name,
+.app.is-collapsed .nav-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.app.is-collapsed .nav-button,
+.app.is-collapsed .nav-button.is-active {
+  width: 48px;
+  min-height: 48px;
+  margin: 0;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.app.is-collapsed .nav-button .nav-icon {
+  background: transparent;
+  border-color: transparent;
+}
+
+.app.is-collapsed .nav-ink {
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  background: #ffffff;
+  clip-path: circle(calc(var(--tab-h) / 2) at 50% calc(var(--tab-y) - var(--item-y) + var(--tab-h) / 2));
+}
+
+.app.is-collapsed .nav-ink .nav-icon {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+/* On the rail the tab is a white circle that slides between icons. */
+.app.is-collapsed .nav-indicator {
+  left: calc(50% - 24px);
+  right: auto;
+  width: 48px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+}
+
+.app.is-collapsed .nav-indicator::before,
+.app.is-collapsed .nav-indicator::after {
+  display: none;
+}
+
+.app.is-collapsed .nav-divider {
+  width: 32px;
+  margin: var(--space-2) auto;
 }
 
 /* Fills the column without adding scroll, so the footer and the action bar
@@ -269,7 +581,7 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding-bottom: var(--space-1);
+  padding-bottom: var(--space-4);
 }
 
 .view-title {
@@ -1396,31 +1708,6 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 
-.card-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  min-height: 44px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  border-radius: var(--radius-sm);
-}
-
-.card-toggle svg {
-  flex: none;
-  color: var(--text-muted);
-}
-
-.card-toggle .section-count {
-  margin-left: auto;
-}
-
 /* Organize now (spec 5.11): the lead card in Clean up and the plan dialog. */
 .organize-card {
   display: flex;
@@ -1549,6 +1836,13 @@ kbd {
   color: var(--text-muted);
 }
 
+/* Filed or moved: a soft green mark. The Recycle Bin and other changes stay
+   neutral; failures are coral. The icon carries the same meaning. */
+.op-mark.is-filed {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
 .activity-row.is-failed .op-mark {
   background: var(--coral-soft);
   color: var(--coral);
@@ -1593,7 +1887,16 @@ kbd {
 .activity-actions {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
+}
+
+/* Undo is quiet at rest so the column of buttons does not outshout the file
+   names, and takes its outline when the row is pointed at or focused. */
+.activity-row:hover .activity-undo,
+.activity-row:focus-within .activity-undo {
+  background: var(--bg-card);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
 }
 
 /* Clean up */
@@ -1601,21 +1904,112 @@ kbd {
 .cleanup-cards {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-5);
 }
 
-.cleanup-head {
+/* Clean up: one card, one divided row per section (duplicates, Desktop,
+   old downloads). The title line opens a section; its count is a pill right
+   after the title and the chevron sits at the right edge, so the title and
+   the description below it share one left edge. */
+.fold-group {
+  padding: 0;
+}
+
+.fold {
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-4) var(--space-5);
+  min-width: 0;
+}
+
+.fold + .fold {
+  border-top: 1px solid var(--border);
+}
+
+.fold-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.fold-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.fold-name {
+  min-width: 0;
+}
+
+.fold-chevron {
+  box-sizing: content-box;
+  flex: none;
+  margin-left: auto;
+  padding: 6px;
+  border-radius: 50%;
+  color: var(--text-muted);
+}
+
+.fold-toggle:hover .fold-chevron {
+  background: var(--bg-raised);
+  color: var(--text-primary);
+}
+
+.fold.is-open .fold-chevron {
+  transform: rotate(90deg);
+}
+
+.count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.fold-sub {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
   flex-wrap: wrap;
 }
 
-.cleanup-head p {
-  margin: var(--space-1) 0 0;
+.fold-sub p {
+  margin: 0;
   color: var(--text-muted);
   font-size: var(--text-sm);
+}
+
+.fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
 }
 
 .dupe-group + .dupe-group {
@@ -1881,13 +2275,19 @@ kbd {
    becomes a drawer over the list so it never opens out of sight. */
 
 @media (max-width: 900px) {
-  .app {
-    grid-template-columns: var(--rail-width) 1fr;
+  .app,
+  .app.is-collapsed {
+    grid-template-columns: var(--rail-width) minmax(0, 1fr);
   }
 
-  .sidebar {
-    padding: var(--space-4) var(--space-2);
+  .sidebar,
+  .app.is-collapsed .sidebar {
+    padding: var(--space-1) var(--space-2) var(--space-3);
     align-items: center;
+  }
+
+  .sidebar-toggle {
+    display: none;
   }
 
   .brand-name,
@@ -1905,11 +2305,48 @@ kbd {
     padding: 0;
   }
 
-  .nav-button {
-    justify-content: center;
-    padding: 0;
+  .nav-button,
+  .nav-button.is-active {
     width: 48px;
     min-height: 48px;
+    margin: 0;
+    padding: 0;
+    justify-content: center;
+    border-radius: 50%;
+  }
+
+  .nav-button .nav-icon {
+    background: transparent;
+    border-color: transparent;
+  }
+
+  .nav-ink,
+  .app.is-collapsed .nav-ink {
+    justify-content: center;
+    padding: 0;
+    border-radius: 50%;
+    background: #ffffff;
+    clip-path: circle(calc(var(--tab-h) / 2) at 50% calc(var(--tab-y) - var(--item-y) + var(--tab-h) / 2));
+  }
+
+  .nav-ink .nav-icon {
+    background: transparent;
+    color: var(--text-primary);
+  }
+
+  .nav-indicator,
+  .app.is-collapsed .nav-indicator {
+    left: calc(50% - 24px);
+    right: auto;
+    width: 48px;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+  }
+
+  .nav-indicator::before,
+  .nav-indicator::after {
+    display: none;
   }
 
   .nav-divider {
@@ -2013,6 +2450,24 @@ kbd {
 /* Motion: short, exponential ease-out, only for things that arrive. */
 
 @media (prefers-reduced-motion: no-preference) {
+  .app {
+    transition: grid-template-columns 280ms var(--ease-out);
+  }
+
+  /* The tab glides to the chosen item; the first placement does not animate. */
+  .sidebar[data-tab-ready] {
+    transition: --tab-y 420ms cubic-bezier(0.22, 1, 0.36, 1), --tab-h 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .fold-chevron {
+    transition: transform 240ms var(--ease-out), background-color 140ms ease, color 140ms ease;
+  }
+
+  /* Each view eases in instead of cutting. */
+  .main > .main-inner {
+    animation: view-in 360ms var(--ease-out);
+  }
+
   .row,
   .chip,
   .button,
@@ -2058,6 +2513,13 @@ kbd {
     background: linear-gradient(90deg, var(--bg-raised) 0%, #e6ece7 50%, var(--bg-raised) 100%);
     background-size: 200% 100%;
     animation: shimmer 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
   }
 }
 

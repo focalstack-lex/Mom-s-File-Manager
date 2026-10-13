@@ -1,5 +1,7 @@
 // Every change in plain words, newest first, grouped by day, with Undo
-// (spec 5.7). A change that failed says what to do next.
+// (spec 5.7). Several files sent at once are one row with Undo all. A file
+// that was filed or moved can be shown in its folder; a change that failed
+// says what to do next.
 
 import { CircleAlert, Copy, FolderInput, FolderOpen, FolderPlus, History, Pencil, RotateCcw, Trash, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -22,6 +24,19 @@ function folderOf(path: string | null, roots: string[]): string {
   return locationLine(path.slice(0, path.lastIndexOf("\\")), roots);
 }
 
+/** "from the Desktop" when every file left one folder, else "from several folders". */
+function batchDetail(ops: OpRow[], roots: string[]): string {
+  if ((ops[0]?.batch ?? "").startsWith("organize-")) return "from the Desktop and Downloads";
+  const origins = new Set(ops.map((o) => folderOf(o.src, roots)));
+  const [only] = origins;
+  return origins.size === 1 && only ? `from ${only.replace(/^in /, "")}` : "from several folders";
+}
+
+/** Changes whose file now sits somewhere she may want to open. */
+function showable(op: OpRow): boolean {
+  return op.status === "done" && op.dst !== null && (op.kind === "autoSort" || op.kind === "move" || op.kind === "rename" || op.kind === "copy");
+}
+
 export function describeOp(op: OpRow, roots: string[]): { title: string; detail: string } {
   const name = nameOf(op.kind === "newFolder" ? op.src : op.dst ?? op.src);
   switch (op.kind) {
@@ -42,6 +57,16 @@ export function describeOp(op: OpRow, roots: string[]): { title: string; detail:
   }
 }
 
+
+/** Opens File Explorer with the file selected, where the change left it. */
+function ShowButton({ op, onError }: { op: OpRow; onError(error: unknown): void }) {
+  const name = nameOf(op.dst);
+  return (
+    <button type="button" className="icon-button activity-show" onClick={() => void ipc.reveal(op.dst ?? op.src).catch(onError)} aria-label={`Show ${name} in its folder`} title="Show in folder" data-testid="activity-show">
+      <FolderOpen size={20} aria-hidden />
+    </button>
+  );
+}
 
 function OpIcon({ op }: { op: OpRow }) {
   const props = { size: 20, "aria-hidden": true };
@@ -134,22 +159,25 @@ export function ActivityView({ info }: { info: AppInfo }) {
               {group.items.map((entry: ActivityEntry) => {
                 if (entry.type === "batch") {
                   const live = entry.ops.some((o) => o.status === "done");
+                  const recycled = entry.ops.every((o) => o.kind === "recycle");
+                  const firstShown = entry.ops.find(showable);
                   return (
                     <div key={entry.batch} className={`activity-row${live ? "" : " is-undone"}`} data-testid="activity-batch">
-                      <span className="op-mark">
-                        <FolderInput size={20} aria-hidden />
-                      </span>
+                      <span className={`op-mark${live && !recycled ? " is-filed" : ""}`}>{recycled ? <Trash size={20} aria-hidden /> : <FolderInput size={20} aria-hidden />}</span>
                       <div className="activity-text">
                         <strong>{batchTitle(entry.ops)}</strong>
                         <span>
-                          from the Desktop and Downloads {"\u00b7"} {relativeTime(entry.createdAt)}
+                          {batchDetail(entry.ops, info.roots)} {"\u00b7"} {relativeTime(entry.createdAt)}
                         </span>
                       </div>
                       {live ? (
-                        <button type="button" className="button" onClick={() => void undoAll(entry.batch)} data-testid="undo-batch">
-                          <Undo2 size={18} aria-hidden />
-                          Undo all
-                        </button>
+                        <span className="activity-actions">
+                          {firstShown && <ShowButton op={firstShown} onError={fail} />}
+                          <button type="button" className="button button-subtle activity-undo" onClick={() => void undoAll(entry.batch)} data-testid="undo-batch">
+                            <Undo2 size={18} aria-hidden />
+                            Undo all
+                          </button>
+                        </span>
                       ) : (
                         <span className="activity-state">
                           <RotateCcw size={16} aria-hidden />
@@ -163,7 +191,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
                 const { title, detail } = describeOp(op, info.roots);
                 return (
                   <div key={op.id} className={`activity-row${op.status === "failed" ? " is-failed" : ""}${op.status === "undone" ? " is-undone" : ""}`} data-testid="activity-row">
-                    <span className="op-mark">
+                    <span className={`op-mark${op.status === "done" && (op.kind === "autoSort" || op.kind === "move") ? " is-filed" : ""}`}>
                       <OpIcon op={op} />
                     </span>
                     <div className="activity-text">
@@ -175,10 +203,13 @@ export function ActivityView({ info }: { info: AppInfo }) {
                       </span>
                     </div>
                     {op.status === "done" ? (
-                      <button type="button" className="button" onClick={() => void undo(op)} data-testid="undo">
-                        <Undo2 size={18} aria-hidden />
-                        Undo
-                      </button>
+                      <span className="activity-actions">
+                        {showable(op) && <ShowButton op={op} onError={fail} />}
+                        <button type="button" className="button button-subtle activity-undo" onClick={() => void undo(op)} data-testid="undo">
+                          <Undo2 size={18} aria-hidden />
+                          Undo
+                        </button>
+                      </span>
                     ) : op.status === "undone" ? (
                       <span className="activity-state">
                         <RotateCcw size={16} aria-hidden />
@@ -187,7 +218,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
                     ) : (
                       <span className="activity-actions">
                         <span className="activity-state">Not done</span>
-                        <button type="button" className="button" onClick={() => void ipc.reveal(op.src).catch(fail)} data-testid="failed-reveal">
+                        <button type="button" className="button button-subtle activity-undo" onClick={() => void ipc.reveal(op.src).catch(fail)} data-testid="failed-reveal">
                           <FolderOpen size={18} aria-hidden />
                           Show the file
                         </button>

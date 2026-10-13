@@ -10,6 +10,9 @@ const DESKTOP = "C:\\Users\\Teacher\\Desktop";
 const DOWNLOADS = "C:\\Users\\Teacher\\Downloads";
 const SCHOOL = `${DOCS}\\School Files`;
 const NOW = Math.floor(Date.now() / 1000);
+// "Two hours ago", but never before midnight, so the drive's "Today" heading
+// holds whatever time it runs.
+const EARLIER_TODAY = Math.max(NOW - 2 * 3600, Math.floor(new Date().setHours(0, 1, 0, 0) / 1000));
 const DAY = 86_400;
 
 function key(name: string): string {
@@ -49,7 +52,7 @@ const CONTENT: Record<string, string> = {
 };
 
 let files: FileRow[] = [
-  file(`${SCHOOL}\\Word\\2026-10`, "Grade 7 Quiz 2.docx", { originLabel: "Messenger", downloadedAt: NOW - 2 * 3600, modified: NOW - 2 * 3600 }),
+  file(`${SCHOOL}\\Word\\2026-10`, "Grade 7 Quiz 2.docx", { originLabel: "Messenger", downloadedAt: EARLIER_TODAY, modified: EARLIER_TODAY }),
   file(`${SCHOOL}\\PDF\\2026-10`, "DepEd Order 2026-014.pdf", { originLabel: "DepEd", downloadedAt: NOW - DAY, modified: NOW - DAY }),
   file(`${SCHOOL}\\Excel\\2026-10`, "Book1.xlsx", { originLabel: "Gmail", downloadedAt: NOW - 3 * DAY, modified: NOW - 3 * DAY }),
   file(`${SCHOOL}\\Word\\2026-10`, "DLL Week 5.docx", { originLabel: "Google Drive", downloadedAt: NOW - 5 * DAY, modified: NOW - 5 * DAY }),
@@ -83,7 +86,7 @@ for (const [name, origin, days] of MORE_RECENT) {
 for (let i = 1; i <= 13; i += 1) files.push(file(DOWNLOADS, `old handout ${i}.pdf`, { modified: NOW - (70 + i) * DAY }));
 
 const ops: OpRow[] = [
-  { id: 1, kind: "autoSort", src: `${DOWNLOADS}\\Grade 7 Quiz 2.docx`, dst: `${SCHOOL}\\Word\\2026-10\\Grade 7 Quiz 2.docx`, status: "done", message: null, automatic: true, createdAt: NOW - 2 * 3600, batch: null },
+  { id: 1, kind: "autoSort", src: `${DOWNLOADS}\\Grade 7 Quiz 2.docx`, dst: `${SCHOOL}\\Word\\2026-10\\Grade 7 Quiz 2.docx`, status: "done", message: null, automatic: true, createdAt: EARLIER_TODAY, batch: null },
   { id: 2, kind: "autoSort", src: `${DOWNLOADS}\\DepEd Order 2026-014.pdf`, dst: `${SCHOOL}\\PDF\\2026-10\\DepEd Order 2026-014.pdf`, status: "done", message: null, automatic: true, createdAt: NOW - DAY, batch: null },
   { id: 3, kind: "autoSort", src: `${DOWNLOADS}\\budget.xlsx`, dst: null, status: "failed", message: "The file stayed open in another program for a day, so it was left in Downloads.", automatic: true, createdAt: NOW - 2 * DAY, batch: null },
 ];
@@ -148,7 +151,7 @@ function find(query: string, filters: Filters): FindResult {
   return { groups: group(hits), pinned: [], orphanPins: [], recent: [], index };
 }
 
-function moveTo(path: string, destination: string, kind: OpRow["kind"]): string {
+function moveTo(path: string, destination: string, kind: OpRow["kind"], batch: string | null = null): string {
   const row = files.find((f) => f.path === path);
   if (!row) throw { code: "notFound", message: "That file is no longer there." };
   let name = row.name;
@@ -158,7 +161,7 @@ function moveTo(path: string, destination: string, kind: OpRow["kind"]): string 
     n += 1;
   }
   const dst = `${destination}\\${name}`;
-  ops.unshift({ id: nextOp++, kind, src: row.path, dst, status: "done", message: null, automatic: false, createdAt: NOW, batch: null });
+  ops.unshift({ id: nextOp++, kind, src: row.path, dst, status: "done", message: null, automatic: false, createdAt: NOW, batch });
   row.path = dst;
   row.parent = destination;
   row.name = name;
@@ -222,7 +225,12 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     const text = CONTENT[row.name];
     return { kind: row.kind === "images" ? "image" : text ? "text" : "details", text: text ?? null, name: row.name, size: row.size, modified: row.modified, parent: row.parent };
   },
-  move_files: (a) => (a.paths as string[]).map((p) => moveTo(p, String(a.destination), "move")),
+  // Several files moved or recycled together share a batch, as in ops.rs.
+  move_files: (a) => {
+    const paths = a.paths as string[];
+    const batch = paths.length > 1 ? `move-${nextOp}` : null;
+    return paths.map((p) => moveTo(p, String(a.destination), "move", batch));
+  },
   rename_file: (a) => {
     const row = files.find((f) => f.path === a.path);
     if (!row) throw { code: "notFound", message: "That file is no longer there." };
@@ -238,9 +246,11 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   create_folder: (a) => `${a.parent}\\${a.name}`,
   recycle_files: (a) => {
     const out: OpRow[] = [];
-    for (const path of a.paths as string[]) {
+    const paths = a.paths as string[];
+    const batch = paths.length > 1 ? `recycle-${nextOp}` : null;
+    for (const path of paths) {
       files = files.filter((f) => f.path !== path);
-      const op: OpRow = { id: nextOp++, kind: "recycle", src: path, dst: null, status: "done", message: null, automatic: false, createdAt: NOW, batch: null };
+      const op: OpRow = { id: nextOp++, kind: "recycle", src: path, dst: null, status: "done", message: null, automatic: false, createdAt: NOW, batch };
       ops.unshift(op);
       out.push(op);
     }
@@ -338,6 +348,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   undo_batch: (a) => {
     let undone = 0;
     for (const op of ops.filter((o) => o.batch === a.batch && o.status === "done")) {
+      if (op.kind === "recycle") files.push(file(op.src.slice(0, op.src.lastIndexOf("\\")), op.src.slice(op.src.lastIndexOf("\\") + 1)));
       const row = files.find((f) => f.path === op.dst);
       if (row) {
         row.path = op.src;

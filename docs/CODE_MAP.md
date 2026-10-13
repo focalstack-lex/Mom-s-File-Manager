@@ -55,6 +55,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | `components/SubjectRules.tsx` | Settings editor for the subject folders and their words. |
 | `components/PreviewPanel.tsx` | Quick preview. |
 | `components/Tour.tsx` | Walkthrough overlay with mask, ring and arrow. |
+| `components/TitleBar.tsx` | The window's own title bar on the green shell: drag region and Windows-style window buttons; no controls in the browser harness. |
 | `components/Dialog.tsx`, `Toasts.tsx`, `icons.tsx`, `Skeleton.tsx`, `ShowMore.tsx` | Shared pieces: modal with focus trap, toasts with Undo, kind tiles and the Desk mark, loading rows, the "Showing 10 of 84" foot with Show more. |
 | `views/FindView.tsx`, `CleanupView.tsx`, `ActivityView.tsx`, `SettingsView.tsx` | The four screens. |
 | `dev/mockBackend.ts` | Fake native side for the browser harness and the UI drive. |

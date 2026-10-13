@@ -41,6 +41,8 @@ const PAIRS = [
   // so muted text never sits on the hover surface.
   { text: "sidebar-text", surface: "bg-sidebar-hover", min: 4.5 },
   { text: "sidebar-active-text", surface: "bg-sidebar-active", min: 4.5 },
+  { text: "sidebar-text", surface: "bg-shell-top", min: 4.5 },
+  { text: "sidebar-text", surface: "bg-shell-bottom", min: 4.5 },
 ];
 
 let failures = 0;

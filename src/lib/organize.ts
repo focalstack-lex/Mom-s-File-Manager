@@ -56,8 +56,18 @@ export function foldBatches(ops: OpRow[]): ActivityEntry[] {
   return out;
 }
 
-/** "Organized 84 files into 9 folders" for a folded run. */
+/**
+ * One Activity row for a batch: "Organized 84 files into 9 folders" for an
+ * Organize run, "Moved 4 files to the Recycle Bin" or "Moved 3 files to
+ * October 2026" when several ticked files were sent at once.
+ */
 export function batchTitle(ops: OpRow[]): string {
   const folders = new Set(ops.map((o) => (o.dst ?? "").slice(0, (o.dst ?? "").lastIndexOf("\\"))));
+  const count = ops.length === 1 ? "1 file" : `${ops.length.toLocaleString()} files`;
+  if (ops.length > 0 && ops.every((o) => o.kind === "recycle")) return `Moved ${count} to the Recycle Bin`;
+  if ((ops[0]?.batch ?? "").startsWith("move-")) {
+    const [only] = folders;
+    return folders.size === 1 && only ? `Moved ${count} to ${monthName(only.split("\\").pop() ?? only)}` : `Moved ${count}`;
+  }
   return `Organized ${planSummary(ops.length, folders.size)}`;
 }

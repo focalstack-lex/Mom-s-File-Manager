@@ -313,9 +313,14 @@ pub async fn move_files(state: State<'_, AppState>, paths: Vec<String>, destinat
     blocking("move_files", move || {
         let conn = core.db()?;
         let dest = Path::new(&destination);
+        // Several files moved together are one batch: one Activity row, one Undo all.
+        let batch = (paths.len() > 1).then(|| ops::new_batch("move"));
         let mut moved = Vec::new();
         for p in paths {
-            let new_path = ops::move_file(&conn, &core.roots, Path::new(&p), dest, ops::OpKind::Move)?;
+            let new_path = match &batch {
+                Some(batch) => ops::move_file_in_batch(&conn, &core.roots, Path::new(&p), dest, batch)?,
+                None => ops::move_file(&conn, &core.roots, Path::new(&p), dest, ops::OpKind::Move)?,
+            };
             moved.push(paths::display(&new_path));
         }
         Ok(moved)

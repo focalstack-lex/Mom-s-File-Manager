@@ -1,9 +1,12 @@
-// The frame: green sidebar, one view at a time, toasts, and the walkthrough
-// on first run. Ctrl+F (or /) jumps to the search box from anywhere.
+// The frame: a green shell with the sidebar, the open view on a canvas card,
+// toasts, and the walkthrough on first run. Ctrl+F (or /) jumps to the search
+// box from anywhere. The sidebar folds into an icon rail; the choice is
+// remembered on this computer.
 
-import { BrushCleaning, FolderOpen, History, Search, Settings } from "lucide-react";
-import { useEffect } from "react";
+import { BrushCleaning, ChevronLeft, ChevronRight, FolderOpen, History, Search, Settings } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type ComponentType } from "react";
 import { DeskMark } from "./components/icons";
+import { TitleBar } from "./components/TitleBar";
 import { Toasts } from "./components/Toasts";
 import { Tour } from "./components/Tour";
 import { CHANGED_EVENT, ipc, listen, SORTED_EVENT, type SortedEvent } from "./lib/ipc";
@@ -21,6 +24,48 @@ const NAV: { id: View; label: string; icon: typeof Search; tour?: string }[] = [
   { id: "activity", label: "Activity", icon: History, tour: "nav-activity" },
 ];
 
+/**
+ * One menu item. The white label and glass chip are the resting look; the
+ * "ink" layer on top is the same icon and label in their active colours, and
+ * styles.css clips it to wherever the sliding tab is right now. So the text
+ * is dark exactly where the tab is, at every frame of the slide.
+ */
+function NavItem({ label, icon: Icon, active, onClick, testId, tour, title }: { label: string; icon: ComponentType<{ size?: number }>; active?: boolean; onClick(): void; testId: string; tour?: string; title?: string }) {
+  return (
+    <button type="button" className={`nav-button${active ? " is-active" : ""}`} onClick={onClick} aria-current={active ? "page" : undefined} data-tour={tour} data-testid={testId} title={title ?? label}>
+      <span className="nav-icon" aria-hidden>
+        <Icon size={20} />
+      </span>
+      <span className="nav-label">{label}</span>
+      <span className="nav-ink" aria-hidden>
+        <span className="nav-icon">
+          <Icon size={20} />
+        </span>
+        <span className="nav-label">{label}</span>
+      </span>
+    </button>
+  );
+}
+
+const RAIL_KEY = "desk.sidebar.collapsed";
+
+/** Browser storage can be blocked; the sidebar then simply starts open. */
+function readCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(RAIL_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeCollapsed(collapsed: boolean): void {
+  try {
+    window.localStorage.setItem(RAIL_KEY, collapsed ? "1" : "0");
+  } catch (error) {
+    console.warn("Desk: could not remember the sidebar choice", error);
+  }
+}
+
 export default function App() {
   const view = useApp((s) => s.view);
   const setView = useApp((s) => s.setView);
@@ -32,6 +77,48 @@ export default function App() {
   const refreshFind = useFind((s) => s.refresh);
   const startTour = useTour((s) => s.start);
   const checkBrowsers = useApp((s) => s.checkBrowsers);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const navRef = useRef<HTMLElement>(null);
+
+  // The active tab is one shape that slides to the chosen item. Its place is
+  // two animated CSS properties on the sidebar (--tab-y, --tab-h); each item
+  // knows its own place (--item-y, --item-h) so its ink layer can follow the
+  // tab frame by frame. Measured after layout and whenever the sidebar
+  // changes size (folding, a taller window moving Settings down).
+  useLayoutEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const place = () => {
+      for (const item of nav.querySelectorAll<HTMLElement>(".nav-button")) {
+        item.style.setProperty("--item-y", `${item.offsetTop}px`);
+        item.style.setProperty("--item-h", `${item.offsetHeight}px`);
+      }
+      const active = nav.querySelector<HTMLElement>('.nav-button[aria-current="page"]');
+      nav.dataset.tab = active ? "on" : "off";
+      if (active) {
+        nav.style.setProperty("--tab-y", `${active.offsetTop}px`);
+        nav.style.setProperty("--tab-h", `${active.offsetHeight}px`);
+      }
+    };
+    place();
+    // The first placement appears in place; only later moves glide.
+    const frame = window.requestAnimationFrame(() => {
+      nav.dataset.tabReady = "true";
+    });
+    const observer = new ResizeObserver(place);
+    observer.observe(nav);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [view, collapsed, info]);
+
+  const toggleSidebar = () => {
+    setCollapsed((was) => {
+      writeCollapsed(!was);
+      return !was;
+    });
+  };
 
   useEffect(() => {
     void loadInfo();
@@ -84,30 +171,26 @@ export default function App() {
   const openSchoolFiles = () => ipc.openSchoolFiles().catch(fail);
 
   return (
-    <div className="app" data-testid="app">
-      <nav className="sidebar" aria-label="Main" data-testid="sidebar">
+    <div className={`app${collapsed ? " is-collapsed" : ""}`} data-testid="app">
+      <TitleBar />
+      <nav className="sidebar" aria-label="Main" data-testid="sidebar" ref={navRef}>
+        <span className="nav-indicator" aria-hidden data-testid="nav-indicator" />
         <div className="brand">
           <span className="brand-mark" aria-hidden>
             <DeskMark />
           </span>
           <span className="brand-name">Desk</span>
+          <button type="button" className="sidebar-toggle" onClick={toggleSidebar} aria-label={collapsed ? "Show menu names" : "Hide menu names"} aria-expanded={!collapsed} title={collapsed ? "Show menu names" : "Hide menu names"} data-testid="sidebar-toggle">
+            {collapsed ? <ChevronRight size={16} aria-hidden /> : <ChevronLeft size={16} aria-hidden />}
+          </button>
         </div>
         {NAV.map((item) => (
-          <button key={item.id} type="button" className={`nav-button${view === item.id ? " is-active" : ""}`} onClick={() => setView(item.id)} aria-current={view === item.id ? "page" : undefined} data-tour={item.tour} data-testid={`nav-${item.id}`} title={item.label}>
-            <item.icon size={22} aria-hidden />
-            <span className="nav-label">{item.label}</span>
-          </button>
+          <NavItem key={item.id} label={item.label} icon={item.icon} active={view === item.id} onClick={() => setView(item.id)} testId={`nav-${item.id}`} tour={item.tour} />
         ))}
         <div className="nav-divider" aria-hidden />
-        <button type="button" className="nav-button" onClick={() => void openSchoolFiles()} data-testid="nav-folders" title="Open School Files in File Explorer">
-          <FolderOpen size={22} aria-hidden />
-          <span className="nav-label">Sorted folders</span>
-        </button>
+        <NavItem label="Sorted folders" icon={FolderOpen} onClick={() => void openSchoolFiles()} testId="nav-folders" title="Open School Files in File Explorer" />
         <div className="sidebar-spacer" />
-        <button type="button" className={`nav-button${view === "settings" ? " is-active" : ""}`} onClick={() => setView("settings")} aria-current={view === "settings" ? "page" : undefined} data-testid="nav-settings" title="Settings">
-          <Settings size={22} aria-hidden />
-          <span className="nav-label">Settings</span>
-        </button>
+        <NavItem label="Settings" icon={Settings} active={view === "settings"} onClick={() => setView("settings")} testId="nav-settings" />
       </nav>
       <main className="main" data-testid="main">
         {info === null ? (

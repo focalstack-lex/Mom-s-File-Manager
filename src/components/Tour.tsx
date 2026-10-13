@@ -30,10 +30,12 @@ export function Tour({ onFinish }: { onFinish(): void }) {
 
   useLayoutEffect(() => {
     if (!active) return;
-    const measure = () => {
-      const el = document.querySelector<HTMLElement>(`[data-tour="${step.target}"]`);
+    const find = () => document.querySelector<HTMLElement>(`[data-tour="${step.target}"]`);
+    // Where the target is now, without scrolling: content above it can still
+    // arrive (the browser notice, the first answer) and push it down.
+    const place = () => {
+      const el = find();
       if (el) {
-        el.scrollIntoView({ block: "nearest", inline: "nearest" });
         const r = el.getBoundingClientRect();
         setTarget({ top: r.top - PAD, left: r.left - PAD, width: r.width + PAD * 2, height: r.height + PAD * 2 });
       } else {
@@ -42,12 +44,28 @@ export function Tour({ onFinish }: { onFinish(): void }) {
       setViewport({ width: window.innerWidth, height: window.innerHeight });
       if (cardRef.current) setCard({ width: cardRef.current.offsetWidth, height: cardRef.current.offsetHeight });
     };
+    const measure = () => {
+      find()?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      place();
+    };
     measure();
     const raf = window.requestAnimationFrame(measure);
     window.addEventListener("resize", measure);
+    // Follow layout shifts and scrolling so the ring and arrow stay on the target.
+    const observer = new ResizeObserver(place);
+    const target = find();
+    if (target) observer.observe(target);
+    const view = document.querySelector('[data-testid="main"] > *');
+    if (view) observer.observe(view);
+    window.addEventListener("scroll", place, true);
+    // A view eases in with a short slide; place the ring again once it lands.
+    window.addEventListener("animationend", place, true);
     return () => {
+      window.removeEventListener("animationend", place, true);
       window.cancelAnimationFrame(raf);
       window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", place, true);
+      observer.disconnect();
     };
   }, [active, step]);
 

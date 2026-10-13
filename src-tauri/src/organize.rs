@@ -224,7 +224,7 @@ pub fn plan(roots: &Roots, rules: &[SubjectRule]) -> Result<Plan> {
 pub fn run(core: &crate::state::Core, rules: &[SubjectRule], wanted: &[String]) -> Result<RunResult> {
     let roots = &core.roots;
     let plan = plan(roots, rules)?;
-    let batch = format!("organize-{}", chrono::Utc::now().timestamp_millis());
+    let batch = ops::new_batch("organize");
     let mut moved = 0;
     let mut failed = Vec::new();
     let mut folders = std::collections::HashSet::new();

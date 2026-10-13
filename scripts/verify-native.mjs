@@ -216,7 +216,7 @@ async function main() {
 
     // 8. Clean up sees the duplicate lesson plans and the old download.
     await page.locator('[data-testid="nav-cleanup"]').click();
-    await page.waitForSelector('[data-testid="cleanup-view"] section.card', { timeout: STEP_TIMEOUT_MS });
+    await page.waitForSelector('[data-testid="cleanup-view"] .card', { timeout: STEP_TIMEOUT_MS });
     const dupes = await page.locator('[data-testid="cleanup-view"] .latest').count();
     const old = await page.locator('[data-testid="old-downloads-list"] .suggestion').count();
     await capture("05-cleanup");
@@ -252,6 +252,19 @@ async function main() {
     await sleep(500);
     const dbText = execFileSync("python", ["-I", "-c", `import sqlite3;print(sqlite3.connect(r'${join(LAB, "data", "desk.sqlite")}').execute("select value from settings where key='settings'").fetchone()[0])`], { encoding: "utf8" });
     record("Settings are written to the real database", dbText.includes('"notifications":false') && dbText.includes('"tourDone":true'), dbText.trim().slice(0, 120));
+
+    // The window has no Windows frame: the green title bar carries the controls.
+    const frame = await page.evaluate(() => ({ frameless: outerWidth === innerWidth && outerHeight === innerHeight, controls: [...document.querySelectorAll(".window-button")].map((b) => b.getAttribute("aria-label")) }));
+    const startWidth = await page.evaluate(() => outerWidth);
+    await page.getByRole("button", { name: "Maximize" }).click();
+    const maximized = await until(() => page.evaluate(() => outerWidth === screen.availWidth));
+    const restoreLabel = await page.locator(".window-button").nth(1).getAttribute("aria-label");
+    await page.getByRole("button", { name: "Restore" }).click();
+    const unmaximized = await until(() => page.evaluate((w) => outerWidth === w, startWidth));
+    await capture("12-title-bar");
+    record("The green title bar replaces the Windows frame; Maximize and Restore work from its buttons",
+      frame.frameless && frame.controls.join(",") === "Minimize,Maximize,Close" && maximized && restoreLabel === "Restore" && unmaximized,
+      JSON.stringify({ ...frame, maximized, restoreLabel, unmaximized }));
 
     record("No uncaught page errors in the real window", pageErrors.length === 0, pageErrors.join(" | "));
   } catch (error) {

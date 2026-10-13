@@ -44,15 +44,25 @@ pub struct OpRow {
     pub message: Option<String>,
     pub automatic: bool,
     pub created_at: i64,
-    /// Set when the change was part of an Organize run.
+    /// Set when the change was one of several made by one action: an Organize
+    /// run, or a Move or Recycle Bin of several ticked files. Activity shows
+    /// the batch as one row with Undo all.
     pub batch: Option<String>,
+}
+
+/// A fresh batch id such as `recycle-1760300000000-3`. The counter keeps two
+/// actions in the same millisecond apart.
+pub fn new_batch(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    format!("{prefix}-{}-{}", chrono::Utc::now().timestamp_millis(), SEQ.fetch_add(1, Ordering::Relaxed))
 }
 
 fn record(conn: &Connection, kind: OpKind, src: &Path, dst: Option<&Path>, automatic: bool) -> Result<i64> {
     record_in(conn, kind, src, dst, automatic, None)
 }
 
-/// `batch` ties the moves of one Organize run together so one Undo reverses them all.
+/// `batch` ties the changes of one action together so one Undo reverses them all.
 fn record_in(conn: &Connection, kind: OpKind, src: &Path, dst: Option<&Path>, automatic: bool, batch: Option<&str>) -> Result<i64> {
     conn.execute(
         "INSERT INTO ops(kind, src, dst, status, automatic, created_at, batch) VALUES(?1, ?2, ?3, 'pending', ?4, ?5, ?6)",
@@ -170,15 +180,17 @@ pub fn create_folder(conn: &Connection, roots: &Roots, parent: &Path, name: &str
     result
 }
 
-/// Sends files to the Recycle Bin, one logged operation per file.
+/// Sends files to the Recycle Bin, one logged operation per file. Several
+/// files sent together share a batch, so Activity shows them as one row.
 pub fn recycle(conn: &Connection, roots: &Roots, targets: &[PathBuf]) -> Result<Vec<OpRow>> {
+    let batch = (targets.len() > 1).then(|| new_batch("recycle"));
     let mut rows = Vec::new();
     for target in targets {
         let src = roots.confine(target)?;
         if !src.exists() {
             continue;
         }
-        let id = record(conn, OpKind::Recycle, &src, None, false)?;
+        let id = record_in(conn, OpKind::Recycle, &src, None, false, batch.as_deref())?;
         let result = trash::delete(&src)
             .map(|_| src.clone())
             .map_err(|e| DeskError::new(ErrorCode::Io, format!("Windows could not move it to the Recycle Bin: {e}")).with_path(paths::display(&src)));
@@ -283,9 +295,11 @@ pub struct BatchUndo {
     pub failed: Vec<String>,
 }
 
-/// Reverses every completed move of one Organize run, newest first, then
-/// removes the folders the run created that are now empty (never a folder
-/// that still holds anything, never School Files itself).
+/// Reverses every completed change of one batch, newest first. For an
+/// Organize run it then removes the folders the run created that are now
+/// empty (never a folder that still holds anything, never School Files
+/// itself). A manual Move of several files never removes a folder: it may
+/// have existed, empty, before she moved anything into it.
 pub fn undo_batch(conn: &Connection, roots: &Roots, batch: &str) -> Result<BatchUndo> {
     let rows: Vec<OpRow> = {
         let mut stmt = conn.prepare("SELECT id, kind, src, dst, status, message, automatic, created_at, batch FROM ops WHERE batch = ?1 AND status = 'done' ORDER BY id DESC")?;
@@ -308,6 +322,9 @@ pub fn undo_batch(conn: &Connection, roots: &Roots, batch: &str) -> Result<Batch
                 failed.push(Path::new(&row.src).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
             }
         }
+    }
+    if !batch.starts_with("organize-") {
+        return Ok(BatchUndo { undone, failed });
     }
     let school = roots.school_files()?;
     touched.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
@@ -422,5 +439,36 @@ mod tests {
         let op = list(&conn, 1).unwrap().remove(0);
         undo(&conn, &roots, op.id).unwrap();
         assert!(!folder.exists());
+    }
+
+    #[test]
+    fn a_manual_batch_undoes_together_and_keeps_its_folder() {
+        let (_dir, roots, conn) = fixture();
+        let downloads = roots.downloads.clone().unwrap();
+        let a = downloads.join("Quiz A.docx");
+        let b = downloads.join("Quiz B.docx");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        // A folder she made earlier, empty before the move.
+        let dest = roots.documents.clone().unwrap().join("School Files").join("Quizzes");
+        std::fs::create_dir_all(&dest).unwrap();
+        let batch = new_batch("move");
+        move_file_in_batch(&conn, &roots, &a, &dest, &batch).unwrap();
+        move_file_in_batch(&conn, &roots, &b, &dest, &batch).unwrap();
+        let logged = list(&conn, 10).unwrap();
+        assert_eq!(logged.iter().filter(|o| o.batch.as_deref() == Some(batch.as_str())).count(), 2);
+
+        let undone = undo_batch(&conn, &roots, &batch).unwrap();
+        assert_eq!(undone.undone, 2);
+        assert!(a.is_file() && b.is_file());
+        assert!(dest.is_dir(), "a manual batch must never remove the folder it moved into");
+    }
+
+    #[test]
+    fn batch_ids_are_unique_within_one_millisecond() {
+        let first = new_batch("recycle");
+        let second = new_batch("recycle");
+        assert_ne!(first, second);
+        assert!(first.starts_with("recycle-"));
     }
 }

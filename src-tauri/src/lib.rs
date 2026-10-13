@@ -115,6 +115,11 @@ pub fn run() {
                 .title("Desk")
                 .inner_size(1180.0, 760.0)
                 .min_inner_size(640.0, 480.0)
+                // The green shell draws its own title bar (src/components/TitleBar.tsx).
+                // Without decorations tao still gives resize borders; the shadow
+                // keeps the Windows 11 rounded corners and drop shadow.
+                .decorations(false)
+                .shadow(true)
                 .center()
                 .visible(false);
             // WebView2 refuses to share its browser data folder between two

@@ -61,6 +61,10 @@ Where things live. Read this before changing anything; update it in the same cha
 | `dev/mockBackend.ts` | Fake native side for the browser harness and the UI drive. |
 | `tests/*.test.ts` | vitest for helpers, stores and the text gate. |
 
+## Brand (`brand`)
+
+`tote-logo.svg` is the master of the official two-tone logo (dark green `#143625`, cream `#f2f1df`). `tote-app-icon.svg` puts it on a cream rounded tile; `npx tauri icon brand/tote-app-icon.svg` regenerates every file in `src-tauri/icons` (copy only the tracked ones, and sync `E:\PROJECTS\tote-icons` while the checkout path has an apostrophe). `ToteMark` in `src/components/icons.tsx` is the same geometry in one color, with the cream parts cut out.
+
 ## Gates (`scripts`)
 
 `verify-text.mjs` (no emoji, no em or en dash in tracked files), `verify-contrast.mjs` (tokens), `verify-ui.mjs` (Playwright drive of the mocked renderer, evidence in `reports/ui-verification/`), `verify-native.mjs` (the release app on throwaway folders over CDP, evidence in `reports/native-check/`). ESLint invariants live in `eslint-rules/tote-invariants.js`.

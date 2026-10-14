@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="83 24 228 255" width="228" height="255">
+  <title>Tote</title>
+<path d="M146.5 104.5V77A44 44 0 0 1 234.5 77V78.5" fill="none" stroke="#143625" stroke-width="15.5"/>
+<path d="M206.5 104.5L213.5 89Q214.5 86.8 217 86.8H282.5Q285 86.8 286 89.5L288.5 104.5Z" fill="#143625"/>
+<path d="M94 119H290V277.5H94Z" fill="#f2f1df"/>
+<path d="M126.6 133H268.4L221.4 270H94V240.9Z" fill="#143625"/>
+<path d="M133.2 140.3H258.2L213.4 270H94V268.7Z" fill="#f2f1df"/>
+<path d="M155.2 151H280L236.9 270H94V238.7Z" fill="#143625"/>
+<path d="M160 158.3H269.8L228.9 270H94V251.8Z" fill="#f2f1df"/>
+<path d="M84 104H298V159.5H288V119H94V277.5H84Z" fill="#143625"/>
+<path d="M180.3 168.3H309.2L289.8 277.5H84V257.5H94L140.5 199.8Z" fill="#143625"/>
+<path d="M181 177.8L179 199H153.8Z" fill="#f2f1df"/>
+</svg>
+</svg>

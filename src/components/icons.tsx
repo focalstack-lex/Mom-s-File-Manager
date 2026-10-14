@@ -2,6 +2,7 @@
 // suggestions all agree, plus the Tote mark.
 
 import { File, FileImage, FileSpreadsheet, FileText, FileType, FileVideo, Presentation } from "lucide-react";
+import { useId } from "react";
 import type { Kind } from "../lib/types";
 
 export function KindIcon({ kind, size = 24 }: { kind: Kind; size?: number }) {
@@ -35,14 +36,35 @@ export function KindTile({ kind, ext }: { kind: Kind; ext?: string }) {
   );
 }
 
-/** Tote's mark: two filed sheets resting in a tray. Drawn, not borrowed from the nav icons. */
-export function ToteMark({ size = 22 }: { size?: number }) {
+/**
+ * Tote's logo: a tote bag that is also an open folder of papers, in one
+ * color. Same geometry as brand/tote-logo.svg; the cream parts of the
+ * two-tone logo become cutouts, so the shell's green shows through them.
+ */
+export function ToteMark({ size = 24 }: { size?: number }) {
+  // Mask and clip ids must be unique per instance and safe inside url().
+  const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M7 4h7l3 3v6" />
-      <path d="M7 4v9" />
-      <path d="M10 9h4" />
-      <path d="M3 13h5l1.5 2.5h5L16 13h5v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    <svg width={(size * 228) / 255} height={size} viewBox="83 24 228 255" aria-hidden>
+      <defs>
+        <clipPath id={`${id}-inner`}>
+          <rect x="94" y="119" width="196" height="158.5" />
+        </clipPath>
+        <mask id={`${id}-mask`} maskUnits="userSpaceOnUse" x="83" y="24" width="228" height="255">
+          <path d="M146.5 104.5V77A44 44 0 0 1 234.5 77V78.5" fill="none" stroke="#fff" strokeWidth="15.5" />
+          <path d="M206.5 104.5L213.5 89Q214.5 86.8 217 86.8H282.5Q285 86.8 286 89.5L288.5 104.5Z" fill="#fff" />
+          <path d="M84 104H298V159.5H288V119H94V277.5H84Z" fill="#fff" />
+          <g clipPath={`url(#${id}-inner)`}>
+            <path d="M126.6 133H268.4L221.4 270H85.2Z" fill="#fff" />
+            <path d="M133.2 140.3H258.2L213.4 270H93.6Z" fill="#000" />
+            <path d="M155.2 151H280L236.9 270H72.2Z" fill="#fff" />
+            <path d="M160 158.3H269.8L228.9 270H81.2Z" fill="#000" />
+          </g>
+          <path d="M180.3 168.3H309.2L289.8 277.5H84V257.5H94L140.5 199.8Z" fill="#fff" />
+          <path d="M181 177.8L179 199H153.8Z" fill="#000" />
+        </mask>
+      </defs>
+      <rect x="83" y="24" width="228" height="255" fill="currentColor" mask={`url(#${id}-mask)`} />
     </svg>
   );
 }

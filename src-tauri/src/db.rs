@@ -133,6 +133,7 @@ pub fn open_memory() -> Result<Connection> {
     let connection = Connection::open_in_memory()?;
     connection.execute_batch(SCHEMA)?;
     migrate(&connection)?;
+    crate::tasks::attach_memory(&connection)?;
     Ok(connection)
 }
 

@@ -333,6 +333,12 @@ pub fn relocate(conn: &Connection, from: &Path, to: &Path) -> Result<()> {
     }
     conn.execute("UPDATE pins SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
     conn.execute("UPDATE templates SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
+    // Files attached to a task follow too. A move must never fail because of
+    // the list (for example when tasks.sqlite could not be opened), so a
+    // problem here is logged and the move stands.
+    if let Err(error) = conn.execute("UPDATE OR IGNORE todo.task_files SET path = ?2 WHERE path = ?1", [&from_text, &to_text]) {
+        log::warn!("task attachments not updated for {}: {error}", to.display());
+    }
     Ok(())
 }
 

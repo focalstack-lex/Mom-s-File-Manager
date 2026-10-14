@@ -18,6 +18,7 @@ mod paths;
 mod sorter;
 mod stability;
 mod state;
+mod tasks;
 mod templates;
 mod tray;
 mod update;

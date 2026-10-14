@@ -49,7 +49,7 @@ This amends the main spec: section 4 Out of scope ("network features of any kind
 - Request: `POST /api/ask`, JSON, headers `X-Tote-Install` (a random UUID made by Tote on first start) and `X-Tote-Version`. Body `{ "messages": [...] }` with roles `user`, `assistant` (with optional `tool_calls`) and `tool` (with `tool_call_id`) only.
 - Validation, before anything else (400 `invalid` otherwise): install id is a UUID; at most 40 messages; each content at most 4,000 characters (tool results 6,000); 40,000 characters in all; tool call names only from section 5; the last message is `user` or `tool`; no `system` role, no other fields.
 - The server adds the system prompt (section 6) and the tool definitions; the client can never send either.
-- DeepSeek call: `https://api.deepseek.com/chat/completions`, model `deepseek-flash`, `stream: true`, `reasoning_effort: "none"` (thinking off), `tool_choice: "auto"`, `max_tokens: 700`, `temperature: 0.3`. The stream is passed through to Tote as `text/event-stream`.
+- DeepSeek call: `https://api.deepseek.com/chat/completions`, model `deepseek-flash`, `stream: true`, `thinking: { type: "disabled" }` (thinking off; `reasoning_effort` has no off value in this format), `tool_choice: "auto"`, `max_tokens: 700`, `temperature: 0.3`. The stream is passed through to Tote as `text/event-stream`.
 - Limits (Upstash, keys expire after 48 hours, days are Philippine dates):
   - A request whose last message is `user` is a question: `q:<install>:<day>` must stay at or below 20.
   - Every request is a call: `c:<install>:<day>` at most 100 (tool steps included).

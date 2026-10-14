@@ -1,0 +1,12 @@
+{
+  "name": "tote-ask",
+  "private": true,
+  "description": "The Ask proxy for Tote: holds the DeepSeek key, owns the assistant's instructions, counts questions.",
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

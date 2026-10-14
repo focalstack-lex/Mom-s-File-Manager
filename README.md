@@ -94,7 +94,7 @@ Downloads a browser saves elsewhere are still noticed (by the browser's web stam
    npm run release -- --notes "What changed, in one plain sentence."
    ```
 
-   It builds with the updater key (`%USERPROFILE%\.tauri\tote-updater.key`, or `TOTE_UPDATER_KEY`), copies `Tote_<version>_x64-setup.exe` into the portfolio's `tote/download/`, writes `tote/latest.json`, and updates the file name, version, size and SHA-256 on the download page. `--skip-build` publishes the last build.
+   It writes `THIRD-PARTY-NOTICES.txt` (the license notices of every bundled package, installed next to `tote.exe` with `LICENSE.txt`), builds with the updater key (`%USERPROFILE%\.tauri\tote-updater.key`, or `TOTE_UPDATER_KEY`), copies `Tote_<version>_x64-setup.exe` into the portfolio's `tote/download/`, writes `tote/latest.json`, updates the file name, version, size and SHA-256 on the download page, and publishes the notices at `tote/third-party-notices.txt`. `--skip-build` publishes the last build.
 3. In the portfolio folder: review the diff, commit, push, then `vercel deploy --prod`. Installed copies offer the update within a day.
 
 The updater key is the only thing that lets installed copies trust an update. Keep a private backup of it (for example in a password manager); if it is lost, installed copies can no longer update and each laptop needs one manual install of a build with a new key. Never commit it. A plain `npx tauri build` fails without it, because `createUpdaterArtifacts` is on.

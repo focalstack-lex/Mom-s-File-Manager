@@ -18,7 +18,7 @@ Lex asked for productivity features on top of the file manager. School paperwork
 
 ## 3. The screen
 
-- Sidebar: To do with a checklist icon (lucide `ListChecks`), between Find and Clean up, with the "New" marker described above. A sixth walkthrough step points at it for new installs: "Your to-do list. Write what needs doing. On the morning it is due, Tote reminds you."
+- Sidebar: To do with a checklist icon (lucide `ListChecks`), between Find and Clean up, with the "New" marker described above. A walkthrough step points at it for new installs, after the Open step and before Clean up (six steps in all): "Your to-do list. Write what needs doing. On the morning it is due, Tote reminds you."
 - Header: title "To do" and one lead line, like the other views.
 - Add row at the top: a text box ("What needs doing? For example: Submit SF2 for October"), an optional Due date picker, and the Add button, which is the screen's one primary action. Enter in the text box adds too. Focus stays in the text box after adding.
 - List, in groups: Overdue (heading in coral), Today, Tomorrow, This week (the rest of the Monday to Sunday week), Later, No date. Inside a group: by due date, then oldest first. The list opens on the first 20 tasks and grows with Show more (the 5.10 pattern).
@@ -41,7 +41,7 @@ Lex asked for productivity features on top of the file manager. School paperwork
 - Tasks live in their own file, `tasks.sqlite`, next to `tote.sqlite`, attached to the same connection as schema `todo` (`ATTACH DATABASE ... AS todo`). One connection keeps the existing mutex discipline, and `index::relocate` can update attachments in the same statement batch.
 - Why a separate file: a damaged `tote.sqlite` is moved aside and rebuilt from disk (db.rs), which is safe because the index can be rebuilt. Her tasks cannot be rebuilt, so they must never be caught in that rebuild.
 - Schema (schema `todo`):
-  - `tasks(id INTEGER PRIMARY KEY, title TEXT NOT NULL, due TEXT, repeat TEXT NOT NULL DEFAULT 'none', done_at INTEGER, deleted_at INTEGER, repeated_from INTEGER, edited_at INTEGER, created_at INTEGER NOT NULL)`. `due` is a local date `YYYY-MM-DD`, the same form as the quarters. `repeat` is `none`, `week`, `month` or `quarter`.
+  - `tasks(id INTEGER PRIMARY KEY, title TEXT NOT NULL, due TEXT, repeat TEXT NOT NULL DEFAULT 'never', done_at INTEGER, deleted_at INTEGER, repeated_from INTEGER, edited_at INTEGER, created_at INTEGER NOT NULL)`. `due` is a local date `YYYY-MM-DD`, the same form as the quarters. `repeat` is `never`, `week`, `month` or `quarter`.
   - `task_files(task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, path TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY(task_id, path))`.
 - Daily snapshot: once a day (at start and on the worker's 15-minute check), `VACUUM todo INTO` a temporary file that then replaces `tasks.backup.sqlite`. The day it was taken is kept in the settings table (`tasks_snapshot_on`).
 - Opening, before the attach: if `tasks.sqlite` exists and fails to open or fails `PRAGMA integrity_check`, it is renamed `tasks.damaged-<unix time>.sqlite`. Then:
@@ -52,11 +52,11 @@ Lex asked for productivity features on top of the file manager. School paperwork
 
 ## 5. Behavior
 
-- Validation (native side): title trimmed, 1 to 200 characters; due is a real `YYYY-MM-DD` date or empty; repeat is one of the four values; repeat other than none needs a due date; quarter needs usable quarters in Settings; attached paths must be inside Tote's roots (the same boundary check as Open) and be files.
+- Validation (native side): title trimmed, 1 to 200 characters; due is a real `YYYY-MM-DD` date or empty; repeat is one of the four values; repeat other than never needs a due date; quarter needs usable quarters in Settings; attached paths must be inside Tote's roots (the same boundary check as Open) and be files.
 - Repeats, computed on the native side when she ticks a repeating task, in one transaction with the tick:
   - Week: due plus 7 days.
   - Month: same day next month; a day the month does not have becomes its last day (31 January to 28 or 29 February). The next copy counts from that date.
-  - Quarter: in the quarter that contains the due date, count the days from the due date to the quarter's end; the next copy is due that many days before the end of the next quarter (the one starting soonest after this one ends), never before that quarter's start. A due date outside every quarter goes to the last day of the next quarter that starts after it. With no next quarter, the copy has no due date and the toast says "Add next school year's quarters in Settings to keep it repeating."
+  - Quarter: in the quarter that contains the due date, count the days from the due date to the quarter's end; the next copy is due that many days before the end of the next quarter (the one starting soonest after this one ends), never before that quarter's start. A due date outside every quarter goes to the last day of the next quarter that starts after it. With no next quarter, no copy is made and the toast says "Done. There is no next quarter in Settings, so it will not repeat."
   - The next copy keeps the title and repeat, has no files attached, and records `repeated_from`.
 - Undo of a tick clears `done_at`. It also removes the copy made by that tick, but only while the copy is untouched: not edited (`edited_at` empty), not done, nothing attached. An edited copy stays.
 - Undo of a delete clears `deleted_at`.

@@ -29,3 +29,6 @@ installers/
 
 # Design hook cache and critiques (per machine, not source)
 .impeccable/
+
+# Generated at release time by scripts/third-party-notices.mjs (bundled with the installer)
+THIRD-PARTY-NOTICES.txt

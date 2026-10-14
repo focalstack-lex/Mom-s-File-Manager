@@ -11,7 +11,8 @@
  *    (TOTE_SITE_DIR, default C:/Users/User/Documents/Portfolio_Lex/tote),
  *    removes older installers there, and writes tote/latest.json, which every
  *    installed Tote reads once a day.
- * 3. Updates the file name, version, size and SHA-256 on tote/index.html.
+ * 3. Updates the file name, version, size and SHA-256 on tote/index.html,
+ *    and publishes THIRD-PARTY-NOTICES.txt as tote/third-party-notices.txt.
  *
  * It stops before committing or deploying: review the portfolio diff, commit,
  * then run `vercel deploy --prod` in the portfolio folder.
@@ -50,6 +51,9 @@ const sigPath = `${exePath}.sig`;
 if (!existsSync(join(SITE, "index.html"))) fail(`no download page at ${SITE} (set TOTE_SITE_DIR)`);
 
 if (!skipBuild) {
+  // License notices for everything compiled in; bundled next to tote.exe.
+  const notices = spawnSync(process.execPath, [join(ROOT, "scripts", "third-party-notices.mjs")], { cwd: ROOT, stdio: "inherit" });
+  if (notices.status !== 0) fail("could not write THIRD-PARTY-NOTICES.txt");
   if (!existsSync(KEY)) fail(`no updater key at ${KEY}. Without it no installed Tote will accept the update.`);
   if (ROOT.includes("'") && !process.env.TAURI_CONFIG) fail("this checkout path has an apostrophe; set TAURI_CONFIG as described in README (Building on a path with an apostrophe)");
   process.stdout.write(`Building Tote ${version} (signed)...\n`);
@@ -77,6 +81,11 @@ for (const old of readdirSync(downloadDir).filter((f) => /^Tote_.*_x64-setup\.ex
   process.stdout.write(`removed ${old}\n`);
 }
 copyFileSync(exePath, join(downloadDir, exeName));
+
+// The same notices the installer carries, for the license page.
+const noticesPath = join(ROOT, "THIRD-PARTY-NOTICES.txt");
+if (!existsSync(noticesPath)) fail("no THIRD-PARTY-NOTICES.txt; run node scripts/third-party-notices.mjs");
+copyFileSync(noticesPath, join(SITE, "third-party-notices.txt"));
 
 // 2. The manifest every installed Tote reads.
 const manifest = {

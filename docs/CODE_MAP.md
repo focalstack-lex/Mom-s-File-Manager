@@ -68,7 +68,7 @@ Where things live. Read this before changing anything; update it in the same cha
 
 ## Gates (`scripts`)
 
-`verify-text.mjs` (no emoji, no em or en dash in tracked files), `verify-contrast.mjs` (tokens), `verify-ui.mjs` (Playwright drive of the mocked renderer, evidence in `reports/ui-verification/`), `verify-native.mjs` (the release app on throwaway folders over CDP, evidence in `reports/native-check/`). ESLint invariants live in `eslint-rules/tote-invariants.js`.
+`verify-text.mjs` (no emoji, no em or en dash in tracked files), `verify-contrast.mjs` (tokens), `verify-ui.mjs` (Playwright drive of the mocked renderer, evidence in `reports/ui-verification/`), `verify-native.mjs` (the release app on throwaway folders over CDP, evidence in `reports/native-check/`). ESLint invariants live in `eslint-rules/tote-invariants.js`. `release.mjs` builds a signed installer and publishes it to the portfolio; `third-party-notices.mjs` writes THIRD-PARTY-NOTICES.txt from the exact Rust and npm dependency graph (generated at release time, not committed; bundled next to tote.exe with LICENSE.txt).
 
 ## Rules learned the hard way
 

@@ -15,6 +15,7 @@ use crate::ops::{self, OpRow};
 use crate::paths;
 use crate::sorter;
 use crate::state::{AppState, Core};
+use crate::tasks::{self, Completed, Repeat, Task};
 use crate::templates::{self, Template};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -45,6 +46,8 @@ pub struct Settings {
     pub subject_rules: Vec<crate::organize::SubjectRule>,
     /// Once a day, ask codewithlex.site whether a newer Tote exists.
     pub check_updates: bool,
+    /// She has opened To do once; the sidebar's New marker goes.
+    pub todo_seen: bool,
 }
 
 impl Default for Settings {
@@ -59,6 +62,7 @@ impl Default for Settings {
             excluded_folders: Vec::new(),
             subject_rules: Vec::new(),
             check_updates: true,
+            todo_seen: false,
         }
     }
 }
@@ -112,6 +116,8 @@ pub struct AppInfo {
     pub index: IndexStatus,
     pub sorted_this_week: usize,
     pub recovered: bool,
+    /// A damaged to-do list was replaced on this start.
+    pub tasks_restored: Option<tasks::Restored>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -179,6 +185,7 @@ pub async fn get_app_info(state: State<'_, AppState>) -> Result<AppInfo> {
             index: core.status(),
             sorted_this_week: index::sorted_since(&conn, week_ago)?,
             recovered: core.recovered,
+            tasks_restored: core.tasks_restored,
         })
     })
     .await
@@ -661,4 +668,97 @@ pub fn default_subject_rules() -> Vec<crate::organize::SubjectRule> {
 #[tauri::command]
 pub fn index_status(state: State<'_, AppState>) -> Result<IndexStatus> {
     Ok(state.0.status())
+}
+
+#[tauri::command]
+pub async fn list_tasks(state: State<'_, AppState>) -> Result<Vec<Task>> {
+    let core = core_of(&state);
+    blocking("list_tasks", move || {
+        let conn = core.db()?;
+        tasks::list(&conn, db::now())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn add_task(state: State<'_, AppState>, title: String, due: Option<String>) -> Result<Task> {
+    let core = core_of(&state);
+    blocking("add_task", move || {
+        let conn = core.db()?;
+        tasks::add(&conn, &title, due.as_deref(), db::now())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn update_task(state: State<'_, AppState>, id: i64, title: String, due: Option<String>, repeat: Repeat) -> Result<Task> {
+    let core = core_of(&state);
+    blocking("update_task", move || {
+        // Settings first; settings_of takes its own lock.
+        let quarters = settings_of(&core).quarters;
+        let conn = core.db()?;
+        tasks::update(&conn, id, &title, due.as_deref(), repeat, &quarters, db::now())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn complete_task(state: State<'_, AppState>, id: i64) -> Result<Completed> {
+    let core = core_of(&state);
+    blocking("complete_task", move || {
+        let quarters = settings_of(&core).quarters;
+        let conn = core.db()?;
+        tasks::complete(&conn, id, &quarters, db::now())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn reopen_task(state: State<'_, AppState>, id: i64) -> Result<()> {
+    let core = core_of(&state);
+    blocking("reopen_task", move || {
+        let conn = core.db()?;
+        tasks::reopen(&conn, id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_task(state: State<'_, AppState>, id: i64) -> Result<()> {
+    let core = core_of(&state);
+    blocking("delete_task", move || {
+        let conn = core.db()?;
+        tasks::delete(&conn, id, db::now())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn restore_task(state: State<'_, AppState>, id: i64) -> Result<()> {
+    let core = core_of(&state);
+    blocking("restore_task", move || {
+        let conn = core.db()?;
+        tasks::restore(&conn, id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn attach_file(state: State<'_, AppState>, id: i64, path: String) -> Result<Task> {
+    let core = core_of(&state);
+    blocking("attach_file", move || {
+        let conn = core.db()?;
+        tasks::attach_file(&conn, &core.roots, id, Path::new(&path), db::now())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn detach_file(state: State<'_, AppState>, id: i64, path: String) -> Result<Task> {
+    let core = core_of(&state);
+    blocking("detach_file", move || {
+        let conn = core.db()?;
+        tasks::detach_file(&conn, id, &path)
+    })
+    .await
 }

@@ -9,6 +9,7 @@ use crate::origin;
 use crate::sorter;
 use crate::stability::{self, Pending};
 use crate::state::Core;
+use crate::tasks;
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebounceEventResult};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,8 @@ pub const SORTED_EVENT: &str = "tote://sorted";
 const LIVE_DOWNLOAD_WINDOW_SECS: i64 = 10 * 60;
 /// On the first scan, stamped files from the last month fill Recent downloads.
 const SCAN_DOWNLOAD_WINDOW_SECS: i64 = 30 * 86_400;
+/// How often the To do housekeeping runs (purge, snapshot, morning reminder).
+const TASKS_CHECK_EVERY: Duration = Duration::from_secs(15 * 60);
 
 /// Windows reports a write to `file.mp3:Zone.Identifier` with the stream
 /// name attached; the file itself is what matters.
@@ -103,6 +106,7 @@ pub fn start(core: Arc<Core>, app: AppHandle) -> Result<()> {
 fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<Msg>) {
     let mut pending: HashMap<PathBuf, Pending> = HashMap::new();
     let mut index_dirty = false;
+    let mut tasks_checked: Option<Instant> = None;
     let roots = core.roots.all();
     loop {
         match rx.recv_timeout(Duration::from_secs(2)) {
@@ -146,6 +150,52 @@ fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<Msg>) {
         if index_dirty {
             index_dirty = false;
             let _ = app.emit(CHANGED_EVENT, ());
+        }
+        if tasks_checked.is_none_or(|at| at.elapsed() >= TASKS_CHECK_EVERY) {
+            tasks_checked = Some(Instant::now());
+            tasks_check(&core, &app);
+        }
+    }
+}
+
+/// The To do list's housekeeping: clear old done and deleted tasks, keep the
+/// day's snapshot, and show the morning reminder (rules in tasks.rs). Runs
+/// when the worker starts and every 15 minutes, so a laptop first opened at
+/// 14:00 is reminded then.
+fn tasks_check(core: &Arc<Core>, app: &AppHandle) {
+    // Settings first: the database mutex is not reentrant.
+    let notifications = crate::commands::settings_of(core).notifications;
+    let now = chrono::Local::now().naive_local();
+    let reminder = {
+        let Ok(conn) = core.db() else { return };
+        if let Err(error) = tasks::purge(&conn, crate::db::now()) {
+            log::warn!("tasks purge: {error}");
+        }
+        match tasks::snapshot(&conn, &core.data_dir, now.date()) {
+            Ok(true) => log::info!("tasks snapshot saved"),
+            Ok(false) => {}
+            Err(error) => log::warn!("tasks snapshot: {error}"),
+        }
+        let last = crate::db::get_setting(&conn, tasks::REMINDED_KEY).ok().flatten().and_then(|day| tasks::parse_day(&day));
+        match tasks::open_with_due(&conn) {
+            Ok(open) => tasks::reminder(now, last, &open, notifications),
+            Err(error) => {
+                log::warn!("tasks reminder: {error}");
+                None
+            }
+        }
+    };
+    let Some(reminder) = reminder else { return };
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(error) = app.notification().builder().title(&reminder.title).body(&reminder.body).show() {
+        // Not recorded, so the next check tries again.
+        log::warn!("reminder notification: {error}");
+        return;
+    }
+    log::info!("morning reminder shown ({} due today, {} overdue)", reminder.due_today, reminder.overdue);
+    if let Ok(conn) = core.db() {
+        if let Err(error) = crate::db::set_setting(&conn, tasks::REMINDED_KEY, &now.date().format("%Y-%m-%d").to_string()) {
+            log::warn!("reminder day not saved: {error}");
         }
     }
 }

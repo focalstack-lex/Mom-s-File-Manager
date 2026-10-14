@@ -105,6 +105,14 @@ pub fn run() {
                     std::process::exit(1);
                 }
             };
+            // The To do list has its own file; a problem with it never stops Tote.
+            let tasks_restored = match tasks::open_store(&opened.connection, &data_dir) {
+                Ok(restored) => restored,
+                Err(error) => {
+                    log::error!("the to-do list could not be opened: {error}");
+                    None
+                }
+            };
             let roots = paths::Roots::detect(&commands::root_choices(&opened.connection));
             if paths::Roots::test_mode() {
                 log::info!("test mode: roots {:?}, data in {}", roots.all(), data_dir.display());
@@ -119,6 +127,8 @@ pub fn run() {
                 roots,
                 status: std::sync::Mutex::new(index::IndexStatus::default()),
                 recovered: opened.recovered,
+                data_dir: data_dir.clone(),
+                tasks_restored,
             });
             app.manage(state::AppState(core.clone()));
 
@@ -212,6 +222,15 @@ pub fn run() {
             commands::index_status,
             commands::check_update,
             commands::install_update,
+            commands::list_tasks,
+            commands::add_task,
+            commands::update_task,
+            commands::complete_task,
+            commands::reopen_task,
+            commands::delete_task,
+            commands::restore_task,
+            commands::attach_file,
+            commands::detach_file,
         ]);
 
     if let Err(error) = builder.run(tauri::generate_context!()) {

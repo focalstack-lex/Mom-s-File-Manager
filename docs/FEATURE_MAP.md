@@ -4,7 +4,7 @@ Every surface a user can reach, where it lives, and which verify step proves it.
 
 | Surface | Spec | Renderer | Native | Verify step |
 | --- | --- | --- | --- | --- |
-| Walkthrough (first run, arrows, Enter and Escape) | 5.9 | `src/components/Tour.tsx`, `src/store/tour.ts` | settings `tourDone` | UI drive 1, 2, 13, native 2 |
+| Walkthrough (first run, six steps, arrows, Enter and Escape) | 5.9 | `src/components/Tour.tsx`, `src/store/tour.ts` | settings `tourDone` | UI drive 1, 2, 13, native 2 |
 | Find: search box (Ctrl+F or / from anywhere), status line, result count, searching state | 5.3 | `src/views/FindView.tsx`, `src/App.tsx` | `commands::find`, `index::search` | UI drive 3, 4, native 3 |
 | Find: Recent downloads with source and location | 5.3 | `src/components/ResultRow.tsx` | `index::recent_downloads`, `origin` | UI drive 3, 14, native 4 |
 | Find: Pinned and orphan pins | 5.4 | `src/views/FindView.tsx` | `index::pinned`, `index::orphan_pins` | UI drive 3 |
@@ -18,7 +18,7 @@ Every surface a user can reach, where it lives, and which verify step proves it.
 | Templates shelf | 5.6 | `src/views/FindView.tsx`, `SettingsView.tsx` | `templates` | cargo test templates |
 | Activity with Undo, grouped by day; several files moved or recycled at once are one row with Undo all; filed and moved rows marked green with Show in folder; quiet Undo that outlines on hover; failures in coral with Show the file | 5.7 | `src/views/ActivityView.tsx`, `src/lib/organize.ts` (`batchTitle`) | `ops::list`, `ops::undo`, `ops::undo_batch`, `ops::new_batch` (Move and Recycle of several files) | UI drive 11, 11b, native 8, cargo test ops |
 | Clean up: duplicates, Desktop clutter, old downloads as divided rows of one card, count pills, chevron at the right (an extra copy is only offered for the Recycle Bin) | 5.5 | `src/views/CleanupView.tsx` | `cleanup::report` | UI drive 12, native 9 |
-| Settings: start at login and notifications (switches), school year and quarters (date pickers), replay | 5.8 | `src/views/SettingsView.tsx` | `commands::set_settings`, autostart plugin | UI drive 13, native 10 |
+| Settings: start at login and Windows messages (switches; messages cover filed downloads and the To do reminder), school year and quarters (date pickers), replay | 5.8 | `src/views/SettingsView.tsx` | `commands::set_settings`, autostart plugin | UI drive 13, native 10 |
 | Settings: folders Tote looks in (add via native picker, remove, restart note) | 5.8 | `src/views/SettingsView.tsx` | `commands::add_folder`, `remove_folder`, `restart_app`, dialog plugin | UI drive 13b |
 | Settings: templates via native file picker | 5.6 | `src/views/SettingsView.tsx` | `commands::add_template`, dialog plugin | UI drive 13c |
 | Test mode (TOTE_ROOTS, TOTE_DATA_DIR) | 8 | none | `paths::Roots::from_env`, `lib.rs` | native 1 |
@@ -34,6 +34,11 @@ Every surface a user can reach, where it lives, and which verify step proves it.
 | Long lists open short: Recent downloads by day (10), results (20), folded Clean up cards (10), Activity (Today and Yesterday) | 5.10 | `src/lib/paging.ts`, `src/components/ShowMore.tsx`, `FindView.tsx`, `CleanupView.tsx`, `ActivityView.tsx` | none | vitest paging, UI drive 3b, 12b |
 | Organize now: plan dialog, run, toast Undo, one Activity row with Undo all; Settings subject words | 5.11 | `src/components/OrganizeDialog.tsx`, `CleanupView.tsx`, `ActivityView.tsx`, `src/components/SubjectRules.tsx`, `src/lib/organize.ts` | `organize`, `ops::undo_batch`, `commands::organize_plan`, `organize_run`, `undo_batch` | cargo test organize, vitest organize, UI drive 12c and 13d, native 8b |
 | Tray icon, close hides, Quit | 5.1 | none | `tray` | manual |
-| Narrow windows (rail at 900 px, preview drawer, two-line Clean up rows, no overflow to 640 px) | 7 | `src/styles.css` | none | UI drive 15 |
+| To do: add (Enter or Add, optional due date), groups Overdue to No date, a task opened in place (title, due, repeat, No due date), Done folded with its count, tick and delete with toast Undo | To do spec 3, 5 | `src/views/TodoView.tsx`, `src/components/TaskRow.tsx`, `src/store/todo.ts`, `src/lib/todo.ts` | `tasks`, `commands::list_tasks`, `add_task`, `update_task`, `complete_task`, `reopen_task`, `delete_task`, `restore_task` | UI drive 17 to 17c, 17f, vitest todo, cargo test tasks, native 10 |
+| To do: repeats (weekly, monthly, quarterly from Settings quarters; next copy in the same transaction, Undo removes an untouched copy) | To do spec 5 | `src/components/TaskRow.tsx`, `src/lib/todo.ts` (`hasQuarters`) | `tasks::next_due`, `tasks::complete`, `tasks::reopen` | UI drive 17d, cargo test tasks |
+| To do: Attach a file (search over the Find index), attached files with Open, Show in folder, Remove, and Can't find this file | To do spec 3, 5 | `src/components/AttachDialog.tsx`, `src/components/TaskRow.tsx` | `tasks::attach_file`, `detach_file`, `index::relocate` (attachments follow moves) | UI drive 17e, cargo test tasks, native 10 |
+| To do: morning reminder, daily snapshot, recovery of a damaged tasks.sqlite (toast on start) | To do spec 4, 5 | `src/App.tsx` (restore toast) | `worker::tasks_check`, `tasks::reminder`, `tasks::snapshot`, `tasks::open_store` | cargo test tasks, native 11 and 12 |
+| Sidebar: To do item with a New marker until opened once (a dot in the rail) | To do spec 2, 3 | `src/App.tsx` (`NavItem` badge), `src/styles.css` | `Settings.todo_seen` | UI drive 17 |
+| Narrow windows (rail at 900 px, preview drawer, two-line Clean up rows, no overflow to 640 px, To do with a task open) | 7 | `src/styles.css` | none | UI drive 15 (Find and To do) |
 
 "native N" is a step of `npm run verify:native` (scripts/verify-native.mjs), which drives the release app on throwaway folders through its own window. The tray icon and the Windows notification balloon are the two things still checked by eye.

@@ -72,7 +72,7 @@ Lex asked for productivity features on top of the file manager. School paperwork
 Native (`src-tauri/src`):
 
 - `tasks.rs` (new): types `Task`, `TaskFile`, `Repeat`, `Completed`; `open_store` (damage check, snapshot restore, attach, schema), `snapshot`, `purge`, `list`, `add`, `update`, `complete`, `reopen`, `delete`, `restore`, `attach`, `detach`, `next_due`, `reminder`.
-- `db.rs`: `open` attaches the tasks store; `open_memory` attaches an in-memory one for tests.
+- `lib.rs`: opens the tasks store right after the main database; `db.rs` `open_memory` attaches an in-memory one for tests.
 - `index.rs`: `relocate` updates `todo.task_files`.
 - `commands.rs`: `list_tasks`, `add_task`, `update_task`, `complete_task`, `reopen_task`, `delete_task`, `restore_task`, `attach_file`, `detach_file`, all `async` on the blocking pool; `Settings` gains `todo_seen`; `AppInfo` gains `tasks_restored` (`snapshot`, `empty` or null).
 - `worker.rs`: the 15-minute check for the reminder and the snapshot. Settings are read before the database lock (the CODE_MAP rule).

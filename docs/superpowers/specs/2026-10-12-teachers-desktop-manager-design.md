@@ -76,6 +76,8 @@ Hard constraints:
 
 Deadline reminders, automatic version history, phone sync, Teacher's Assistant pet integration, network features of any kind.
 
+Amendment 2026-10-14 (Lex's decision): deadline reminders are now in, as part of the To do list (`2026-10-14-todo-list-design.md`): one Windows notification on the morning a task is due.
+
 ## 5. Behavior
 
 ### 5.1 Download sorting
@@ -177,6 +179,8 @@ A sidebar view with three cards. Nothing happens without her click; no destructi
 
 Minimal: start at login (on by default), notifications (on by default), indexed roots (defaults above, add or remove), school year start and end dates, four quarter date ranges, and "Show the walkthrough again". No other settings in v1.
 
+Amendment 2026-10-14: the notifications switch is labelled "Windows messages" and also covers the To do morning reminder.
+
 ### 5.9 First-run walkthrough
 
 - Runs once, the first time the window opens, before anything else. Skippable at any step with one "Skip" link; replayable from Settings.
@@ -186,13 +190,14 @@ Minimal: start at login (on by default), notifications (on by default), indexed 
   3. The Open button on the first row: "Open it. Or show it in its folder."
   4. Clean up in the sidebar: "When you have time, this helps tidy up. Nothing moves until you click."
   5. Activity in the sidebar: "Every change is listed here. Undo puts it back."
+- Amendment 2026-10-14: a sixth step, after the Open step, points at To do in the sidebar: "Your to-do list. Write what needs doing. On the morning it is due, Tote reminds you."
 - Each step has Next, Back and Skip. The rest of the screen dims; the target control stays bright with a soft ring. Keyboard: Enter for Next, Escape to skip.
 - The walkthrough uses sample rows when the index is still empty, labelled "Sample" so nothing looks real.
 
 ### 5.10 Simplicity rules (apply to every screen)
 
 - One primary action per screen. Secondary actions appear only when a file is selected.
-- No counters, charts, badges or tiles beyond one quiet status line.
+- No counters, charts, badges or tiles beyond one quiet status line. (Amendment 2026-10-14: one functional exception, the "New" marker on To do in the sidebar until it is opened once.)
 - Settings stay behind a sidebar footer link, never on the Find screen.
 - Confirmations only for the Recycle Bin and for moving old files. Everything else is undoable instead of confirmed.
 - Error messages are one sentence in plain words, with what to do next.
@@ -263,6 +268,7 @@ Zustand stores: files (search, recent, pins), selection, activity, settings, tou
   - Amendment 2026-10-14 (Lex's decision): from 0.2.0, one exception. At most once a day, with a Settings switch to turn it off, Tote reads https://www.codewithlex.site/tote/latest.json and offers a signed update that installs with one click (`src-tauri/src/update.rs`). No telemetry; nothing about her files is sent.
 - All file paths from the UI are validated on the Rust side. The renderer never gets general filesystem access.
 - No secrets exist in this app. Releases still pass the Security-First Deployment Gate before installing on her laptop.
+- To do tasks, titles and attachments stay on the laptop (`tasks.sqlite`); nothing about them is sent anywhere.
 
 ## 7. Visual design
 

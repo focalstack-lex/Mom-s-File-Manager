@@ -10,6 +10,7 @@ What it does:
 - One Find screen: a big search box, Recent downloads, pinned files, date and type and source filters, copies grouped with the newest marked Latest, a quick preview, and Copy to paste a file into a message.
 - Organizing by hand when she wants to: Move to, Rename (extension locked), New folder, Recycle Bin, Pin. Every change is logged in Activity with Undo.
 - Clean up: duplicate copies, loose Desktop files and old downloads, each with a suggestion. Nothing moves until she clicks.
+- To do: tasks with an optional due date, weekly, monthly or quarterly repeats, and attached files that open in one click. One Windows message on the morning a task is due. The list lives in its own file (`tasks.sqlite`) with a daily copy, so a damaged database never empties it.
 - A Templates shelf that makes a dated copy of a master file instead of editing the original.
 - Settings: start at login, notifications, school-year dates, templates (native file picker), and the folders Tote looks in (add with a native folder picker, remove all but Documents and Downloads; changes apply after a restart).
 - A five-step walkthrough with arrows on first run, replayable from Settings.
@@ -55,7 +56,7 @@ The real app, on throwaway folders, driven through its own window:
 npm run verify:native
 ```
 
-needs a release `tote.exe` (see Release). It seeds `%LOCALAPPDATA%\tote-native-check` with fake messy files, launches the app in test mode, drops downloads with real `Zone.Identifier` streams, and checks filing, search, move, rename, pin, Recycle Bin, Undo, Clean up and Settings against the disk and the database. Evidence lands in `reports/native-check/<stamp>/`.
+needs a release `tote.exe` (see Release). It seeds `%LOCALAPPDATA%\tote-native-check` with fake messy files, launches the app in test mode, drops downloads with real `Zone.Identifier` streams, and checks filing, search, move, rename, pin, Recycle Bin, Undo, Clean up, To do (attachments that follow a move, a restart, the morning reminder, recovery of a damaged list) and Settings against the disk and the database. Evidence lands in `reports/native-check/<stamp>/`.
 
 ### Test mode
 

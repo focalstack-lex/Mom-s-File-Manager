@@ -116,7 +116,7 @@ async function layoutReport(page) {
   return page.evaluate(() => {
     const regions = {};
     let ok = true;
-    for (const selector of ['[data-testid="sidebar"]', '[data-testid="main"]', ".search", ".row"]) {
+    for (const selector of ['[data-testid="sidebar"]', '[data-testid="main"]', ".search", ".row", ".todo-add", ".task"]) {
       const el = document.querySelector(selector);
       if (!el) continue;
       const rect = el.getBoundingClientRect();
@@ -143,9 +143,9 @@ async function drive(browser) {
   await capture(page, "01-tour-step-1");
   record("First run: the walkthrough opens with an arrow and a ring around the search box", tourOpen && arrowDrawn && ringOnSearch, JSON.stringify({ tourOpen, arrowDrawn, ringOnSearch }));
 
-  // 2. Enter advances through all five steps and the last one finishes it; it is saved as done.
+  // 2. Enter advances through all six steps and the last one finishes it; it is saved as done.
   const titles = [];
-  for (let i = 0; i < 5; i += 1) {
+  for (let i = 0; i < 6; i += 1) {
     titles.push(await page.locator("#tour-title").textContent());
     if (i === 2) await capture(page, "02-tour-step-3-open");
     await page.keyboard.press("Enter");
@@ -153,7 +153,7 @@ async function drive(browser) {
   }
   const tourClosed = await hidden(page, '[data-testid="tour"]');
   const saved = await page.evaluate(() => window.__toteMock.calls.some((c) => c.command === "set_settings" && c.args.settings?.tourDone === true));
-  record("Enter walks through five steps, then the walkthrough closes and is remembered", titles.length === 5 && new Set(titles).size === 5 && tourClosed && saved, JSON.stringify({ titles, tourClosed, saved }));
+  record("Enter walks through six steps, then the walkthrough closes and is remembered", titles.length === 6 && new Set(titles).size === 6 && tourClosed && saved, JSON.stringify({ titles, tourClosed, saved }));
 
   // 3. The Find screen shows recent downloads with source and location, and the status line.
   const rows = await page.locator('[data-testid="recent"] [data-testid="file-row"]').count();
@@ -465,6 +465,96 @@ async function drive(browser) {
     bannerShown && bannerText === "Tote 0.3.0 is ready" && onCleanup === 1 && installed === 1 && hiddenAfterLater === 0 && switchOn && offWhenSwitchedOff === null,
     JSON.stringify({ bannerText, onCleanup, installed, hiddenAfterLater, switchOn, offWhenSwitchedOff }));
 
+  // 17. To do: the New marker, the empty list, adding with Enter and with Add,
+  // a due date's group, tick with Undo, a monthly repeat, the quarter option,
+  // attaching a file, delete with Undo.
+  const markerBefore = await page.locator('[data-testid="nav-todo"] .nav-new').count();
+  await page.locator('[data-testid="nav-todo"]').click();
+  const todoOpen = await visible(page, '[data-testid="todo-view"]');
+  const emptyShown = await visible(page, '[data-testid="todo-empty"]');
+  const markerGone = await page.waitForFunction(() => !document.querySelector('[data-testid="nav-todo"] .nav-new'), null, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  const seenSaved = await page.evaluate(() => window.__toteMock.calls.some((c) => c.command === "set_settings" && c.args.settings?.todoSeen === true));
+  await capture(page, "17-todo-empty");
+  record("To do opens from the sidebar with a New marker that goes once opened, and shows the empty state", markerBefore === 1 && todoOpen && emptyShown && markerGone && seenSaved, JSON.stringify({ markerBefore, todoOpen, emptyShown, markerGone, seenSaved }));
+
+  // 17b. Enter and Add both add; a due date puts the task under Today.
+  const today = await page.evaluate(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
+  const taskCount = (n) => page.waitForFunction((want) => document.querySelectorAll('[data-testid="task-row"]').length === want, n, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  await page.locator('[data-testid="todo-input"]').fill("Print the Grade 7 quiz");
+  await page.keyboard.press("Enter");
+  const addedByEnter = await taskCount(1);
+  await page.locator('[data-testid="todo-input"]').fill("Submit SF2 for October");
+  await page.locator('[data-testid="todo-due"]').fill(today);
+  await page.locator('[data-testid="todo-add"]').click();
+  const addedByButton = await taskCount(2);
+  const groupTitles = await page.locator('[data-testid="todo-group"] h2').allTextContents();
+  const cleared = (await page.locator('[data-testid="todo-input"]').inputValue()) === "";
+  const focusBack = await page.evaluate(() => document.activeElement?.getAttribute("data-testid"));
+  await capture(page, "17b-todo-added");
+  record("Enter and Add both add a task; the dated one sits under Today, the other under No date, and the box is cleared with focus kept",
+    addedByEnter && addedByButton && groupTitles.join(",") === "Today,No date" && cleared && focusBack === "todo-input",
+    JSON.stringify({ groupTitles, cleared, focusBack }));
+
+  // 17c. Tick: Done appears and the toast's Undo puts it back.
+  const sf2 = () => page.locator('[data-testid="todo-group"] [data-testid="task-row"]', { hasText: "Submit SF2" });
+  await sf2().locator('[data-testid="task-check"]').click();
+  const doneShown = await visible(page, '[data-testid="todo-done"]');
+  const doneToast = page.locator(".toast", { hasText: "Done." });
+  const toastHasUndo = (await doneToast.locator('[data-testid="toast-undo"]').count()) === 1;
+  await capture(page, "17c-todo-done");
+  await doneToast.locator('[data-testid="toast-undo"]').click();
+  const doneGone = await hidden(page, '[data-testid="todo-done"]');
+  const backOnList = await sf2().count();
+  record("Ticking a task moves it to Done with Undo in the toast; Undo puts it back on the list", doneShown && toastHasUndo && doneGone && backOnList === 1, JSON.stringify({ doneShown, toastHasUndo, doneGone, backOnList }));
+
+  // 17d. Every quarter waits for quarter dates; a monthly task makes its next copy.
+  await sf2().locator('[data-testid="task-open"]').click();
+  await visible(page, '[data-testid="task-details"]');
+  const quarterDisabled = await page.locator('[data-testid="task-repeat"] option[value="quarter"]').evaluate((o) => o.disabled);
+  await page.locator('[data-testid="task-repeat"]').selectOption("month");
+  await page.waitForFunction(() => window.__toteMock.calls.some((c) => c.command === "update_task" && c.args.repeat === "month"), null, { timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
+  await capture(page, "17d-todo-details");
+  await sf2().first().locator('[data-testid="task-check"]').click();
+  const nextToast = await page.locator(".toast", { hasText: "Next one is due" }).textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  const copyMeta = await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="todo-group"] [data-testid="task-row"]')].some((r) => r.textContent?.includes("Submit SF2") && r.textContent?.includes("every month")), null, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  await capture(page, "17e-todo-repeat");
+  record("Every quarter is unavailable without quarter dates; a monthly task ticked off makes its next copy and the toast names the day",
+    quarterDisabled && Boolean(nextToast) && copyMeta, JSON.stringify({ quarterDisabled, nextToast, copyMeta }));
+
+  // 17e. Attach a file through the index search, then open it from the task.
+  const print = () => page.locator('[data-testid="task-row"]', { hasText: "Print the Grade 7 quiz" });
+  await print().locator('[data-testid="task-open"]').click();
+  await print().locator('[data-testid="task-attach"]').click();
+  const dialogOpen = await visible(page, '[data-testid="attach-dialog"]');
+  await page.locator('[data-testid="attach-search"]').fill("grade");
+  const optionShown = await visible(page, '[data-testid="attach-option"]');
+  await capture(page, "17f-todo-attach-dialog");
+  const picked = await page.locator('[data-testid="attach-option"] .attach-name').first().textContent();
+  await page.locator('[data-testid="attach-option"]').first().click();
+  const dialogClosed = await hidden(page, '[data-testid="attach-dialog"]');
+  const attachedName = await print().locator('[data-testid="task-file"] .task-file-name').first().textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  const opensBefore = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "open_path").length);
+  await print().locator('[data-testid="task-file-open"]').click();
+  await page.waitForFunction((n) => window.__toteMock.calls.filter((c) => c.command === "open_path").length > n, opensBefore, { timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
+  const fileOpened = (await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "open_path").length)) > opensBefore;
+  const fileMeta = await print().locator(".task-meta").textContent();
+  await capture(page, "17g-todo-attached");
+  record("Attach a file searches the index, attaches the picked file, and Open opens it from the task",
+    dialogOpen && optionShown && dialogClosed && attachedName === picked && fileOpened && Boolean(fileMeta?.includes("1 file")),
+    JSON.stringify({ picked, attachedName, fileOpened, fileMeta }));
+
+  // 17f. Delete at once, Undo from the toast.
+  const tasksBefore = await page.locator('[data-testid="task-row"]').count();
+  await print().locator('[data-testid="task-delete"]').click();
+  const taskRemoved = await taskCount(tasksBefore - 1);
+  await page.locator(".toast", { hasText: "Task deleted." }).locator('[data-testid="toast-undo"]').click();
+  const taskRestored = await taskCount(tasksBefore);
+  record("Delete task removes it at once and the toast's Undo brings it back", taskRemoved && taskRestored, JSON.stringify({ tasksBefore, taskRemoved, taskRestored }));
+  await page.locator('[data-testid="nav-find"]').click();
+
   record("No error toasts during the drive", (await errorToasts(page)) === 0);
   await context.close();
 
@@ -476,6 +566,15 @@ async function drive(browser) {
     const layout = await layoutReport(narrow.page);
     await capture(narrow.page, `13-layout-${size.width}`);
     record(`${size.width} px: the sidebar is a 64 px rail and nothing overflows`, layout.ok && !layout.docOverflow && Math.round(layout.sidebar) === 64, JSON.stringify(layout));
+    await narrow.page.locator('[data-testid="nav-todo"]').click();
+    await narrow.page.locator('[data-testid="todo-input"]').fill("Submit SF2 for October");
+    await narrow.page.keyboard.press("Enter");
+    await narrow.page.waitForSelector('[data-testid="task-row"]', { timeout: STEP_TIMEOUT_MS });
+    await narrow.page.locator('[data-testid="task-open"]').first().click();
+    await narrow.page.waitForSelector('[data-testid="task-details"]', { timeout: STEP_TIMEOUT_MS });
+    const todoLayout = await layoutReport(narrow.page);
+    await capture(narrow.page, `13-layout-todo-${size.width}`);
+    record(`${size.width} px: To do with a task open fits without sideways scrolling`, todoLayout.ok && !todoLayout.docOverflow, JSON.stringify(todoLayout));
     await narrow.context.close();
   }
 }

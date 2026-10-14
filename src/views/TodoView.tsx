@@ -52,7 +52,7 @@ export function TodoView({ info }: { info: AppInfo }) {
     <div className="main-inner" data-testid="todo-view">
       <div className="view-head">
         <h1 className="view-title">To do</h1>
-        <p className="view-lead">What needs doing, with the files that go with it. On the morning a task is due, Tote reminds you.</p>
+        <p className="view-lead">What needs doing, with its files. Tote reminds you on the morning it is due.</p>
       </div>
       <form className="card todo-add" onSubmit={(e) => void submit(e)} aria-label="Add a task">
         <label className="visually-hidden" htmlFor="todo-title">

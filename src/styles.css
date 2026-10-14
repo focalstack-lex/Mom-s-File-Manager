@@ -2673,6 +2673,20 @@ kbd {
 
 .attach-option {
   align-items: flex-start;
+  padding: var(--space-2) var(--space-3);
+}
+
+.attach-option svg {
+  margin-top: 2px;
+}
+
+.attach-option .hint {
+  margin-left: 0;
+  font-weight: 500;
+}
+
+.task-fields > .button {
+  justify-self: start;
 }
 
 .attach-text {

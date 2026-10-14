@@ -79,6 +79,42 @@ function fakeDownload(name, body, hostUrl, referrer, folder = join(LAB, "Downloa
 
 const filed = (kind, name) => existsSync(join(LAB, "Documents", "School Files", kind, new Date().toISOString().slice(0, 7), name));
 
+/** Starts the release app in test mode and attaches to its window over CDP; page is null when it never answers. */
+async function launch(env) {
+  const app = spawn(EXE, [], { env, stdio: "ignore", detached: false });
+  let browser = null;
+  const attached = await until(async () => {
+    try {
+      browser = await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }, 30_000);
+  if (!attached) return { app, browser: null, page: null };
+  const context = browser.contexts()[0];
+  const page = context.pages().find((p) => p.url().startsWith("tauri://") || p.url().includes("localhost")) ?? context.pages()[0];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.waitForSelector('[data-testid="find-view"]', { timeout: STEP_TIMEOUT_MS });
+  return { app, browser, page };
+}
+
+/** Drops the CDP link and ends the app, then waits until its debugging port is closed. */
+async function stop(session) {
+  if (!session) return;
+  if (session.browser) await session.browser.close().catch(() => undefined);
+  spawn("taskkill", ["/pid", String(session.app.pid), "/T", "/F"], { stdio: "ignore" });
+  await until(async () => {
+    try {
+      await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(500) });
+      return false;
+    } catch {
+      return true;
+    }
+  }, 15_000);
+  await sleep(1000);
+}
+
 async function main() {
   if (!existsSync(EXE)) {
     process.stderr.write(`[NATIVE CHECK ERROR] ${EXE} not found. Run npm run build:release first.\n`);
@@ -96,24 +132,15 @@ async function main() {
     // new, downloads it and verifies its signature, and stops before installing.
     ...(process.env.TOTE_CHECK_UPDATE ? { TOTE_UPDATE_VERIFY: "1" } : {}),
   };
-  const app = spawn(EXE, [], { env, stdio: "ignore", detached: false });
-  let browser = null;
+  let session = null;
   let exitCode = 0;
   try {
-    const attached = await until(async () => {
-      try {
-        browser = await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`);
-        return true;
-      } catch {
-        return false;
-      }
-    }, 30_000);
-    record("The release app starts in test mode and exposes its window over CDP", attached && !app.exitCode, attached ? "" : "no CDP endpoint");
+    session = await launch(env);
+    const attached = session.page !== null;
+    record("The release app starts in test mode and exposes its window over CDP", attached && !session.app.exitCode, attached ? "" : "no CDP endpoint");
     if (!attached) throw new Error("could not attach");
-    const context = browser.contexts()[0];
-    const page = context.pages().find((p) => p.url().startsWith("tauri://") || p.url().includes("localhost")) ?? context.pages()[0];
-    page.on("pageerror", (error) => pageErrors.push(error.message));
-    await page.waitForSelector('[data-testid="find-view"]', { timeout: STEP_TIMEOUT_MS });
+    // The window changes when the app is restarted (steps 11 and 12).
+    let page = session.page;
     const capture = (name) => page.screenshot({ path: join(EVIDENCE_DIR, `${name}.png`) });
 
     // 1. First run shows the walkthrough; Escape skips it and it stays skipped (real settings table).
@@ -247,10 +274,85 @@ async function main() {
       organized && shortcutStayed && desktopLeft.length === 0 && restored && emptyRemoved,
       JSON.stringify({ planTitle, organized, shortcutStayed, desktopLeft, restored, emptyRemoved }));
 
+    // 10. To do on the real store: a task due today, notes.txt attached through
+    // the index search, then moved with Move to; the attachment follows.
+    const todayText = await page.evaluate(() => {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    });
+    await page.locator('[data-testid="nav-todo"]').click();
+    await page.waitForSelector('[data-testid="todo-view"]', { timeout: STEP_TIMEOUT_MS });
+    await page.locator('[data-testid="todo-input"]').fill("Submit SF2 for October");
+    await page.locator('[data-testid="todo-due"]').fill(todayText);
+    await page.locator('[data-testid="todo-add"]').click();
+    const taskSaved = await until(async () => (await page.locator('[data-testid="task-row"]', { hasText: "Submit SF2 for October" }).count()) === 1);
+    await page.locator('[data-testid="task-open"]').first().click();
+    await page.locator('[data-testid="task-attach"]').click();
+    await page.locator('[data-testid="attach-search"]').fill("santos");
+    await page.locator('[data-testid="attach-option"]', { hasText: "notes.txt" }).click({ timeout: STEP_TIMEOUT_MS });
+    const attachedNotes = await until(async () => (await page.locator('[data-testid="task-file"]', { hasText: "notes.txt" }).count()) === 1);
+    await page.locator('[data-testid="nav-find"]').click();
+    await page.locator('[data-testid="search-input"]').fill("santos");
+    const notesRow = page.locator('[data-testid="results"] [data-testid="file-row"]', { hasText: "notes.txt" }).first();
+    await notesRow.waitFor({ timeout: STEP_TIMEOUT_MS });
+    await notesRow.locator("input[type=checkbox]").check();
+    await page.getByRole("button", { name: "Move to..." }).click({ timeout: 10_000 });
+    await page.locator(".folder-option", { hasText: "Documents > Forms" }).click();
+    await page.locator('[data-testid="move-confirm"]').click();
+    const notesMoved = await until(() => existsSync(join(LAB, "Documents", "Forms", "notes.txt")));
+    await until(async () => (await page.locator('[data-testid="action-bar"]').count()) === 0);
+    await page.locator('[data-testid="search-input"]').fill("");
+    await page.locator('[data-testid="nav-todo"]').click();
+    await page.waitForSelector('[data-testid="todo-view"]', { timeout: STEP_TIMEOUT_MS });
+    if ((await page.locator('[data-testid="task-details"]').count()) === 0) await page.locator('[data-testid="task-open"]').first().click();
+    const followed = await until(async () => ((await page.locator('[data-testid="task-file"] .task-file-where').first().textContent().catch(() => "")) ?? "").includes("Forms"));
+    await capture("06-todo");
+    record("To do on the real store: a task due today is saved, notes.txt attaches through search, and after Move to the attachment shows its new folder",
+      taskSaved && attachedNotes && notesMoved && followed, JSON.stringify({ taskSaved, attachedNotes, notesMoved, followed }));
+
+    // 11. A restart keeps the task; the start-up check saves the day's snapshot
+    // and, from 07:00, shows the morning reminder and remembers the day.
+    const dataDir = join(LAB, "data");
+    const sql = (statement) => execFileSync("python", ["-I", "-c", "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);r=c.execute(sys.argv[2]).fetchall();c.commit();print(r)", join(dataDir, "tote.sqlite"), statement], { encoding: "utf8" }).trim();
+    const testLog = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.tote", "logs", "tote-test.log");
+    const logSize = () => (existsSync(testLog) ? readFileSync(testLog, "utf8").length : 0);
+    const logSince = (offset) => (existsSync(testLog) ? readFileSync(testLog, "utf8").slice(offset) : "");
+    await stop(session);
+    sql("DELETE FROM settings WHERE key IN ('tasks_snapshot_on', 'reminded_on')");
+    const logStart = logSize();
+    session = await launch(env);
+    if (!session.page) throw new Error("could not attach after the restart");
+    page = session.page;
+    await page.locator('[data-testid="nav-todo"]').click();
+    const survived = await until(async () => (await page.locator('[data-testid="task-row"]', { hasText: "Submit SF2 for October" }).count()) === 1);
+    const snapshotLogged = await until(() => logSince(logStart).includes("tasks snapshot saved"), 15_000);
+    const backupMade = existsSync(join(dataDir, "tasks.backup.sqlite"));
+    const morning = new Date().getHours() >= 7;
+    const reminded = morning ? await until(() => logSince(logStart).includes("morning reminder shown (1 due today"), 15_000) : null;
+    const remindedOn = sql("SELECT value FROM settings WHERE key = 'reminded_on'");
+    record(`After a restart the task is still there and the day's snapshot is saved; ${morning ? "the morning reminder was shown and the day remembered" : "before 07:00, so the reminder is not checked"}`,
+      survived && snapshotLogged && backupMade && (!morning || (reminded && remindedOn.includes(todayText))),
+      JSON.stringify({ survived, snapshotLogged, backupMade, reminded, remindedOn }));
+
+    // 12. A damaged tasks.sqlite comes back from the daily snapshot with a toast,
+    // and the damaged file is kept beside it.
+    await stop(session);
+    writeFileSync(join(dataDir, "tasks.sqlite"), "junk, not a database at all");
+    session = await launch(env);
+    if (!session.page) throw new Error("could not attach after damaging the list");
+    page = session.page;
+    const restoredToast = await until(async () => (await page.locator(".toast", { hasText: "restored from Tote's daily copy" }).count()) === 1, 10_000);
+    await page.locator('[data-testid="nav-todo"]').click();
+    const restoredTask = await until(async () => (await page.locator('[data-testid="task-row"]', { hasText: "Submit SF2 for October" }).count()) === 1);
+    const damagedKept = readdirSync(dataDir).some((name) => name.startsWith("tasks.damaged-"));
+    await capture("07-todo-restored");
+    record("A damaged tasks.sqlite is restored from the daily snapshot: a toast says so, the task is back, and the damaged file is kept",
+      restoredToast && restoredTask && damagedKept, JSON.stringify({ restoredToast, restoredTask, damagedKept }));
+
     // 9. Settings persist to the real database: notifications off survives a reload of app info.
     await page.locator('[data-testid="nav-settings"]').click();
     await page.waitForSelector('[data-testid="settings-view"]', { timeout: STEP_TIMEOUT_MS });
-    const toggle = page.locator("label.toggle", { hasText: "Tell me when a download is filed" }).locator("input");
+    const toggle = page.locator("label.toggle", { hasText: "Windows messages" }).locator("input");
     await toggle.uncheck();
     await sleep(500);
     const dbText = execFileSync("python", ["-I", "-c", `import sqlite3;print(sqlite3.connect(r'${join(LAB, "data", "tote.sqlite")}').execute("select value from settings where key='settings'").fetchone()[0])`], { encoding: "utf8" });
@@ -289,9 +391,7 @@ async function main() {
     process.stderr.write(`[NATIVE CHECK ERROR] ${error.stack || error.message}\n`);
     exitCode = 1;
   } finally {
-    if (browser) await browser.close().catch(() => undefined);
-    spawn("taskkill", ["/pid", String(app.pid), "/T", "/F"], { stdio: "ignore" });
-    await sleep(800);
+    await stop(session);
     const logPath = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.tote", "logs", "tote-test.log");
     if (existsSync(logPath)) writeFileSync(join(EVIDENCE_DIR, "tote.log"), readFileSync(logPath, "utf8").split("\n").slice(-200).join("\n"));
     writeFileSync(join(EVIDENCE_DIR, "summary.json"), `${JSON.stringify({ stamp, lab: LAB, steps: results, pageErrors, downloadsLeft: readdirSync(join(LAB, "Downloads")) }, null, 2)}\n`);

@@ -48,6 +48,7 @@ function settingsNow(): Settings {
       extraFolders: [],
       excludedFolders: [],
       subjectRules: [],
+      checkUpdates: true,
     }
   );
 }

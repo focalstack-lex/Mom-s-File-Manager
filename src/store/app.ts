@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { ipc } from "../lib/ipc";
 import { describeError } from "../lib/errors";
-import type { AppInfo, BrowserStatus, Settings } from "../lib/types";
+import type { AppInfo, BrowserStatus, Settings, UpdateInfo } from "../lib/types";
 
 export type View = "find" | "cleanup" | "activity" | "settings";
 
@@ -25,9 +25,17 @@ interface AppStore {
   foldersChanged: boolean;
   /** Browser download settings; null until the first check returns. */
   browsers: BrowserStatus[] | null;
+  /** A newer Tote, once the daily check finds one. */
+  update: UpdateInfo | null;
+  /** She chose Later; the banner returns the next time Tote starts. */
+  updateDismissed: boolean;
+  updating: boolean;
   setView(view: View): void;
   markFoldersChanged(): void;
   checkBrowsers(): Promise<void>;
+  checkUpdate(): Promise<void>;
+  installUpdate(): Promise<void>;
+  dismissUpdate(): void;
   loadInfo(): Promise<void>;
   saveSettings(settings: Settings): Promise<void>;
   toast(text: string, kind?: Toast["kind"], undoIds?: number[], undoBatch?: string): void;
@@ -43,6 +51,9 @@ export const useApp = create<AppStore>((set, get) => ({
   toasts: [],
   foldersChanged: false,
   browsers: null,
+  update: null,
+  updateDismissed: false,
+  updating: false,
   setView: (view) => set({ view }),
   markFoldersChanged: () => set({ foldersChanged: true }),
   checkBrowsers: async () => {
@@ -54,6 +65,28 @@ export const useApp = create<AppStore>((set, get) => ({
       set({ browsers: [] });
     }
   },
+  checkUpdate: async () => {
+    try {
+      set({ update: await ipc.checkUpdate() });
+    } catch (error) {
+      // Offline or the site is down: nothing to offer today. Logged, not shown;
+      // the native side tries again on the next day's check.
+      console.warn("Tote: update check failed", error);
+    }
+  },
+  installUpdate: async () => {
+    set({ updating: true });
+    try {
+      // On success Windows closes Tote and opens the new version, so this
+      // only returns on failure (or in a dry run).
+      await ipc.installUpdate();
+    } catch (error) {
+      get().fail(error);
+    } finally {
+      set({ updating: false });
+    }
+  },
+  dismissUpdate: () => set({ updateDismissed: true }),
   loadInfo: async () => {
     try {
       const info = await ipc.appInfo();

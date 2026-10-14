@@ -20,6 +20,7 @@ mod stability;
 mod state;
 mod templates;
 mod tray;
+mod update;
 mod worker;
 
 pub use error::{ToteError, ErrorCode};
@@ -75,6 +76,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             // TOTE_DATA_DIR keeps a dry run's index away from the real one.
             let data_dir = match std::env::var_os("TOTE_DATA_DIR") {
@@ -207,6 +209,8 @@ pub fn run() {
             commands::undo_batch,
             commands::default_subject_rules,
             commands::index_status,
+            commands::check_update,
+            commands::install_update,
         ]);
 
     if let Err(error) = builder.run(tauri::generate_context!()) {

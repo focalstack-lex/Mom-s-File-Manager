@@ -43,6 +43,8 @@ pub struct Settings {
     pub excluded_folders: Vec<String>,
     /// Her subject words for Organize; empty means the standard DepEd list.
     pub subject_rules: Vec<crate::organize::SubjectRule>,
+    /// Once a day, ask codewithlex.site whether a newer Tote exists.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -56,6 +58,7 @@ impl Default for Settings {
             extra_folders: Vec::new(),
             excluded_folders: Vec::new(),
             subject_rules: Vec::new(),
+            check_updates: true,
         }
     }
 }
@@ -584,6 +587,24 @@ pub fn apply_autostart(app: &tauri::AppHandle, enabled: bool) {
     if let Err(error) = result {
         log::warn!("autostart: {error}");
     }
+}
+
+/// The newer version to offer, if any (update.rs). Goes online at most once
+/// a day and never while she has switched the check off. The database is
+/// only touched for two short settings reads and writes, never across an
+/// await, so this stays on the async runtime rather than the blocking pool.
+#[tauri::command]
+pub async fn check_update(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<Option<crate::update::UpdateInfo>> {
+    let core = state.0.clone();
+    let enabled = settings_of(&core).check_updates;
+    crate::update::check(&app, &core, enabled).await
+}
+
+/// Downloads, verifies and installs the newest version. On Windows the
+/// installer closes Tote and opens the new version.
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> Result<()> {
+    crate::update::install(&app).await
 }
 
 /// Which browsers would save downloads outside Downloads (spec 5.1.2).

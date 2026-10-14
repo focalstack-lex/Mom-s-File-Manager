@@ -9,6 +9,7 @@ import { ToteMark } from "./components/icons";
 import { TitleBar } from "./components/TitleBar";
 import { Toasts } from "./components/Toasts";
 import { Tour } from "./components/Tour";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { CHANGED_EVENT, ipc, listen, SORTED_EVENT, type SortedEvent } from "./lib/ipc";
 import { useApp, type View } from "./store/app";
 import { useFind } from "./store/find";
@@ -77,6 +78,7 @@ export default function App() {
   const refreshFind = useFind((s) => s.refresh);
   const startTour = useTour((s) => s.start);
   const checkBrowsers = useApp((s) => s.checkBrowsers);
+  const checkUpdate = useApp((s) => s.checkUpdate);
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const navRef = useRef<HTMLElement>(null);
 
@@ -123,8 +125,14 @@ export default function App() {
   useEffect(() => {
     void loadInfo();
     void checkBrowsers();
-    // Settings can change while Tote sits in the tray; look again when she comes back.
-    const onFocus = () => void checkBrowsers();
+    void checkUpdate();
+    // Settings can change while Tote sits in the tray; look again when she
+    // comes back. The update check asks the native side, which goes online
+    // at most once a day, so coming back often costs nothing.
+    const onFocus = () => {
+      void checkBrowsers();
+      void checkUpdate();
+    };
     window.addEventListener("focus", onFocus);
     // Index changes arrive in bursts (the first scan, a folder being copied);
     // one quiet refresh per burst keeps the screen steady.
@@ -144,7 +152,7 @@ export default function App() {
       window.clearTimeout(changeTimer);
       for (const u of unlisten) u.then((fn) => fn()).catch(() => undefined);
     };
-  }, [loadInfo, refreshFind, toast, checkBrowsers]);
+  }, [loadInfo, refreshFind, toast, checkBrowsers, checkUpdate]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -193,6 +201,7 @@ export default function App() {
         <NavItem label="Settings" icon={Settings} active={view === "settings"} onClick={() => setView("settings")} testId="nav-settings" />
       </nav>
       <main className="main" data-testid="main">
+        <UpdateBanner />
         {info === null ? (
           <p className="status-line">Starting Tote...</p>
         ) : view === "find" ? (

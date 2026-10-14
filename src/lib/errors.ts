@@ -21,6 +21,8 @@ export function describeError(error: unknown): string {
         return "Tote only works with files in Desktop, Documents, Downloads and OneDrive.";
       case "db":
         return "Tote could not save that. Try again in a moment.";
+      case "network":
+        return "Tote could not reach the internet to update. It will try again later.";
       default:
         return error.message || "Something went wrong. Nothing was changed.";
     }

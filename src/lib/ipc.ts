@@ -5,23 +5,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type {
-  AppInfo,
-  BatchUndo,
-  BrowserStatus,
-  OrganizePlan,
-  OrganizeResult,
-  SubjectRule,
-  CleanupReport,
-  Destination,
-  FindResult,
-  Filters,
-  OpRow,
-  Preview,
-  Settings,
-  SortedEvent,
-  Template,
-} from "./types";
+import type { AppInfo, BatchUndo, BrowserStatus, OrganizePlan, OrganizeResult, SubjectRule, CleanupReport, Destination, FindResult, Filters, OpRow, Preview, Settings, SortedEvent, Template, UpdateInfo } from "./types";
 
 export interface MockBackend {
   invoke(command: string, args: Record<string, unknown>): Promise<unknown>;
@@ -80,6 +64,10 @@ export const ipc = {
   organizeRun: (paths: string[]) => invoke<OrganizeResult>("organize_run", { paths }),
   undoBatch: (batch: string) => invoke<BatchUndo>("undo_batch", { batch }),
   defaultSubjectRules: () => invoke<SubjectRule[]>("default_subject_rules"),
+  /** The newer version to offer, if any; goes online at most once a day. */
+  checkUpdate: () => invoke<UpdateInfo | null>("check_update"),
+  /** Downloads, verifies and installs it; Tote closes and reopens. */
+  installUpdate: () => invoke<void>("install_update"),
   /** Native folder picker; null when she cancels. */
   pickFolder: async (): Promise<string | null> => {
     if (window.__toteMock) return (await window.__toteMock.invoke("pick_folder", {})) as string | null;

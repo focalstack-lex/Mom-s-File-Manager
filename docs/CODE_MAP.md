@@ -27,6 +27,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | `tray.rs` | Tray icon and menu, `show`. |
 | `commands.rs` | Every `#[tauri::command]`, `Settings`, `AppInfo`. |
 | `state.rs` | `Core` (db mutex, roots, status) and `AppState`. |
+| `update.rs` | Once-a-day update check against codewithlex.site/tote/latest.json, signed download and install; never online in a dry run unless TOTE_UPDATE_VERIFY. |
 
 ## Renderer (`src`)
 

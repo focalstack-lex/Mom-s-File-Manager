@@ -102,6 +102,13 @@ export function SettingsView({ info }: { info: AppInfo }) {
           </span>
           <input type="checkbox" role="switch" className="switch" checked={draft.notifications} onChange={(e) => update({ notifications: e.target.checked })} />
         </label>
+        <label className="toggle">
+          <span className="toggle-text">
+            Check for new versions
+            <span>Once a day Tote asks codewithlex.site if a newer version is out. Your files never leave this laptop.</span>
+          </span>
+          <input type="checkbox" role="switch" className="switch" checked={draft.checkUpdates} onChange={(e) => update({ checkUpdates: e.target.checked })} data-testid="check-updates" />
+        </label>
         <div className="toggle">
           <span className="toggle-text">
             Walkthrough

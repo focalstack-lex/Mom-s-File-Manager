@@ -13,7 +13,8 @@ What it does:
 - A Templates shelf that makes a dated copy of a master file instead of editing the original.
 - Settings: start at login, notifications, school-year dates, templates (native file picker), and the folders Tote looks in (add with a native folder picker, remove all but Documents and Downloads; changes apply after a restart).
 - A five-step walkthrough with arrows on first run, replayable from Settings.
-- No network access at all.
+- No network access except one small check: at most once a day Tote reads https://www.codewithlex.site/tote/latest.json to see if a newer version exists (Settings > Check for new versions turns it off). Nothing about her files is sent.
+- New versions install with one click from a banner; an update is installed only if its signature matches the public key built into Tote.
 
 The binding design is `docs/superpowers/specs/2026-10-12-teachers-desktop-manager-design.md`. The surface map is `docs/FEATURE_MAP.md`; the code map is `docs/CODE_MAP.md`.
 
@@ -86,11 +87,19 @@ Downloads a browser saves elsewhere are still noticed (by the browser's web stam
 
 ## Release
 
-```bash
-npm run build:release
-```
+1. Raise `version` in `src-tauri/tauri.conf.json`, `package.json` and `src-tauri/Cargo.toml`.
+2. Build, sign and publish in one step:
 
-produces an NSIS installer under `src-tauri/target/release/bundle/nsis/`. The installer is unsigned in v1, so Windows SmartScreen warns on first install.
+   ```bash
+   npm run release -- --notes "What changed, in one plain sentence."
+   ```
+
+   It builds with the updater key (`%USERPROFILE%\.tauri\tote-updater.key`, or `TOTE_UPDATER_KEY`), copies `Tote_<version>_x64-setup.exe` into the portfolio's `tote/download/`, writes `tote/latest.json`, and updates the file name, version, size and SHA-256 on the download page. `--skip-build` publishes the last build.
+3. In the portfolio folder: review the diff, commit, push, then `vercel deploy --prod`. Installed copies offer the update within a day.
+
+The updater key is the only thing that lets installed copies trust an update. Keep a private backup of it (for example in a password manager); if it is lost, installed copies can no longer update and each laptop needs one manual install of a build with a new key. Never commit it. A plain `npx tauri build` fails without it, because `createUpdaterArtifacts` is on.
+
+The installer is not code-signed, so Windows SmartScreen warns on the first manual install. Updates installed from inside Tote do not show that warning.
 
 ### Building on a path with an apostrophe
 

@@ -438,6 +438,33 @@ async function drive(browser) {
     openWidth > 200 && railWidth === 64 && reopened === openWidth && railNamed === 1 && activeTab,
     JSON.stringify({ openWidth, railWidth, reopened, railNamed, activeTab }));
 
+  // 16. New version: the daily check offers 0.3.0, the banner shows on every
+  // screen, Update now calls the native installer, Later hides it, and the
+  // Settings switch turns the offer off.
+  await page.evaluate(() => window.__toteMock.offerUpdate("0.3.0"));
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  const bannerShown = await visible(page, '[data-testid="update-banner"]').then(() => true, () => false);
+  const bannerText = bannerShown ? await page.locator('[data-testid="update-banner"] .update-title').textContent() : null;
+  await capture(page, "16-update-banner");
+  await page.locator('[data-testid="nav-cleanup"]').click();
+  const onCleanup = await page.locator('[data-testid="update-banner"]').count();
+  const installsBefore = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "install_update").length);
+  await page.locator('[data-testid="update-now"]').click();
+  await page.waitForFunction((n) => window.__toteMock.calls.filter((c) => c.command === "install_update").length > n, installsBefore, { timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
+  const installed = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "install_update").length) - installsBefore;
+  await page.locator('[data-testid="update-later"]').click();
+  const hiddenAfterLater = await page.locator('[data-testid="update-banner"]').count();
+  await page.locator('[data-testid="nav-settings"]').click();
+  const switchOn = await page.locator('[data-testid="check-updates"]').isChecked();
+  await page.locator('[data-testid="check-updates"]').click();
+  await page.waitForFunction(() => window.__toteMock.calls.some((c) => c.command === "set_settings" && c.args.settings.checkUpdates === false), null, { timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
+  const offWhenSwitchedOff = await page.evaluate(() => window.__toteMock.invoke("check_update", {}));
+  await page.locator('[data-testid="check-updates"]').click();
+  await page.locator('[data-testid="nav-find"]').click();
+  record("A new version shows a banner on every screen; Update now runs the installer, Later hides it, and the Settings switch stops the offer",
+    bannerShown && bannerText === "Tote 0.3.0 is ready" && onCleanup === 1 && installed === 1 && hiddenAfterLater === 0 && switchOn && offWhenSwitchedOff === null,
+    JSON.stringify({ bannerText, onCleanup, installed, hiddenAfterLater, switchOn, offWhenSwitchedOff }));
+
   record("No error toasts during the drive", (await errorToasts(page)) === 0);
   await context.close();
 

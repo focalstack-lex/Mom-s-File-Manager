@@ -92,7 +92,10 @@ const ops: OpRow[] = [
 ];
 let nextOp = 4;
 let templates: Template[] = [{ id: 1, path: `${DOCS}\\Forms\\SF9 Template.docx`, name: "SF9 Template", missing: false }];
-let settings: Settings = { startAtLogin: true, notifications: true, tourDone: false, schoolYear: null, quarters: [], extraFolders: [], excludedFolders: [], subjectRules: [] };
+let settings: Settings = { startAtLogin: true, notifications: true, tourDone: false, schoolYear: null, quarters: [], extraFolders: [], excludedFolders: [], subjectRules: [], checkUpdates: true };
+// No update is offered until the UI drive calls offerUpdate(), so every other
+// step sees the screens without the banner.
+let offeredUpdate: { version: string; notes: string | null } | null = null;
 const listeners = new Map<string, Set<(payload: unknown) => void>>();
 const calls: { command: string; args: Record<string, unknown> }[] = [];
 
@@ -373,10 +376,13 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   pick_folder: () => `${DOCS}\\Lesson Plans`,
   pick_file: () => `${DOCS}\\Forms\\DLL Template.docx`,
   index_status: () => ({ scanning: false, scanned: files.length, total: files.length, files: files.length }),
+  check_update: () => (settings.checkUpdates ? offeredUpdate : null),
+  // The real command closes the app; the mock just records the call.
+  install_update: () => undefined,
 };
 
 export function installMockBackend(): void {
-  const mock: MockBackend & { calls: typeof calls; simulateDownload(): void } = {
+  const mock: MockBackend & { calls: typeof calls; simulateDownload(): void; offerUpdate(version: string): void } = {
     calls,
     async invoke(command, args) {
       calls.push({ command, args });
@@ -389,6 +395,9 @@ export function installMockBackend(): void {
       if (!listeners.has(event)) listeners.set(event, new Set());
       listeners.get(event)?.add(handler);
       return () => listeners.get(event)?.delete(handler);
+    },
+    offerUpdate(version) {
+      offeredUpdate = { version, notes: null };
     },
     simulateDownload() {
       const row = file(`${SCHOOL}\\PDF\\2026-10`, "Reading Assessment Q2.pdf", { originLabel: "Messenger", downloadedAt: NOW, modified: NOW });

@@ -54,6 +54,14 @@ export interface Settings {
   excludedFolders: string[];
   /** Empty means the standard DepEd list. */
   subjectRules: SubjectRule[];
+  /** Once a day, ask codewithlex.site whether a newer Tote exists. */
+  checkUpdates: boolean;
+}
+
+/** A newer version offered by the update check. */
+export interface UpdateInfo {
+  version: string;
+  notes: string | null;
 }
 
 export interface SubjectRule {
@@ -173,6 +181,7 @@ export interface ToteError {
     | "io"
     | "db"
     | "validation"
+    | "network"
     | "unsupported";
   message: string;
   path?: string;

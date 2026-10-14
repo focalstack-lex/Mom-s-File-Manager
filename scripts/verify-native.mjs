@@ -92,6 +92,9 @@ async function main() {
     TOTE_DATA_DIR: join(LAB, "data"),
     // Only honoured together with TOTE_ROOTS (src-tauri/src/lib.rs), so a normal start never opens a port.
     TOTE_DEBUG_PORT: String(PORT),
+    // Opt-in (TOTE_CHECK_UPDATE=1): the app treats the published release as
+    // new, downloads it and verifies its signature, and stops before installing.
+    ...(process.env.TOTE_CHECK_UPDATE ? { TOTE_UPDATE_VERIFY: "1" } : {}),
   };
   const app = spawn(EXE, [], { env, stdio: "ignore", detached: false });
   let browser = null;
@@ -258,6 +261,8 @@ async function main() {
     const startWidth = await page.evaluate(() => outerWidth);
     await page.getByRole("button", { name: "Maximize" }).click();
     const maximized = await until(() => page.evaluate(() => outerWidth === screen.availWidth));
+    // The label follows Windows' resize event a moment after the width changes.
+    await until(async () => (await page.locator(".window-button").nth(1).getAttribute("aria-label")) === "Restore");
     const restoreLabel = await page.locator(".window-button").nth(1).getAttribute("aria-label");
     await page.getByRole("button", { name: "Restore" }).click();
     const unmaximized = await until(() => page.evaluate((w) => outerWidth === w, startWidth));
@@ -265,6 +270,19 @@ async function main() {
     record("The green title bar replaces the Windows frame; Maximize and Restore work from its buttons",
       frame.frameless && frame.controls.join(",") === "Minimize,Maximize,Close" && maximized && restoreLabel === "Restore" && unmaximized,
       JSON.stringify({ ...frame, maximized, restoreLabel, unmaximized }));
+
+    if (process.env.TOTE_CHECK_UPDATE) {
+      // The live manifest, the signed installer on the site and the public key
+      // in this build, end to end. The renderer's own IPC bridge is used, as the
+      // banner would.
+      const offered = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("check_update"));
+      const installed = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("install_update").then(() => "ok", (e) => JSON.stringify(e)));
+      const logPath = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.tote", "logs", "tote-test.log");
+      const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+      const verified = /update: \S+ downloaded \(\d+ bytes\) and its signature verified/.test(log) && log.includes("dry run, so");
+      record("Update: the live manifest offers a release, its installer downloads from codewithlex.site and its signature verifies; nothing is installed in a dry run",
+        Boolean(offered?.version) && installed === "ok" && verified, JSON.stringify({ offered, installed, verified }));
+    }
 
     record("No uncaught page errors in the real window", pageErrors.length === 0, pageErrors.join(" | "));
   } catch (error) {

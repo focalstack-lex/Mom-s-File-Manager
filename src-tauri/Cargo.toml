@@ -1,6 +1,6 @@
 [package]
 name = "tote"
-version = "0.1.0"
+version = "0.2.0"
 description = "Tote: finds a teacher's files and keeps new downloads filed"
 authors = ["Lex Matondo"]
 license = "MIT"
@@ -45,6 +45,11 @@ pdf-extract = "0.12"
 trash = "5"
 # Local dates for the YYYY-MM folders and relative times.
 chrono = "0.4"
+# Signed self-update (added 2026-10-14 at Lex's request): once a day, at most,
+# reads codewithlex.site/tote/latest.json; installs only a package signed with
+# the private key kept outside the repo. Pinned to the minor version because
+# the updater's HTTP client can change between minor releases.
+tauri-plugin-updater = "2.13"
 
 [target.'cfg(windows)'.dependencies]
 # Files on the clipboard as files (CF_HDROP), so she can paste into Messenger or Gmail.

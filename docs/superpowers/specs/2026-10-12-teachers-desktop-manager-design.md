@@ -260,6 +260,7 @@ Zustand stores: files (search, recent, pins), selection, activity, settings, tou
 ### 6.6 Security and privacy
 
 - No network access at all: no telemetry, no updates over the network in v1, strict CSP, minimal Tauri capabilities.
+  - Amendment 2026-10-14 (Lex's decision): from 0.2.0, one exception. At most once a day, with a Settings switch to turn it off, Tote reads https://www.codewithlex.site/tote/latest.json and offers a signed update that installs with one click (`src-tauri/src/update.rs`). No telemetry; nothing about her files is sent.
 - All file paths from the UI are validated on the Rust side. The renderer never gets general filesystem access.
 - No secrets exist in this app. Releases still pass the Security-First Deployment Gate before installing on her laptop.
 

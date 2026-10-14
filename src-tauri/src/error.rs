@@ -17,6 +17,8 @@ pub enum ErrorCode {
     Db,
     Validation,
     Unsupported,
+    /// The update check or download could not reach codewithlex.site.
+    Network,
 }
 
 #[derive(Debug, Clone, Serialize, thiserror::Error)]

@@ -22,6 +22,7 @@ Every surface a user can reach, where it lives, and which verify step proves it.
 | Settings: folders Tote looks in (add via native picker, remove, restart note) | 5.8 | `src/views/SettingsView.tsx` | `commands::add_folder`, `remove_folder`, `restart_app`, dialog plugin | UI drive 13b |
 | Settings: templates via native file picker | 5.6 | `src/views/SettingsView.tsx` | `commands::add_template`, dialog plugin | UI drive 13c |
 | Test mode (TOTE_ROOTS, TOTE_DATA_DIR) | 8 | none | `paths::Roots::from_env`, `lib.rs` | native 1 |
+| New version banner and one-click update; Settings switch "Check for new versions" | 6.6 amendment | `src/components/UpdateBanner.tsx`, `src/views/SettingsView.tsx` | `commands::check_update`, `install_update`, `update.rs`, updater plugin | cargo test (update), UI drive 16, native update check |
 | Title bar: the shell's top strip (no Windows frame), drag to move, double-click to maximize, Minimize, Maximize or Restore, Close (hides to the tray) | 7 | `src/components/TitleBar.tsx`, `src/styles.css` | `lib.rs` window builder (`decorations(false)`, `shadow(true)`), window permissions in `capabilities/default.json` | native 12 |
 | Sidebar: green shell, glass menu pills, active item as a canvas tab that slides between items (ink layer keeps the label dark under it), views ease in, folds to an icon rail (remembered) | 7 | `src/App.tsx`, `src/styles.css` | none | UI drive 14b |
 | Sorted folders (opens School Files) | 5.1 | `src/App.tsx` | `commands::open_school_files` | manual |

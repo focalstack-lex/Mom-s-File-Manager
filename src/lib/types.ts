@@ -162,7 +162,7 @@ export interface Template {
   missing: boolean;
 }
 
-export interface DeskError {
+export interface ToteError {
   code:
     | "notFound"
     | "permissionDenied"

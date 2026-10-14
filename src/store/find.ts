@@ -103,7 +103,7 @@ export const useFind = create<FindStore>((set, get) => ({
       if (id !== requestId) return;
       set({ loading: false });
       if (!quiet) useApp.getState().fail(error);
-      else console.warn("Desk: background refresh failed", error);
+      else console.warn("Tote: background refresh failed", error);
     }
   },
   loadTemplates: async () => {

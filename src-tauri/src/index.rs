@@ -588,7 +588,7 @@ pub fn group(rows: Vec<FileRow>) -> Vec<Group> {
 
 /// How many files were sorted since `since`, for the one quiet status line.
 pub fn sorted_since(conn: &Connection, since: i64) -> Result<usize> {
-    // Files Desk itself filed, not downloads it merely noticed elsewhere.
+    // Files Tote itself filed, not downloads it merely noticed elsewhere.
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM ops WHERE kind = 'autoSort' AND status = 'done' AND created_at >= ?1",
         [since],

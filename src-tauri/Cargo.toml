@@ -1,7 +1,7 @@
 [package]
-name = "desk"
+name = "tote"
 version = "0.1.0"
-description = "Desk: finds a teacher's files and keeps new downloads filed"
+description = "Tote: finds a teacher's files and keeps new downloads filed"
 authors = ["Lex Matondo"]
 license = "MIT"
 edition = "2021"
@@ -9,7 +9,7 @@ rust-version = "1.85"
 
 [lib]
 # The `_lib` suffix keeps the library name distinct from the binary on Windows.
-name = "desk_lib"
+name = "tote_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -68,7 +68,7 @@ lto = true
 opt-level = 3
 # Unwind, not abort: third-party file readers panic on some malformed files,
 # and extract.rs catches those panics so one bad file costs its content index,
-# not the whole app. With abort, a single scanned PDF crashed Desk on every
+# not the whole app. With abort, a single scanned PDF crashed Tote on every
 # start (2026-10-12). lib.rs refuses to compile with panic = "abort".
 panic = "unwind"
 strip = true

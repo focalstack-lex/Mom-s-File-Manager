@@ -5,7 +5,7 @@
 
 import { BrushCleaning, ChevronLeft, ChevronRight, FolderOpen, History, Search, Settings } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType } from "react";
-import { DeskMark } from "./components/icons";
+import { ToteMark } from "./components/icons";
 import { TitleBar } from "./components/TitleBar";
 import { Toasts } from "./components/Toasts";
 import { Tour } from "./components/Tour";
@@ -47,7 +47,7 @@ function NavItem({ label, icon: Icon, active, onClick, testId, tour, title }: { 
   );
 }
 
-const RAIL_KEY = "desk.sidebar.collapsed";
+const RAIL_KEY = "tote.sidebar.collapsed";
 
 /** Browser storage can be blocked; the sidebar then simply starts open. */
 function readCollapsed(): boolean {
@@ -62,7 +62,7 @@ function writeCollapsed(collapsed: boolean): void {
   try {
     window.localStorage.setItem(RAIL_KEY, collapsed ? "1" : "0");
   } catch (error) {
-    console.warn("Desk: could not remember the sidebar choice", error);
+    console.warn("Tote: could not remember the sidebar choice", error);
   }
 }
 
@@ -123,7 +123,7 @@ export default function App() {
   useEffect(() => {
     void loadInfo();
     void checkBrowsers();
-    // Settings can change while Desk sits in the tray; look again when she comes back.
+    // Settings can change while Tote sits in the tray; look again when she comes back.
     const onFocus = () => void checkBrowsers();
     window.addEventListener("focus", onFocus);
     // Index changes arrive in bursts (the first scan, a folder being copied);
@@ -177,9 +177,9 @@ export default function App() {
         <span className="nav-indicator" aria-hidden data-testid="nav-indicator" />
         <div className="brand">
           <span className="brand-mark" aria-hidden>
-            <DeskMark />
+            <ToteMark />
           </span>
-          <span className="brand-name">Desk</span>
+          <span className="brand-name">Tote</span>
           <button type="button" className="sidebar-toggle" onClick={toggleSidebar} aria-label={collapsed ? "Show menu names" : "Hide menu names"} aria-expanded={!collapsed} title={collapsed ? "Show menu names" : "Hide menu names"} data-testid="sidebar-toggle">
             {collapsed ? <ChevronRight size={16} aria-hidden /> : <ChevronLeft size={16} aria-hidden />}
           </button>
@@ -194,7 +194,7 @@ export default function App() {
       </nav>
       <main className="main" data-testid="main">
         {info === null ? (
-          <p className="status-line">Starting Desk...</p>
+          <p className="status-line">Starting Tote...</p>
         ) : view === "find" ? (
           <FindView info={info} />
         ) : view === "cleanup" ? (

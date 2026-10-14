@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Desk UI verification drive.
+ * Tote UI verification drive.
  *
  * Starts the Vite dev server, which activates the mocked backend in a plain
  * browser (src/main.tsx), then drives the renderer with Playwright the way
@@ -152,7 +152,7 @@ async function drive(browser) {
     await sleep(120);
   }
   const tourClosed = await hidden(page, '[data-testid="tour"]');
-  const saved = await page.evaluate(() => window.__deskMock.calls.some((c) => c.command === "set_settings" && c.args.settings?.tourDone === true));
+  const saved = await page.evaluate(() => window.__toteMock.calls.some((c) => c.command === "set_settings" && c.args.settings?.tourDone === true));
   record("Enter walks through five steps, then the walkthrough closes and is remembered", titles.length === 5 && new Set(titles).size === 5 && tourClosed && saved, JSON.stringify({ titles, tourClosed, saved }));
 
   // 3. The Find screen shows recent downloads with source and location, and the status line.
@@ -218,7 +218,7 @@ async function drive(browser) {
   const previewOk = await visible(page, '[data-testid="preview"]');
   const previewText = await page.locator('[data-testid="preview"] .preview-text').textContent();
   await page.locator('[data-testid="recent"] [data-testid="file-row"]').first().getByRole("button", { name: "Open", exact: true }).click();
-  const opened = await page.evaluate(() => window.__deskMock.calls.filter((c) => c.command === "open_path").at(-1)?.args.path);
+  const opened = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "open_path").at(-1)?.args.path);
   await capture(page, "07-preview");
   record("A row opens the preview with its text and Open reaches the backend", previewOk && previewText?.includes("Photosynthesis") && String(opened).endsWith("Grade 7 Quiz 2.docx"), JSON.stringify({ previewOk, opened }));
   await page.locator('[aria-label="Close preview"]').click();
@@ -230,7 +230,7 @@ async function drive(browser) {
   const pickerOk = await visible(page, '[data-testid="folder-picker"]');
   await page.locator(".folder-option", { hasText: "Documents > Forms" }).click();
   await page.locator('[data-testid="move-confirm"]').click();
-  const moved = await page.evaluate(() => window.__deskMock.calls.filter((c) => c.command === "move_files").at(-1)?.args);
+  const moved = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "move_files").at(-1)?.args);
   const barGone = await hidden(page, '[data-testid="action-bar"]');
   await capture(page, "08-moved");
   record("Ticking a file shows the bar; Move to... picks a folder and moves the file", barOk && pickerOk && moved?.destination?.endsWith("Forms") && barGone, JSON.stringify({ barOk, pickerOk, moved, barGone }));
@@ -256,7 +256,7 @@ async function drive(browser) {
   await page.getByRole("button", { name: "Recycle Bin" }).click();
   const confirmOk = await visible(page, '[data-testid="recycle-confirm"]');
   await page.getByRole("button", { name: "Move to Recycle Bin" }).click();
-  const recycled = await page.evaluate(() => window.__deskMock.calls.some((c) => c.command === "recycle_files"));
+  const recycled = await page.evaluate(() => window.__toteMock.calls.some((c) => c.command === "recycle_files"));
   const toastText = await page.locator(".toast").last().textContent();
   record("Recycle Bin asks first and confirms in a toast", confirmOk && recycled && toastText?.includes("Recycle Bin"), JSON.stringify({ confirmOk, recycled, toastText }));
 
@@ -287,7 +287,7 @@ async function drive(browser) {
   const batchUndo = await page.locator('[data-testid="activity-batch"]').first().locator('[data-testid="undo-batch"]').count();
   const filedMark = await page.locator('[data-testid="activity-row"] .op-mark.is-filed').count();
   await page.locator('[data-testid="activity-show"]').first().click();
-  const revealed = await page.evaluate(() => window.__deskMock.calls.filter((c) => c.command === "reveal_path").at(-1)?.args.path);
+  const revealed = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "reveal_path").at(-1)?.args.path);
   await capture(page, "10b-activity-batch");
   await page.locator('[data-testid="activity-batch"]').first().locator('[data-testid="undo-batch"]').click();
   await page.waitForFunction(() => document.querySelector('[data-testid="activity-batch"] .activity-state')?.textContent?.includes("Undone"), null, { timeout: STEP_TIMEOUT_MS });
@@ -302,7 +302,7 @@ async function drive(browser) {
   const tickedByDefault = await page.locator('[data-testid="cleanup-view"] input[type=checkbox]:checked').count();
   const recycleDisabled = await page.locator('[data-testid="recycle-ticked"]').isDisabled();
   await page.locator('[data-testid="desktop-list"]').getByRole("button", { name: "Move it there" }).first().click();
-  const suggestionMoved = await page.evaluate(() => window.__deskMock.calls.filter((c) => c.command === "move_files").at(-1)?.args.destination);
+  const suggestionMoved = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "move_files").at(-1)?.args.destination);
   await capture(page, "11-cleanup");
   record("Clean up shows Organize, duplicates, Desktop clutter and old downloads with nothing ticked, and a suggestion moves on click", cleanupOk && cards === 4 && tickedByDefault === 0 && recycleDisabled && String(suggestionMoved).includes("School Files"), JSON.stringify({ cards, tickedByDefault, recycleDisabled, suggestionMoved }));
 
@@ -399,7 +399,7 @@ async function drive(browser) {
   await last.locator("input").first().fill("Robotics");
   await last.locator("input").nth(1).fill("Arduino, robot");
   await last.locator("input").nth(1).blur();
-  const savedRules = await page.evaluate(() => window.__deskMock.calls.filter((c) => c.command === "set_settings").at(-1)?.args.settings?.subjectRules ?? []);
+  const savedRules = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "set_settings").at(-1)?.args.settings?.subjectRules ?? []);
   const robotics = savedRules.find((r) => r.folder === "Robotics");
   await capture(page, "12c-settings-subject-words");
   record("Settings: the subject word list shows the standard rules, and a new subject is saved when she leaves the field",
@@ -407,7 +407,7 @@ async function drive(browser) {
     JSON.stringify({ ruleRows, robotics, saved: savedRules.length }));
 
   // 14. A sorted download arriving in the background shows a toast and the new row.
-  await page.evaluate(() => window.__deskMock.simulateDownload());
+  await page.evaluate(() => window.__toteMock.simulateDownload());
   await page.locator('[data-testid="nav-find"]').click();
   await visible(page, '[data-testid="find-view"]');
   const arrivedToast = await page.locator(".toast", { hasText: "Reading Assessment Q2.pdf" }).count();

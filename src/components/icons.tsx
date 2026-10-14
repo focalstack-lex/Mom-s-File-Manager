@@ -1,5 +1,5 @@
 // One place that maps a file kind to its icon, so rows, previews and
-// suggestions all agree, plus the Desk mark.
+// suggestions all agree, plus the Tote mark.
 
 import { File, FileImage, FileSpreadsheet, FileText, FileType, FileVideo, Presentation } from "lucide-react";
 import type { Kind } from "../lib/types";
@@ -35,8 +35,8 @@ export function KindTile({ kind, ext }: { kind: Kind; ext?: string }) {
   );
 }
 
-/** Desk's mark: two filed sheets resting in a tray. Drawn, not borrowed from the nav icons. */
-export function DeskMark({ size = 22 }: { size?: number }) {
+/** Tote's mark: two filed sheets resting in a tray. Drawn, not borrowed from the nav icons. */
+export function ToteMark({ size = 22 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M7 4h7l3 3v6" />

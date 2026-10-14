@@ -2,7 +2,7 @@
 //! templates, the operations log and settings. A damaged database is moved
 //! aside and rebuilt from disk, since her files are the real source of truth.
 
-use crate::error::{DeskError, Result};
+use crate::error::{ToteError, Result};
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -58,15 +58,15 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 "#;
 
-/// Opens (or creates) `desk.sqlite` in `data_dir`.
+/// Opens (or creates) `tote.sqlite` in `data_dir`.
 pub fn open(data_dir: &Path) -> Result<Opened> {
     std::fs::create_dir_all(data_dir)?;
-    let file = data_dir.join("desk.sqlite");
+    let file = data_dir.join("tote.sqlite");
     match open_at(&file) {
         Ok(connection) => Ok(Opened { connection, recovered: false }),
         Err(error) => {
             log::warn!("database at {} is unusable ({error}); rebuilding", file.display());
-            let aside = data_dir.join(format!("desk.damaged-{}.sqlite", chrono::Utc::now().timestamp()));
+            let aside = data_dir.join(format!("tote.damaged-{}.sqlite", chrono::Utc::now().timestamp()));
             if file.exists() {
                 std::fs::rename(&file, &aside)?;
             }
@@ -76,6 +76,32 @@ pub fn open(data_dir: &Path) -> Result<Opened> {
     }
 }
 
+/// The app was called Desk until 2026-10-14 and kept `desk.sqlite` under the
+/// `com.focalstack.desk` data folder. When Tote has no database yet and
+/// that older one exists, a consistent copy is taken (VACUUM INTO also reads
+/// what is still in the WAL, and works while Desk is running), so her pins,
+/// templates, settings and Undo history carry over. The old folder is left
+/// untouched. Returns true when a copy was made.
+pub fn adopt_desk_database(data_dir: &Path, desk_dir: &Path) -> Result<bool> {
+    let old = desk_dir.join("desk.sqlite");
+    let new = data_dir.join("tote.sqlite");
+    if new.exists() || !old.exists() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(data_dir)?;
+    let source = Connection::open_with_flags(&old, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let target = new.to_string_lossy().into_owned();
+    if let Err(error) = source.execute("VACUUM INTO ?1", [&target]) {
+        // A half-written copy would be opened as her database; remove it so
+        // the normal start builds a fresh index instead.
+        if new.exists() {
+            std::fs::remove_file(&new)?;
+        }
+        return Err(error.into());
+    }
+    Ok(true)
+}
+
 fn open_at(file: &Path) -> Result<Connection> {
     let connection = Connection::open(file)?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -83,7 +109,7 @@ fn open_at(file: &Path) -> Result<Connection> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
     let ok: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     if ok != "ok" {
-        return Err(DeskError::db(format!("integrity check: {ok}")));
+        return Err(ToteError::db(format!("integrity check: {ok}")));
     }
     connection.execute_batch(SCHEMA)?;
     migrate(&connection)?;
@@ -157,9 +183,33 @@ mod tests {
     }
 
     #[test]
+    fn a_desk_database_carries_over_once() {
+        let desk = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let old = open(desk.path()).unwrap().connection;
+        set_setting(&old, "tour_done", "1").unwrap();
+        drop(old);
+        // Desk's own file name; open() now writes tote.sqlite.
+        std::fs::rename(desk.path().join("tote.sqlite"), desk.path().join("desk.sqlite")).unwrap();
+        assert!(adopt_desk_database(data.path(), desk.path()).unwrap());
+        let opened = open(data.path()).unwrap();
+        assert_eq!(get_setting(&opened.connection, "tour_done").unwrap().as_deref(), Some("1"));
+        assert!(!adopt_desk_database(data.path(), desk.path()).unwrap(), "never overwrites Tote's own database");
+        assert!(desk.path().join("desk.sqlite").exists(), "the old folder is left alone");
+    }
+
+    #[test]
+    fn nothing_to_adopt_without_desk() {
+        let desk = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        assert!(!adopt_desk_database(data.path(), desk.path()).unwrap());
+        assert!(!data.path().join("tote.sqlite").exists());
+    }
+
+    #[test]
     fn damaged_database_is_moved_aside() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("desk.sqlite"), b"this is not a database file at all, just junk bytes").unwrap();
+        std::fs::write(dir.path().join("tote.sqlite"), b"this is not a database file at all, just junk bytes").unwrap();
         let opened = open(dir.path()).unwrap();
         assert!(opened.recovered);
         let damaged = std::fs::read_dir(dir.path()).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains("damaged")).count();

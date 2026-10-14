@@ -16,7 +16,7 @@ export const TOUR_STEPS: TourStep[] = [
     id: "search",
     target: "search",
     title: "Type what you remember",
-    body: "A file name, a student, or a word inside the file. Desk looks inside your documents too.",
+    body: "A file name, a student, or a word inside the file. Tote looks inside your documents too.",
     view: "find",
   },
   {

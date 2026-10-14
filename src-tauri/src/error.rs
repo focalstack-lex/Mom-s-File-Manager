@@ -22,14 +22,14 @@ pub enum ErrorCode {
 #[derive(Debug, Clone, Serialize, thiserror::Error)]
 #[error("{message}")]
 #[serde(rename_all = "camelCase")]
-pub struct DeskError {
+pub struct ToteError {
     pub code: ErrorCode,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 }
 
-impl DeskError {
+impl ToteError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self { code, message: message.into(), path: None }
     }
@@ -48,7 +48,7 @@ impl DeskError {
     }
 }
 
-impl From<std::io::Error> for DeskError {
+impl From<std::io::Error> for ToteError {
     fn from(error: std::io::Error) -> Self {
         use std::io::ErrorKind;
         let code = match error.kind() {
@@ -61,13 +61,13 @@ impl From<std::io::Error> for DeskError {
     }
 }
 
-impl From<rusqlite::Error> for DeskError {
+impl From<rusqlite::Error> for ToteError {
     fn from(error: rusqlite::Error) -> Self {
         Self::db(error.to_string())
     }
 }
 
-pub type Result<T> = std::result::Result<T, DeskError>;
+pub type Result<T> = std::result::Result<T, ToteError>;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -76,15 +76,15 @@ mod tests {
 
     #[test]
     fn io_errors_map_to_their_category() {
-        let error: DeskError = std::io::Error::new(std::io::ErrorKind::NotFound, "gone").into();
+        let error: ToteError = std::io::Error::new(std::io::ErrorKind::NotFound, "gone").into();
         assert_eq!(error.code, ErrorCode::NotFound);
-        let error: DeskError = std::io::Error::other("other").into();
+        let error: ToteError = std::io::Error::other("other").into();
         assert_eq!(error.code, ErrorCode::Io);
     }
 
     #[test]
     fn serializes_in_camel_case_without_an_empty_path() {
-        let json = serde_json::to_value(DeskError::validation("bad")).unwrap();
+        let json = serde_json::to_value(ToteError::validation("bad")).unwrap();
         assert_eq!(json, serde_json::json!({ "code": "validation", "message": "bad" }));
     }
 }

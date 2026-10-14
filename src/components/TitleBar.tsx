@@ -1,7 +1,7 @@
 // The window's own title bar: the top strip of the green shell. Dragging it
 // moves the window and a double-click maximizes (data-tauri-drag-region);
 // the three buttons on the right match the Windows ones. Close goes through
-// the normal close request, so Desk still hides to the tray (lib.rs).
+// the normal close request, so Tote still hides to the tray (lib.rs).
 // In the plain-browser dev harness there is no window, so only the strip shows.
 
 import { isTauri } from "@tauri-apps/api/core";
@@ -21,7 +21,7 @@ export function TitleBar() {
       win
         .isMaximized()
         .then(setMaximized)
-        .catch((error) => console.warn("Desk: could not read the window state", error));
+        .catch((error) => console.warn("Tote: could not read the window state", error));
     void sync();
     const off = win.onResized(() => void sync());
     return () => {

@@ -1,4 +1,4 @@
-//! Desk native core. Every side effect (database, filesystem, shell) lives
+//! Tote native core. Every side effect (database, filesystem, shell) lives
 //! here behind `#[tauri::command]` functions that validate their input; the
 //! renderer only displays what these commands return.
 
@@ -22,14 +22,14 @@ mod templates;
 mod tray;
 mod worker;
 
-pub use error::{DeskError, ErrorCode};
+pub use error::{ToteError, ErrorCode};
 
 // extract.rs relies on catching panics from third-party file readers.
 #[cfg(panic = "abort")]
-compile_error!("Desk must be built with panic = \"unwind\": one malformed file would otherwise crash the app (see Cargo.toml).");
+compile_error!("Tote must be built with panic = \"unwind\": one malformed file would otherwise crash the app (see Cargo.toml).");
 
 /// Logs every panic with its location, so a crash in any thread leaves a
-/// line in desk.log instead of vanishing.
+/// line in tote.log instead of vanishing.
 fn install_panic_logger() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -48,7 +48,7 @@ use tauri::Manager;
 /// process exits with status 1 instead of panicking; a panic anywhere is
 /// logged (install_panic_logger) and file-reader panics are caught.
 pub fn run() {
-    // Debug logging in a debug build or during a dry run (DESK_ROOTS), Info otherwise.
+    // Debug logging in a debug build or during a dry run (TOTE_ROOTS), Info otherwise.
     let log_level = if cfg!(debug_assertions) || paths::Roots::test_mode() { log::LevelFilter::Debug } else { log::LevelFilter::Info };
     let minimized = std::env::args().any(|a| a == "--minimized");
     install_panic_logger();
@@ -57,7 +57,7 @@ pub fn run() {
     // own log file and skips the single-instance rule (which would hand the
     // launch to the running copy and exit).
     let test_mode = paths::Roots::test_mode();
-    let log_file = if test_mode { "desk-test" } else { "desk" };
+    let log_file = if test_mode { "tote-test" } else { "tote" };
 
     let mut builder = tauri::Builder::default().plugin(
         tauri_plugin_log::Builder::new()
@@ -76,18 +76,29 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            // DESK_DATA_DIR keeps a dry run's index away from the real one.
-            let data_dir = match std::env::var_os("DESK_DATA_DIR") {
+            // TOTE_DATA_DIR keeps a dry run's index away from the real one.
+            let data_dir = match std::env::var_os("TOTE_DATA_DIR") {
                 Some(dir) => std::path::PathBuf::from(dir),
                 None => app.path().app_local_data_dir().map_err(|e| {
                     log::error!("no app data folder: {e}");
                     e
                 })?,
             };
+            // First start after the rename from Desk: bring its database along.
+            // A dry run has its own data folder and never adopts anything.
+            if !test_mode {
+                if let Some(desk_dir) = data_dir.parent().map(|p| p.join("com.focalstack.desk")) {
+                    match db::adopt_desk_database(&data_dir, &desk_dir) {
+                        Ok(true) => log::info!("carried the Desk database over from {}", desk_dir.display()),
+                        Ok(false) => {}
+                        Err(error) => log::warn!("could not carry the Desk database over ({error}); starting a fresh index"),
+                    }
+                }
+            }
             let opened = match db::open(&data_dir) {
                 Ok(opened) => opened,
                 Err(error) => {
-                    log::error!("Desk could not open its database in {}: {error}", data_dir.display());
+                    log::error!("Tote could not open its database in {}: {error}", data_dir.display());
                     std::process::exit(1);
                 }
             };
@@ -109,10 +120,10 @@ pub fn run() {
             app.manage(state::AppState(core.clone()));
 
             // The window is built here rather than in tauri.conf.json so a dry
-            // run (DESK_ROOTS plus DESK_DEBUG_PORT) can open the WebView2
+            // run (TOTE_ROOTS plus TOTE_DEBUG_PORT) can open the WebView2
             // debugging port for scripts/verify-native.mjs. A normal start never does.
             let window = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
-                .title("Desk")
+                .title("Tote")
                 .inner_size(1180.0, 760.0)
                 .min_inner_size(640.0, 480.0)
                 // The green shell draws its own title bar (src/components/TitleBar.tsx).
@@ -127,7 +138,7 @@ pub fn run() {
             // the installed app keeps its own folder next to its database.
             let window = if test_mode { window.data_directory(data_dir.join("webview")) } else { window };
             #[cfg(windows)]
-            let window = match std::env::var("DESK_DEBUG_PORT").ok().filter(|_| test_mode) {
+            let window = match std::env::var("TOTE_DEBUG_PORT").ok().filter(|_| test_mode) {
                 Some(port) if port.chars().all(|c| c.is_ascii_digit()) => {
                     log::info!("test mode: WebView2 debugging port {port}");
                     window.additional_browser_args(&format!(
@@ -199,7 +210,7 @@ pub fn run() {
         ]);
 
     if let Err(error) = builder.run(tauri::generate_context!()) {
-        log::error!("Desk could not start: {error}");
+        log::error!("Tote could not start: {error}");
         std::process::exit(1);
     }
 }

@@ -1,5 +1,5 @@
 //! Organize now (spec 5.11): the loose files on the Desktop and in Downloads
-//! go into folders Desk creates, by grade and subject guessed from the file
+//! go into folders Tote creates, by grade and subject guessed from the file
 //! name, else by type and month. She sees the whole plan first, and one Undo
 //! reverses the run (`ops::undo_batch`).
 

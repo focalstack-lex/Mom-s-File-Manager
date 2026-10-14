@@ -1,8 +1,8 @@
 {
-  "name": "desk",
+  "name": "tote",
   "private": true,
   "version": "0.1.0",
-  "description": "Desk: finds a teacher's files and keeps new downloads filed, with no new routines to learn.",
+  "description": "Tote: finds a teacher's files and keeps new downloads filed, with no new routines to learn.",
   "license": "MIT",
   "type": "module",
   "scripts": {

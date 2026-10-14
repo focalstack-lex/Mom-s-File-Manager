@@ -6,12 +6,12 @@ use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open Desk", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Desk", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open Tote", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Tote", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
     let mut builder = TrayIconBuilder::with_id("main")
         .menu(&menu)
-        .tooltip("Desk")
+        .tooltip("Tote")
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show(app),

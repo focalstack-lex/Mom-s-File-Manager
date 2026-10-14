@@ -175,7 +175,7 @@ export function CleanupView({ info }: { info: AppInfo }) {
     <div className="main-inner" data-testid="cleanup-view">
       <div className="view-head">
         <h1 className="view-title">Clean up</h1>
-        <p className="view-lead">Things Desk noticed. Nothing moves until you click, and everything can be undone.</p>
+        <p className="view-lead">Things Tote noticed. Nothing moves until you click, and everything can be undone.</p>
       </div>
       {report === null ? (
         <SkeletonList label="Looking around" />

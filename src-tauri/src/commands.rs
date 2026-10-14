@@ -8,7 +8,7 @@
 use crate::cleanup::{self, CleanupReport};
 use crate::clipboard;
 use crate::db;
-use crate::error::{DeskError, ErrorCode, Result};
+use crate::error::{ToteError, ErrorCode, Result};
 use crate::extract;
 use crate::index::{self, FileRow, Filters, Group, IndexStatus};
 use crate::ops::{self, OpRow};
@@ -90,7 +90,7 @@ pub fn root_choices(conn: &rusqlite::Connection) -> paths::RootChoices {
 }
 
 fn save_settings(core: &Core, settings: &Settings) -> Result<()> {
-    let json = serde_json::to_string(settings).map_err(|e| DeskError::validation(e.to_string()))?;
+    let json = serde_json::to_string(settings).map_err(|e| ToteError::validation(e.to_string()))?;
     let conn = core.db()?;
     db::set_setting(&conn, "settings", &json)
 }
@@ -145,7 +145,7 @@ pub struct Destination {
 async fn blocking<T: Send + 'static>(name: &'static str, work: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
     let joined = tauri::async_runtime::spawn_blocking(work)
         .await
-        .map_err(|e| DeskError::new(ErrorCode::Io, format!("The task did not finish: {e}")));
+        .map_err(|e| ToteError::new(ErrorCode::Io, format!("The task did not finish: {e}")));
     let result = joined.and_then(|r| r);
     if let Err(error) = &result {
         log::warn!("{name}: {} ({:?}){}", error.message, error.code, error.path.as_ref().map(|p| format!(" at {p}")).unwrap_or_default());
@@ -228,11 +228,11 @@ pub async fn open_path(state: State<'_, AppState>, app: tauri::AppHandle, path: 
     blocking("open_path", move || {
         let confined = core.roots.confine(Path::new(&path))?;
         if !confined.exists() {
-            return Err(DeskError::new(ErrorCode::NotFound, "That file is no longer there.").with_path(path));
+            return Err(ToteError::new(ErrorCode::NotFound, "That file is no longer there.").with_path(path));
         }
         app.opener()
             .open_path(paths::display(&confined), None::<&str>)
-            .map_err(|e| DeskError::new(ErrorCode::Io, format!("Windows could not open it: {e}")))
+            .map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not open it: {e}")))
     })
     .await
 }
@@ -244,11 +244,11 @@ pub async fn reveal_path(state: State<'_, AppState>, app: tauri::AppHandle, path
     blocking("reveal_path", move || {
         let confined = core.roots.confine(Path::new(&path))?;
         if !confined.exists() {
-            return Err(DeskError::new(ErrorCode::NotFound, "That file is no longer there.").with_path(path));
+            return Err(ToteError::new(ErrorCode::NotFound, "That file is no longer there.").with_path(path));
         }
         app.opener()
             .reveal_item_in_dir(&confined)
-            .map_err(|e| DeskError::new(ErrorCode::Io, format!("Windows could not show it: {e}")))
+            .map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not show it: {e}")))
     })
     .await
 }
@@ -262,7 +262,7 @@ pub async fn open_school_files(state: State<'_, AppState>, app: tauri::AppHandle
         std::fs::create_dir_all(&school)?;
         app.opener()
             .open_path(paths::display(&school), None::<&str>)
-            .map_err(|e| DeskError::new(ErrorCode::Io, format!("Windows could not open the folder: {e}")))
+            .map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not open the folder: {e}")))
     })
     .await
 }
@@ -522,7 +522,7 @@ pub async fn set_settings(state: State<'_, AppState>, app: tauri::AppHandle, set
     .await
 }
 
-/// Adds a folder Desk should look in. Takes effect after a restart, because
+/// Adds a folder Tote should look in. Takes effect after a restart, because
 /// the watchers and the scan are built once at startup.
 #[tauri::command]
 pub async fn add_folder(state: State<'_, AppState>, path: String) -> Result<Settings> {
@@ -530,10 +530,10 @@ pub async fn add_folder(state: State<'_, AppState>, path: String) -> Result<Sett
     blocking("add_folder", move || {
         let folder = paths::resolve(Path::new(&path))?;
         if !folder.is_dir() {
-            return Err(DeskError::new(ErrorCode::NotFound, "That folder could not be found.").with_path(path));
+            return Err(ToteError::new(ErrorCode::NotFound, "That folder could not be found.").with_path(path));
         }
         if core.roots.all().iter().any(|r| paths::same_path(r, &folder) || folder.starts_with(r)) {
-            return Err(DeskError::validation("Desk already looks in that folder."));
+            return Err(ToteError::validation("Tote already looks in that folder."));
         }
         let text = paths::display(&folder);
         let mut settings = settings_of(&core);
@@ -554,7 +554,7 @@ pub async fn remove_folder(state: State<'_, AppState>, path: String) -> Result<S
     blocking("remove_folder", move || {
         let folder = Path::new(&path);
         if !core.roots.removable(folder) {
-            return Err(DeskError::validation("Documents and Downloads are where filing happens, so they stay."));
+            return Err(ToteError::validation("Documents and Downloads are where filing happens, so they stay."));
         }
         let mut settings = settings_of(&core);
         let was_extra = settings.extra_folders.iter().any(|e| paths::same_path(Path::new(e), folder));
@@ -576,7 +576,7 @@ pub fn restart_app(app: tauri::AppHandle) {
 pub fn apply_autostart(app: &tauri::AppHandle, enabled: bool) {
     use tauri_plugin_autostart::ManagerExt;
     if paths::Roots::test_mode() {
-        log::info!("test mode (DESK_ROOTS): autostart left untouched");
+        log::info!("test mode (TOTE_ROOTS): autostart left untouched");
         return;
     }
     let launcher = app.autolaunch();
@@ -592,7 +592,7 @@ pub fn apply_autostart(app: &tauri::AppHandle, enabled: bool) {
 #[tauri::command]
 pub async fn browser_check() -> Result<Vec<crate::browsers::BrowserStatus>> {
     blocking("browser_check", move || {
-        let downloads = dirs::download_dir().ok_or_else(|| DeskError::new(ErrorCode::NotFound, "The Downloads folder could not be found."))?;
+        let downloads = dirs::download_dir().ok_or_else(|| ToteError::new(ErrorCode::NotFound, "The Downloads folder could not be found."))?;
         Ok(crate::browsers::check(&downloads, dirs::desktop_dir().as_deref()))
     })
     .await

@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Desk native check: the real app, real files, driven through its own window.
+ * Tote native check: the real app, real files, driven through its own window.
  *
- * Builds a throwaway folder set, launches the release desk.exe in test mode
- * (DESK_ROOTS and DESK_DATA_DIR, so nothing real is touched and autostart is
+ * Builds a throwaway folder set, launches the release tote.exe in test mode
+ * (TOTE_ROOTS and TOTE_DATA_DIR, so nothing real is touched and autostart is
  * left alone) with WebView2 remote debugging on, then drives the actual
  * window over CDP: drops downloads with Zone.Identifier streams and waits for
  * them to be filed, searches the real index, moves, renames, pins, recycles
  * and undoes through the real commands. Evidence lands in
  * reports/native-check/<stamp>/.
  *
- * Usage: node scripts/verify-native.mjs   (needs src-tauri/target/release/desk.exe)
+ * Usage: node scripts/verify-native.mjs   (needs src-tauri/target/release/tote.exe)
  */
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -21,9 +21,9 @@ import { chromium } from "playwright";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // The fresh build when there is one; otherwise the copy kept in installers/
 // (cargo clean removes target/ to save space).
-const BUILT_EXE = join(ROOT, "src-tauri", "target", "release", "desk.exe");
-const EXE = existsSync(BUILT_EXE) ? BUILT_EXE : join(ROOT, "installers", "desk-release.exe");
-const LAB = resolve(process.env.LOCALAPPDATA ?? ROOT, "desk-native-check");
+const BUILT_EXE = join(ROOT, "src-tauri", "target", "release", "tote.exe");
+const EXE = existsSync(BUILT_EXE) ? BUILT_EXE : join(ROOT, "installers", "tote-release.exe");
+const LAB = resolve(process.env.LOCALAPPDATA ?? ROOT, "tote-native-check");
 const PORT = 9333;
 const STEP_TIMEOUT_MS = 10_000;
 const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -88,10 +88,10 @@ async function main() {
   seedLab();
   const env = {
     ...process.env,
-    DESK_ROOTS: `${join(LAB, "Desktop")};${join(LAB, "Documents")};${join(LAB, "Downloads")}`,
-    DESK_DATA_DIR: join(LAB, "data"),
-    // Only honoured together with DESK_ROOTS (src-tauri/src/lib.rs), so a normal start never opens a port.
-    DESK_DEBUG_PORT: String(PORT),
+    TOTE_ROOTS: `${join(LAB, "Desktop")};${join(LAB, "Documents")};${join(LAB, "Downloads")}`,
+    TOTE_DATA_DIR: join(LAB, "data"),
+    // Only honoured together with TOTE_ROOTS (src-tauri/src/lib.rs), so a normal start never opens a port.
+    TOTE_DEBUG_PORT: String(PORT),
   };
   const app = spawn(EXE, [], { env, stdio: "ignore", detached: false });
   let browser = null;
@@ -250,7 +250,7 @@ async function main() {
     const toggle = page.locator("label.toggle", { hasText: "Tell me when a download is filed" }).locator("input");
     await toggle.uncheck();
     await sleep(500);
-    const dbText = execFileSync("python", ["-I", "-c", `import sqlite3;print(sqlite3.connect(r'${join(LAB, "data", "desk.sqlite")}').execute("select value from settings where key='settings'").fetchone()[0])`], { encoding: "utf8" });
+    const dbText = execFileSync("python", ["-I", "-c", `import sqlite3;print(sqlite3.connect(r'${join(LAB, "data", "tote.sqlite")}').execute("select value from settings where key='settings'").fetchone()[0])`], { encoding: "utf8" });
     record("Settings are written to the real database", dbText.includes('"notifications":false') && dbText.includes('"tourDone":true'), dbText.trim().slice(0, 120));
 
     // The window has no Windows frame: the green title bar carries the controls.
@@ -274,8 +274,8 @@ async function main() {
     if (browser) await browser.close().catch(() => undefined);
     spawn("taskkill", ["/pid", String(app.pid), "/T", "/F"], { stdio: "ignore" });
     await sleep(800);
-    const logPath = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.desk", "logs", "desk-test.log");
-    if (existsSync(logPath)) writeFileSync(join(EVIDENCE_DIR, "desk.log"), readFileSync(logPath, "utf8").split("\n").slice(-200).join("\n"));
+    const logPath = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.tote", "logs", "tote-test.log");
+    if (existsSync(logPath)) writeFileSync(join(EVIDENCE_DIR, "tote.log"), readFileSync(logPath, "utf8").split("\n").slice(-200).join("\n"));
     writeFileSync(join(EVIDENCE_DIR, "summary.json"), `${JSON.stringify({ stamp, lab: LAB, steps: results, pageErrors, downloadsLeft: readdirSync(join(LAB, "Downloads")) }, null, 2)}\n`);
   }
   const failed = results.filter((r) => !r.passed).length;

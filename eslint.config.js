@@ -2,20 +2,20 @@ import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import globals from "globals";
 import reactHooks from "eslint-plugin-react-hooks";
-import desk from "./eslint-rules/desk-invariants.js";
+import tote from "./eslint-rules/tote-invariants.js";
 
 /**
- * Desk ESLint gate.
+ * Tote ESLint gate.
  *
  * Narrow on purpose: the four directive invariants (zero emoji, zero em or en
  * dash, no silent catch, no committed secret) plus TypeScript and hooks
  * correctness. No style preferences, so it never forces a structural rewrite.
  */
 const INVARIANTS = {
-  "desk/no-emoji": "error",
-  "desk/no-dash-punctuation": "error",
-  "desk/no-silent-catch": "error",
-  "desk/no-hardcoded-secret": "error",
+  "tote/no-emoji": "error",
+  "tote/no-dash-punctuation": "error",
+  "tote/no-silent-catch": "error",
+  "tote/no-hardcoded-secret": "error",
 };
 
 export default tseslint.config(
@@ -26,7 +26,7 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   {
     files: ["**/*.{js,mjs,ts,tsx}"],
-    plugins: { desk },
+    plugins: { tote },
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",

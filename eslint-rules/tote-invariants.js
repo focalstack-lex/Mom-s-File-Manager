@@ -1,15 +1,15 @@
 /**
- * Desk invariant rules for ESLint.
+ * Tote invariant rules for ESLint.
  *
  * These rules turn prose directives (the Severus house style) into machine
  * enforced failures. Characters written as unicode escapes (for example
  * "\u2014") do not match the raw-text scans, so pattern definitions stay legal.
  *
  * Rules:
- *   desk/no-emoji              Zero emoji in source, copy and comments.
- *   desk/no-dash-punctuation   Zero em dash and en dash.
- *   desk/no-silent-catch       No empty catch block without a stated reason.
- *   desk/no-hardcoded-secret   No credentials committed to source.
+ *   tote/no-emoji              Zero emoji in source, copy and comments.
+ *   tote/no-dash-punctuation   Zero em dash and en dash.
+ *   tote/no-silent-catch       No empty catch block without a stated reason.
+ *   tote/no-hardcoded-secret   No credentials committed to source.
  */
 
 const DASH_PATTERN = /[\u2013\u2014]/g;
@@ -124,7 +124,7 @@ const noHardcodedSecret = {
 };
 
 export default {
-  meta: { name: "desk-invariants", version: "1.0.0" },
+  meta: { name: "tote-invariants", version: "1.0.0" },
   rules: {
     "no-emoji": noEmoji,
     "no-dash-punctuation": noDashPunctuation,

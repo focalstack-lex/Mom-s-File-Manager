@@ -394,9 +394,9 @@ export function installMockBackend(): void {
       const row = file(`${SCHOOL}\\PDF\\2026-10`, "Reading Assessment Q2.pdf", { originLabel: "Messenger", downloadedAt: NOW, modified: NOW });
       files.unshift(row);
       ops.unshift({ id: nextOp++, kind: "autoSort", src: `${DOWNLOADS}\\${row.name}`, dst: row.path, status: "done", message: null, automatic: true, createdAt: NOW, batch: null });
-      emit("desk://sorted", { name: row.name, folder: "School Files > PDF", path: row.path });
-      emit("desk://changed");
+      emit("tote://sorted", { name: row.name, folder: "School Files > PDF", path: row.path });
+      emit("tote://changed");
     },
   };
-  window.__deskMock = mock;
+  window.__toteMock = mock;
 }

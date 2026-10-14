@@ -1,7 +1,7 @@
 //! Known folders, the indexed roots, and the one boundary check every file
 //! command runs: a path is only acted on when it resolves inside a root.
 
-use crate::error::{DeskError, ErrorCode, Result};
+use crate::error::{ToteError, ErrorCode, Result};
 use std::path::{Component, Path, PathBuf};
 
 /// The folders the app indexes and may change files in (spec 5.2).
@@ -27,7 +27,7 @@ pub struct RootChoices {
 
 impl Roots {
     /// Resolves the roots through the platform's known-folder API, honouring
-    /// the Settings choices. `DESK_ROOTS` (test mode) replaces all of it.
+    /// the Settings choices. `TOTE_ROOTS` (test mode) replaces all of it.
     pub fn detect(choices: &RootChoices) -> Self {
         if let Some(roots) = Self::from_env() {
             return roots;
@@ -45,13 +45,13 @@ impl Roots {
         }
     }
 
-    /// `DESK_ROOTS=<desktop>;<documents>;<downloads>[;<extra>...]` points the
+    /// `TOTE_ROOTS=<desktop>;<documents>;<downloads>[;<extra>...]` points the
     /// whole app at copied folders for a dry run (spec 8). Nothing real is touched.
     pub fn from_env() -> Option<Self> {
-        let raw = std::env::var("DESK_ROOTS").ok()?;
+        let raw = std::env::var("TOTE_ROOTS").ok()?;
         let parts: Vec<PathBuf> = raw.split(';').map(str::trim).filter(|s| !s.is_empty()).map(PathBuf::from).collect();
         if parts.len() < 3 {
-            log::error!("DESK_ROOTS needs desktop;documents;downloads, got {raw:?}");
+            log::error!("TOTE_ROOTS needs desktop;documents;downloads, got {raw:?}");
             return None;
         }
         Some(Self {
@@ -64,9 +64,9 @@ impl Roots {
         })
     }
 
-    /// True while `DESK_ROOTS` is set: no autostart registration, separate data.
+    /// True while `TOTE_ROOTS` is set: no autostart registration, separate data.
     pub fn test_mode() -> bool {
-        std::env::var_os("DESK_ROOTS").is_some()
+        std::env::var_os("TOTE_ROOTS").is_some()
     }
 
     /// Roots built from explicit folders, used by tests.
@@ -105,7 +105,7 @@ impl Roots {
         self.documents
             .as_ref()
             .map(|d| resolve(d).unwrap_or_else(|_| d.clone()).join("School Files"))
-            .ok_or_else(|| DeskError::new(ErrorCode::NotFound, "The Documents folder could not be found."))
+            .ok_or_else(|| ToteError::new(ErrorCode::NotFound, "The Documents folder could not be found."))
     }
 
     /// Resolves `path` and refuses it unless it sits inside one of the roots.
@@ -120,9 +120,9 @@ impl Roots {
                 }
             }
         }
-        Err(DeskError::new(
+        Err(ToteError::new(
             ErrorCode::OutsideRoots,
-            "Desk only works with files in the folders listed in Settings.",
+            "Tote only works with files in the folders listed in Settings.",
         )
         .with_path(display(path)))
     }
@@ -137,10 +137,10 @@ pub fn same_path(a: &Path, b: &Path) -> bool {
 /// Windows `\\?\` prefix removed so paths stay readable.
 pub fn resolve(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
-        return Err(DeskError::new(ErrorCode::InvalidPath, "The path must be absolute.").with_path(display(path)));
+        return Err(ToteError::new(ErrorCode::InvalidPath, "The path must be absolute.").with_path(display(path)));
     }
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(DeskError::new(ErrorCode::InvalidPath, "The path must not contain '..'.").with_path(display(path)));
+        return Err(ToteError::new(ErrorCode::InvalidPath, "The path must not contain '..'.").with_path(display(path)));
     }
     let mut existing = path.to_path_buf();
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
@@ -151,7 +151,7 @@ pub fn resolve(path: &Path) -> Result<PathBuf> {
                 existing = parent.to_path_buf();
             }
             _ => {
-                return Err(DeskError::new(ErrorCode::NotFound, "The folder does not exist.").with_path(display(path)))
+                return Err(ToteError::new(ErrorCode::NotFound, "The folder does not exist.").with_path(display(path)))
             }
         }
     }
@@ -188,23 +188,23 @@ const RESERVED: &[&str] = &[
 pub fn validate_name(name: &str) -> Result<()> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
-        return Err(DeskError::new(ErrorCode::InvalidName, "Type a name first."));
+        return Err(ToteError::new(ErrorCode::InvalidName, "Type a name first."));
     }
     if trimmed.len() > 200 {
-        return Err(DeskError::new(ErrorCode::InvalidName, "That name is too long. Keep it under 200 characters."));
+        return Err(ToteError::new(ErrorCode::InvalidName, "That name is too long. Keep it under 200 characters."));
     }
     if let Some(bad) = trimmed.chars().find(|c| FORBIDDEN.contains(c) || c.is_control()) {
-        return Err(DeskError::new(
+        return Err(ToteError::new(
             ErrorCode::InvalidName,
             format!("Names cannot contain {bad}. Try a space or a hyphen instead."),
         ));
     }
     if trimmed.ends_with('.') || trimmed != name {
-        return Err(DeskError::new(ErrorCode::InvalidName, "Names cannot start or end with a space or a period."));
+        return Err(ToteError::new(ErrorCode::InvalidName, "Names cannot start or end with a space or a period."));
     }
     let stem = trimmed.split('.').next().unwrap_or("").to_ascii_uppercase();
     if RESERVED.contains(&stem.as_str()) {
-        return Err(DeskError::new(ErrorCode::InvalidName, format!("{trimmed} is a name Windows reserves. Pick another.")));
+        return Err(ToteError::new(ErrorCode::InvalidName, format!("{trimmed} is a name Windows reserves. Pick another.")));
     }
     Ok(())
 }

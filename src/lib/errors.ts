@@ -1,13 +1,13 @@
 // Every failure reaches her as one plain sentence with what to do next.
 
-import type { DeskError } from "./types";
+import type { ToteError } from "./types";
 
-export function isDeskError(value: unknown): value is DeskError {
+export function isToteError(value: unknown): value is ToteError {
   return typeof value === "object" && value !== null && "code" in value && "message" in value;
 }
 
 export function describeError(error: unknown): string {
-  if (isDeskError(error)) {
+  if (isToteError(error)) {
     switch (error.code) {
       case "notFound":
         return "That file is no longer where it was. Try searching for it.";
@@ -18,9 +18,9 @@ export function describeError(error: unknown): string {
       case "invalidName":
         return error.message || "That name will not work. Try another.";
       case "outsideRoots":
-        return "Desk only works with files in Desktop, Documents, Downloads and OneDrive.";
+        return "Tote only works with files in Desktop, Documents, Downloads and OneDrive.";
       case "db":
-        return "Desk could not save that. Try again in a moment.";
+        return "Tote could not save that. Try again in a moment.";
       default:
         return error.message || "Something went wrong. Nothing was changed.";
     }

@@ -1,6 +1,6 @@
-# Desk
+# Tote
 
-Desk finds a teacher's files and keeps new downloads filed, with no new routines to learn. Built for one real user first: Lex's mother, a public school teacher on a Windows laptop whose files are saved everywhere.
+Tote finds a teacher's files and keeps new downloads filed, with no new routines to learn. Built for one real user first: Lex's mother, a public school teacher on a Windows laptop whose files are saved everywhere.
 
 What it does:
 
@@ -11,7 +11,7 @@ What it does:
 - Organizing by hand when she wants to: Move to, Rename (extension locked), New folder, Recycle Bin, Pin. Every change is logged in Activity with Undo.
 - Clean up: duplicate copies, loose Desktop files and old downloads, each with a suggestion. Nothing moves until she clicks.
 - A Templates shelf that makes a dated copy of a master file instead of editing the original.
-- Settings: start at login, notifications, school-year dates, templates (native file picker), and the folders Desk looks in (add with a native folder picker, remove all but Documents and Downloads; changes apply after a restart).
+- Settings: start at login, notifications, school-year dates, templates (native file picker), and the folders Tote looks in (add with a native folder picker, remove all but Documents and Downloads; changes apply after a restart).
 - A five-step walkthrough with arrows on first run, replayable from Settings.
 - No network access at all.
 
@@ -54,29 +54,33 @@ The real app, on throwaway folders, driven through its own window:
 npm run verify:native
 ```
 
-needs a release `desk.exe` (see Release). It seeds `%LOCALAPPDATA%\desk-native-check` with fake messy files, launches the app in test mode, drops downloads with real `Zone.Identifier` streams, and checks filing, search, move, rename, pin, Recycle Bin, Undo, Clean up and Settings against the disk and the database. Evidence lands in `reports/native-check/<stamp>/`.
+needs a release `tote.exe` (see Release). It seeds `%LOCALAPPDATA%\tote-native-check` with fake messy files, launches the app in test mode, drops downloads with real `Zone.Identifier` streams, and checks filing, search, move, rename, pin, Recycle Bin, Undo, Clean up and Settings against the disk and the database. Evidence lands in `reports/native-check/<stamp>/`.
 
 ### Test mode
 
 Two environment variables keep a dry run away from real files:
 
-- `DESK_ROOTS=<desktop>;<documents>;<downloads>[;<more>...]` replaces the detected folders.
-- `DESK_DATA_DIR=<folder>` keeps the index and settings for that run apart.
-- `DESK_DEBUG_PORT=<port>` (only together with `DESK_ROOTS`) opens the WebView2 debugging port so the native check can drive the window. A normal start never opens one.
+- `TOTE_ROOTS=<desktop>;<documents>;<downloads>[;<more>...]` replaces the detected folders.
+- `TOTE_DATA_DIR=<folder>` keeps the index and settings for that run apart.
+- `TOTE_DEBUG_PORT=<port>` (only together with `TOTE_ROOTS`) opens the WebView2 debugging port so the native check can drive the window. A normal start never opens one.
 
-A test-mode run logs to `desk-test.log` and can run beside the installed app (the single-instance rule is off in test mode).
+A test-mode run logs to `tote-test.log` and can run beside the installed app (the single-instance rule is off in test mode).
 
 In test mode the app never registers itself to start at login and logs at debug level.
 
 ## Installing on her laptop
 
-1. Run `Desk_<version>_x64-setup.exe`. It installs for the current user; no admin password.
-2. **Set every browser she uses to save straight to Downloads.** Desk files only what lands there.
+1. Run `Tote_<version>_x64-setup.exe`. It installs for the current user; no admin password.
+2. **Set every browser she uses to save straight to Downloads.** Tote files only what lands there.
    - Chrome, Edge, Brave: Settings > Downloads > Location: Downloads, and turn off "Ask where to save each file".
    - Firefox: Settings > General > Files and Applications > Save files to: Downloads, and turn off "Always ask you where to save files".
-   - Desk checks this itself: Settings > Browsers shows each browser and profile, and the Find screen shows one line while any of them needs a change.
-3. In Desk's Settings, confirm the folders, enter the school year and quarter dates, and add her templates.
+   - Tote checks this itself: Settings > Browsers shows each browser and profile, and the Find screen shows one line while any of them needs a change.
+3. In Tote's Settings, confirm the folders, enter the school year and quarter dates, and add her templates.
 4. Let her run the five-step walkthrough.
+
+### Moving from Desk
+
+Tote was called Desk until 2026-10-14. On a laptop that still has Desk, quit Desk from its tray icon and uninstall it (Settings > Apps) before installing Tote, so two copies never file the same downloads. On its first start Tote copies Desk's database (pins, templates, settings, Activity and Undo) from `%LOCALAPPDATA%\com.focalstack.desk`, and leaves that folder untouched. "Start at login" carries over with the settings and is registered for Tote on that start.
 
 Downloads a browser saves elsewhere are still noticed (by the browser's web stamp) and listed under Recent downloads, but they stay where they were saved.
 
@@ -93,8 +97,8 @@ produces an NSIS installer under `src-tauri/target/release/bundle/nsis/`. The in
 The Windows resource compiler cannot read an icon path containing `'` (tauri-winres escapes it as `\'`). On this machine the checkout lives at `E:\PROJECTS\Teacher's Desktop Manager`, so native builds point the icon at an apostrophe-free copy through Tauri's config override:
 
 ```powershell
-Copy-Item src-tauri\icons\* E:\PROJECTS\desk-icons\ -Force
-$env:TAURI_CONFIG = '{"bundle":{"icon":["E:/PROJECTS/desk-icons/32x32.png","E:/PROJECTS/desk-icons/128x128.png","E:/PROJECTS/desk-icons/128x128@2x.png","E:/PROJECTS/desk-icons/icon.icns","E:/PROJECTS/desk-icons/icon.ico"]}}'
+Copy-Item src-tauri\icons\* E:\PROJECTS\tote-icons\ -Force
+$env:TAURI_CONFIG = '{"bundle":{"icon":["E:/PROJECTS/tote-icons/32x32.png","E:/PROJECTS/tote-icons/128x128.png","E:/PROJECTS/tote-icons/128x128@2x.png","E:/PROJECTS/tote-icons/icon.icns","E:/PROJECTS/tote-icons/icon.ico"]}}'
 ```
 
 A checkout on a plain path (as in CI) needs none of this. Renaming the folder is the clean fix.

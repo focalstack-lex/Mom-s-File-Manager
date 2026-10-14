@@ -1,4 +1,4 @@
-//! Browser download settings (spec 5.1.2). Desk only files what lands in
+//! Browser download settings (spec 5.1.2). Tote only files what lands in
 //! Downloads, so a browser that asks where to save, or saves somewhere else,
 //! means missed downloads. This module reads each browser's own settings
 //! file (read only, never written) and says which ones need a change.
@@ -74,7 +74,7 @@ fn same_folder(a: &Path, b: &Path) -> bool {
     crate::paths::same_path(a, b)
 }
 
-/// Every installed browser profile Desk can read, in a stable order.
+/// Every installed browser profile Tote can read, in a stable order.
 pub fn check(downloads: &Path, desktop: Option<&Path>) -> Vec<BrowserStatus> {
     let mut out = Vec::new();
     if let Some(local) = dirs::data_local_dir() {

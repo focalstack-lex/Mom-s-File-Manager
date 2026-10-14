@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Desk",
+  "productName": "Tote",
   "version": "0.1.0",
-  "identifier": "com.focalstack.desk",
+  "identifier": "com.focalstack.tote",
   "build": {
     "beforeDevCommand": "npm run dev:ui",
     "devUrl": "http://localhost:1430",

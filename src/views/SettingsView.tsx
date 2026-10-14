@@ -42,7 +42,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
       await ipc.addFolder(picked);
       await loadInfo();
       setNeedsRestart();
-      toast("Desk will look in that folder after it restarts.");
+      toast("Tote will look in that folder after it restarts.");
     } catch (error) {
       fail(error);
     }
@@ -53,7 +53,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
       await ipc.removeFolder(path);
       await loadInfo();
       setNeedsRestart();
-      toast("Desk will stop looking in that folder after it restarts.");
+      toast("Tote will stop looking in that folder after it restarts.");
     } catch (error) {
       fail(error);
     }
@@ -91,7 +91,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
         <label className="toggle">
           <span className="toggle-text">
             Start when the computer starts
-            <span>So downloads are filed even before Desk is opened.</span>
+            <span>So downloads are filed even before Tote is opened.</span>
           </span>
           <input type="checkbox" role="switch" className="switch" checked={draft.startAtLogin} onChange={(e) => update({ startAtLogin: e.target.checked })} />
         </label>
@@ -105,7 +105,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
         <div className="toggle">
           <span className="toggle-text">
             Walkthrough
-            <span>Five short steps that show how Desk works.</span>
+            <span>Five short steps that show how Tote works.</span>
           </span>
           <button
             type="button"
@@ -126,7 +126,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
           Browsers
         </h2>
         <p className="field-note">
-          Desk files what lands in Downloads. A browser that asks where to save, or saves somewhere else, means those files stay where they were saved. Desk still lists them under Recent downloads.
+          Tote files what lands in Downloads. A browser that asks where to save, or saves somewhere else, means those files stay where they were saved. Tote still lists them under Recent downloads.
         </p>
         {browsers === null ? (
           <p className="field-note">Checking...</p>
@@ -206,7 +206,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
 
       <section className="card settings-list" aria-labelledby="folders-title">
         <h2 className="card-title" id="folders-title">
-          Folders Desk looks in
+          Folders Tote looks in
         </h2>
         {info.roots.map((root) => (
           <div key={root} className="toggle" data-testid="root-row">
@@ -230,16 +230,16 @@ export function SettingsView({ info }: { info: AppInfo }) {
           <div className="toggle" data-testid="restart-note">
             <span className="toggle-text">
               Folder changes take effect after a restart
-              <span>Desk keeps filing downloads meanwhile.</span>
+              <span>Tote keeps filing downloads meanwhile.</span>
             </span>
             <button type="button" className="button button-primary" onClick={() => void ipc.restart().catch(fail)}>
-              Restart Desk
+              Restart Tote
             </button>
           </div>
         )}
-        <p className="field-note">Downloads are filed into {info.schoolFiles}.{info.testMode ? " Test mode: these are the DESK_ROOTS folders." : ""}</p>
+        <p className="field-note">Downloads are filed into {info.schoolFiles}.{info.testMode ? " Test mode: these are the TOTE_ROOTS folders." : ""}</p>
       </section>
-      <p className="view-foot">Desk {info.version}</p>
+      <p className="view-foot">Tote {info.version}</p>
     </div>
   );
 }

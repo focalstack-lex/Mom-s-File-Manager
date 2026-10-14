@@ -2,7 +2,7 @@
 //! confined to the indexed roots, never overwriting, never deleting for good,
 //! and undoable afterwards.
 
-use crate::error::{DeskError, ErrorCode, Result};
+use crate::error::{ToteError, ErrorCode, Result};
 use crate::index;
 use crate::paths::{self, Roots};
 use crate::sorter;
@@ -95,7 +95,7 @@ fn finish(conn: &Connection, id: i64, result: &Result<PathBuf>) -> Result<()> {
 /// original in place and removes the partial copy.
 pub fn transfer(src: &Path, dst: &Path) -> Result<()> {
     if dst.exists() {
-        return Err(DeskError::new(ErrorCode::AlreadyExists, "A file with that name already exists there.").with_path(paths::display(dst)));
+        return Err(ToteError::new(ErrorCode::AlreadyExists, "A file with that name already exists there.").with_path(paths::display(dst)));
     }
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
@@ -107,7 +107,7 @@ pub fn transfer(src: &Path, dst: &Path) -> Result<()> {
     let copied = std::fs::copy(src, dst)?;
     if copied != expected || std::fs::metadata(dst).map(|m| m.len()).unwrap_or(0) != expected {
         let _ = std::fs::remove_file(dst);
-        return Err(DeskError::new(ErrorCode::Io, "The copy did not complete, so the file was left where it was.").with_path(paths::display(src)));
+        return Err(ToteError::new(ErrorCode::Io, "The copy did not complete, so the file was left where it was.").with_path(paths::display(src)));
     }
     std::fs::remove_file(src)?;
     Ok(())
@@ -127,9 +127,9 @@ fn move_inner(conn: &Connection, roots: &Roots, src: &Path, dst_dir: &Path, kind
     let src = roots.confine(src)?;
     let dst_dir = roots.confine(dst_dir)?;
     if !src.is_file() {
-        return Err(DeskError::new(ErrorCode::NotFound, "That file is no longer there.").with_path(paths::display(&src)));
+        return Err(ToteError::new(ErrorCode::NotFound, "That file is no longer there.").with_path(paths::display(&src)));
     }
-    let name = src.file_name().ok_or_else(|| DeskError::new(ErrorCode::InvalidPath, "The file has no name."))?;
+    let name = src.file_name().ok_or_else(|| ToteError::new(ErrorCode::InvalidPath, "The file has no name."))?;
     let wanted = dst_dir.join(name);
     if wanted == src {
         return Ok(src);
@@ -147,20 +147,20 @@ fn move_inner(conn: &Connection, roots: &Roots, src: &Path, dst_dir: &Path, kind
 pub fn rename_file(conn: &Connection, roots: &Roots, src: &Path, new_stem: &str) -> Result<PathBuf> {
     let src = roots.confine(src)?;
     if !src.is_file() {
-        return Err(DeskError::new(ErrorCode::NotFound, "That file is no longer there.").with_path(paths::display(&src)));
+        return Err(ToteError::new(ErrorCode::NotFound, "That file is no longer there.").with_path(paths::display(&src)));
     }
     paths::validate_name(new_stem)?;
     let ext = src.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-    let parent = src.parent().ok_or_else(|| DeskError::new(ErrorCode::InvalidPath, "The file has no folder."))?;
+    let parent = src.parent().ok_or_else(|| ToteError::new(ErrorCode::InvalidPath, "The file has no folder."))?;
     let dst = parent.join(format!("{new_stem}{ext}"));
     if dst == src {
         return Ok(src);
     }
     if dst.exists() {
-        return Err(DeskError::new(ErrorCode::AlreadyExists, "A file with that name already exists in this folder.").with_path(paths::display(&dst)));
+        return Err(ToteError::new(ErrorCode::AlreadyExists, "A file with that name already exists in this folder.").with_path(paths::display(&dst)));
     }
     let id = record(conn, OpKind::Rename, &src, Some(&dst), false)?;
-    let result = std::fs::rename(&src, &dst).map(|_| dst.clone()).map_err(DeskError::from);
+    let result = std::fs::rename(&src, &dst).map(|_| dst.clone()).map_err(ToteError::from);
     finish(conn, id, &result)?;
     let dst = result?;
     index::relocate(conn, &src, &dst)?;
@@ -172,10 +172,10 @@ pub fn create_folder(conn: &Connection, roots: &Roots, parent: &Path, name: &str
     let parent = roots.confine(parent)?;
     let dst = parent.join(name);
     if dst.exists() {
-        return Err(DeskError::new(ErrorCode::AlreadyExists, "A folder with that name already exists.").with_path(paths::display(&dst)));
+        return Err(ToteError::new(ErrorCode::AlreadyExists, "A folder with that name already exists.").with_path(paths::display(&dst)));
     }
     let id = record(conn, OpKind::NewFolder, &dst, None, false)?;
-    let result = std::fs::create_dir(&dst).map(|_| dst.clone()).map_err(DeskError::from);
+    let result = std::fs::create_dir(&dst).map(|_| dst.clone()).map_err(ToteError::from);
     finish(conn, id, &result)?;
     result
 }
@@ -193,7 +193,7 @@ pub fn recycle(conn: &Connection, roots: &Roots, targets: &[PathBuf]) -> Result<
         let id = record_in(conn, OpKind::Recycle, &src, None, false, batch.as_deref())?;
         let result = trash::delete(&src)
             .map(|_| src.clone())
-            .map_err(|e| DeskError::new(ErrorCode::Io, format!("Windows could not move it to the Recycle Bin: {e}")).with_path(paths::display(&src)));
+            .map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not move it to the Recycle Bin: {e}")).with_path(paths::display(&src)));
         finish(conn, id, &result)?;
         if result.is_ok() {
             index::remove(conn, &src)?;
@@ -208,9 +208,9 @@ pub fn recycle(conn: &Connection, roots: &Roots, targets: &[PathBuf]) -> Result<
 /// Reverses a completed operation. Moves and renames go back to their original
 /// path (clash rule applied); a recycled file is restored from the Recycle Bin.
 pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
-    let row = get(conn, id)?.ok_or_else(|| DeskError::new(ErrorCode::NotFound, "That change is no longer in the list."))?;
+    let row = get(conn, id)?.ok_or_else(|| ToteError::new(ErrorCode::NotFound, "That change is no longer in the list."))?;
     if row.status != "done" {
-        return Err(DeskError::validation("Only completed changes can be undone."));
+        return Err(ToteError::validation("Only completed changes can be undone."));
     }
     let src = PathBuf::from(&row.src);
     match row.kind.as_str() {
@@ -219,7 +219,7 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
             let current = roots.confine(&current)?;
             if row.kind == "copy" {
                 // A template copy is undone by recycling the copy; the master stays.
-                trash::delete(&current).map_err(|e| DeskError::new(ErrorCode::Io, e.to_string()))?;
+                trash::delete(&current).map_err(|e| ToteError::new(ErrorCode::Io, e.to_string()))?;
                 index::remove(conn, &current)?;
             } else {
                 let back = sorter::unique_path(&roots.confine(&src)?);
@@ -230,7 +230,7 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
         "newFolder" => {
             let folder = roots.confine(&src)?;
             if std::fs::read_dir(&folder).map(|mut d| d.next().is_some()).unwrap_or(false) {
-                return Err(DeskError::validation("That folder has files in it now, so it stays."));
+                return Err(ToteError::validation("That folder has files in it now, so it stays."));
             }
             std::fs::remove_dir(&folder)?;
         }
@@ -238,7 +238,7 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
             restore_from_recycle_bin(&src)?;
             index::refresh_path(conn, &src)?;
         }
-        other => return Err(DeskError::new(ErrorCode::Unsupported, format!("Cannot undo {other}."))),
+        other => return Err(ToteError::new(ErrorCode::Unsupported, format!("Cannot undo {other}."))),
     }
     conn.execute("UPDATE ops SET status = 'undone' WHERE id = ?1", [id])?;
     Ok(())
@@ -247,7 +247,7 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
 #[cfg(any(windows, target_os = "linux"))]
 fn restore_from_recycle_bin(original: &Path) -> Result<()> {
     use trash::os_limited;
-    let items = os_limited::list().map_err(|e| DeskError::new(ErrorCode::Io, e.to_string()))?;
+    let items = os_limited::list().map_err(|e| ToteError::new(ErrorCode::Io, e.to_string()))?;
     let wanted = original.to_string_lossy().to_lowercase();
     // The shell reports the item name the way Explorer shows it, which can be
     // without the extension, so the match accepts the full name or the stem.
@@ -265,15 +265,15 @@ fn restore_from_recycle_bin(original: &Path) -> Result<()> {
         .collect();
     if matching.is_empty() {
         log::warn!("restore: nothing in the Recycle Bin has the original path {wanted}");
-        return Err(DeskError::new(ErrorCode::NotFound, "That file is not in the Recycle Bin any more. Open the Recycle Bin to check."));
+        return Err(ToteError::new(ErrorCode::NotFound, "That file is not in the Recycle Bin any more. Open the Recycle Bin to check."));
     }
     // Several recycled copies can share one original path; Undo brings back
     // the one recycled most recently (restoring all of them is refused by Windows).
     matching.sort_by_key(|i| i.time_deleted);
-    let latest = matching.pop().ok_or_else(|| DeskError::new(ErrorCode::NotFound, "Nothing to restore."))?;
+    let latest = matching.pop().ok_or_else(|| ToteError::new(ErrorCode::NotFound, "Nothing to restore."))?;
     log::info!("restoring {} from the Recycle Bin to {wanted}", latest.id.to_string_lossy());
     let restored_as = latest.original_path();
-    os_limited::restore_all(vec![latest]).map_err(|e| DeskError::new(ErrorCode::Io, format!("Windows could not restore it: {e}")))?;
+    os_limited::restore_all(vec![latest]).map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not restore it: {e}")))?;
     // When Explorer hides extensions the item comes back as "Name" instead of
     // "Name.pdf"; put the recorded name back.
     if !original.exists() && restored_as != original && restored_as.exists() {
@@ -285,7 +285,7 @@ fn restore_from_recycle_bin(original: &Path) -> Result<()> {
 
 #[cfg(not(any(windows, target_os = "linux")))]
 fn restore_from_recycle_bin(_original: &Path) -> Result<()> {
-    Err(DeskError::new(ErrorCode::Unsupported, "Restoring from the Recycle Bin is not available here."))
+    Err(ToteError::new(ErrorCode::Unsupported, "Restoring from the Recycle Bin is not available here."))
 }
 
 #[derive(Debug, Clone, Serialize)]

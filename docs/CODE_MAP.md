@@ -8,7 +8,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | --- | --- |
 | `lib.rs` | Builds the Tauri app: plugins, database, roots, tray, watchers, scan, command list. Close hides the window. |
 | `main.rs` | Entry point; no console window in release. |
-| `error.rs` | `DeskError { code, message, path? }`, the one error type every command returns. |
+| `error.rs` | `ToteError { code, message, path? }`, the one error type every command returns. |
 | `paths.rs` | Known folders (`Roots`), `confine` (the boundary check), `validate_name`. |
 | `sorter.rs` | `Kind`, `classify`, `stays_in_downloads`, `destination`, `unique_path`. |
 | `origin.rs` | `Zone.Identifier` reading and the host-to-label table. |
@@ -56,14 +56,14 @@ Where things live. Read this before changing anything; update it in the same cha
 | `components/PreviewPanel.tsx` | Quick preview. |
 | `components/Tour.tsx` | Walkthrough overlay with mask, ring and arrow. |
 | `components/TitleBar.tsx` | The window's own title bar on the green shell: drag region and Windows-style window buttons; no controls in the browser harness. |
-| `components/Dialog.tsx`, `Toasts.tsx`, `icons.tsx`, `Skeleton.tsx`, `ShowMore.tsx` | Shared pieces: modal with focus trap, toasts with Undo, kind tiles and the Desk mark, loading rows, the "Showing 10 of 84" foot with Show more. |
+| `components/Dialog.tsx`, `Toasts.tsx`, `icons.tsx`, `Skeleton.tsx`, `ShowMore.tsx` | Shared pieces: modal with focus trap, toasts with Undo, kind tiles and the Tote mark, loading rows, the "Showing 10 of 84" foot with Show more. |
 | `views/FindView.tsx`, `CleanupView.tsx`, `ActivityView.tsx`, `SettingsView.tsx` | The four screens. |
 | `dev/mockBackend.ts` | Fake native side for the browser harness and the UI drive. |
 | `tests/*.test.ts` | vitest for helpers, stores and the text gate. |
 
 ## Gates (`scripts`)
 
-`verify-text.mjs` (no emoji, no em or en dash in tracked files), `verify-contrast.mjs` (tokens), `verify-ui.mjs` (Playwright drive of the mocked renderer, evidence in `reports/ui-verification/`), `verify-native.mjs` (the release app on throwaway folders over CDP, evidence in `reports/native-check/`). ESLint invariants live in `eslint-rules/desk-invariants.js`.
+`verify-text.mjs` (no emoji, no em or en dash in tracked files), `verify-contrast.mjs` (tokens), `verify-ui.mjs` (Playwright drive of the mocked renderer, evidence in `reports/ui-verification/`), `verify-native.mjs` (the release app on throwaway folders over CDP, evidence in `reports/native-check/`). ESLint invariants live in `eslint-rules/tote-invariants.js`.
 
 ## Rules learned the hard way
 

@@ -178,7 +178,7 @@ export function FindView({ info }: { info: AppInfo }) {
                     <SearchX size={26} />
                   </span>
                   <strong>Nothing matched yet</strong>
-                  {index.scanning ? "Desk is still reading your files. Try again in a minute." : "Try fewer words, or a word you remember from inside the file."}
+                  {index.scanning ? "Tote is still reading your files. Try again in a minute." : "Try fewer words, or a word you remember from inside the file."}
                   {!query && (
                     <button type="button" className="button" onClick={clearFilters}>
                       Clear filters
@@ -223,7 +223,7 @@ export function FindView({ info }: { info: AppInfo }) {
                     <div key={path} className="card orphan">
                       <span className="orphan-text">
                         <strong>{path.split("\\").pop()}</strong>
-                        <span className="field-note">Moved or deleted outside Desk.</span>
+                        <span className="field-note">Moved or deleted outside Tote.</span>
                       </span>
                       <button type="button" className="button" onClick={() => setQuery((path.split("\\").pop() ?? "").replace(/\.[^.]+$/, ""))}>
                         Search for it

@@ -138,7 +138,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
     <div className="main-inner" data-testid="activity-view">
       <div className="view-head">
         <h1 className="view-title">Activity</h1>
-        <p className="view-lead">Everything Desk changed, and everything you changed through it. Undo puts it back.</p>
+        <p className="view-lead">Everything Tote changed, and everything you changed through it. Undo puts it back.</p>
       </div>
       {ops === null ? (
         <SkeletonList label="Loading activity" rows={4} />

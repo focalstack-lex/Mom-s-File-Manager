@@ -1,5 +1,5 @@
 /*
-  Desk design tokens and layout.
+  Tote design tokens and layout.
 
   Arrangement first: a deep green shell holds the title bar along the top,
   the sidebar on the left and the open view on one pale canvas card; the
@@ -258,7 +258,7 @@ kbd {
   background: rgba(255, 255, 255, 0.2);
 }
 
-/* The Windows close-button red: a platform signal, not Desk's failure coral. */
+/* The Windows close-button red: a platform signal, not Tote's failure coral. */
 .window-button.is-close:hover {
   background: #c42b1c;
   color: #ffffff;

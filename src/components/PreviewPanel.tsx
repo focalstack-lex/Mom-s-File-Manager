@@ -44,7 +44,7 @@ export function PreviewPanel({ roots }: { roots: string[] }) {
   }, [path]);
 
   if (!path) return null;
-  const imageSrc = preview?.kind === "image" && !window.__deskMock ? convertFileSrc(path) : null;
+  const imageSrc = preview?.kind === "image" && !window.__toteMock ? convertFileSrc(path) : null;
 
   return (
     <aside className="card preview" aria-label="Preview" data-testid="preview">
@@ -68,7 +68,7 @@ export function PreviewPanel({ roots }: { roots: string[] }) {
           {preview.kind === "text" && preview.text && <div className="preview-text">{preview.text}</div>}
           {imageSrc && <img className="preview-image" src={imageSrc} alt={preview.name} />}
           {preview.kind === "image" && !imageSrc && <p className="field-note">Image preview is shown in the app.</p>}
-          {preview.kind === "details" && <p className="field-note">Desk cannot read inside this kind of file, but it can still find it by name.</p>}
+          {preview.kind === "details" && <p className="field-note">Tote cannot read inside this kind of file, but it can still find it by name.</p>}
         </>
       )}
       <div className="preview-actions">

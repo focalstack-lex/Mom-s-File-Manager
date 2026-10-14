@@ -50,7 +50,7 @@ export const useApp = create<AppStore>((set, get) => ({
       set({ browsers: await ipc.browserCheck() });
     } catch (error) {
       // The check is advice only; a failure is logged and the notice stays hidden.
-      console.warn("Desk: browser check failed", error);
+      console.warn("Tote: browser check failed", error);
       set({ browsers: [] });
     }
   },
@@ -78,7 +78,7 @@ export const useApp = create<AppStore>((set, get) => ({
     window.setTimeout(() => get().dismissToast(id), kind === "error" ? 9000 : undoIds?.length || undoBatch ? 10000 : 6000);
   },
   fail: (error) => {
-    console.warn("Desk:", error);
+    console.warn("Tote:", error);
     get().toast(describeError(error), "error");
   },
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
@@ -96,7 +96,7 @@ export async function moveOpIds(paths: string[]): Promise<number[]> {
     const ops = await ipc.activity();
     return ops.filter((op) => op.kind === "move" && op.status === "done" && op.dst !== null && wanted.has(op.dst)).map((op) => op.id);
   } catch (error) {
-    console.warn("Desk: could not read Activity for Undo", error);
+    console.warn("Tote: could not read Activity for Undo", error);
     return [];
   }
 }

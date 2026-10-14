@@ -14,7 +14,7 @@ if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
 }
 
 const root = document.getElementById("root");
-if (!root) throw new Error("Desk: index.html has no #root element");
+if (!root) throw new Error("Tote: index.html has no #root element");
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
     <App />

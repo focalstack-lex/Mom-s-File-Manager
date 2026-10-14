@@ -17,10 +17,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-pub const CHANGED_EVENT: &str = "desk://changed";
-pub const SORTED_EVENT: &str = "desk://sorted";
+pub const CHANGED_EVENT: &str = "tote://changed";
+pub const SORTED_EVENT: &str = "tote://sorted";
 
-/// A stamped file created this recently, anywhere Desk watches, counts as a download.
+/// A stamped file created this recently, anywhere Tote watches, counts as a download.
 const LIVE_DOWNLOAD_WINDOW_SECS: i64 = 10 * 60;
 /// On the first scan, stamped files from the last month fill Recent downloads.
 const SCAN_DOWNLOAD_WINDOW_SECS: i64 = 30 * 86_400;
@@ -65,7 +65,7 @@ pub fn start(core: Arc<Core>, app: AppHandle) -> Result<()> {
             }
             Err(error) => log::warn!("downloads watcher: {error}"),
         })
-        .map_err(|e| crate::error::DeskError::new(crate::error::ErrorCode::Io, e.to_string()))?;
+        .map_err(|e| crate::error::ToteError::new(crate::error::ErrorCode::Io, e.to_string()))?;
         match debouncer.watcher().watch(&downloads, RecursiveMode::NonRecursive) {
             Ok(()) => log::info!("watching downloads at {}", downloads.display()),
             Err(error) => log::warn!("cannot watch {}: {error}", downloads.display()),
@@ -82,7 +82,7 @@ pub fn start(core: Arc<Core>, app: AppHandle) -> Result<()> {
             }
             Err(error) => log::warn!("index watcher: {error}"),
         })
-        .map_err(|e| crate::error::DeskError::new(crate::error::ErrorCode::Io, e.to_string()))?;
+        .map_err(|e| crate::error::ToteError::new(crate::error::ErrorCode::Io, e.to_string()))?;
         match debouncer.watcher().watch(&root, RecursiveMode::Recursive) {
             Ok(()) => log::info!("watching {}", root.display()),
             Err(error) => log::warn!("cannot watch {}: {error}", root.display()),
@@ -91,12 +91,12 @@ pub fn start(core: Arc<Core>, app: AppHandle) -> Result<()> {
     }
 
     std::thread::Builder::new()
-        .name("desk-worker".into())
+        .name("tote-worker".into())
         .spawn(move || {
             let _keep_alive = debouncers;
             run(core, app, rx);
         })
-        .map_err(crate::error::DeskError::from)?;
+        .map_err(crate::error::ToteError::from)?;
     Ok(())
 }
 
@@ -277,7 +277,7 @@ fn refresh_unlocked(core: &Arc<Core>, path: &Path) -> crate::error::Result<()> {
 /// Walks every root, newest files first, and fills the index in small
 /// batches so the database lock is never held long.
 pub fn start_scan(core: Arc<Core>, app: AppHandle) {
-    let spawned = std::thread::Builder::new().name("desk-scan".into()).spawn(move || {
+    let spawned = std::thread::Builder::new().name("tote-scan".into()).spawn(move || {
         core.set_status(|s| {
             s.scanning = true;
             s.scanned = 0;
@@ -336,7 +336,7 @@ pub fn start_scan(core: Arc<Core>, app: AppHandle) {
             }
         }
         if noticed > 0 {
-            log::info!("first scan found {noticed} recent downloads saved outside Downloads or before Desk ran");
+            log::info!("first scan found {noticed} recent downloads saved outside Downloads or before Tote ran");
         }
         let files = core.db().and_then(|c| index::count(&c)).unwrap_or(0);
         core.set_status(|s| {

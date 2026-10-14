@@ -30,22 +30,22 @@ export interface MockBackend {
 
 declare global {
   interface Window {
-    __deskMock?: MockBackend;
+    __toteMock?: MockBackend;
   }
 }
 
 function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
-  if (window.__deskMock) return window.__deskMock.invoke(command, args) as Promise<T>;
+  if (window.__toteMock) return window.__toteMock.invoke(command, args) as Promise<T>;
   return tauriInvoke<T>(command, args);
 }
 
 export async function listen<T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn> {
-  if (window.__deskMock) return window.__deskMock.listen(event, handler as (payload: unknown) => void);
+  if (window.__toteMock) return window.__toteMock.listen(event, handler as (payload: unknown) => void);
   return tauriListen<T>(event, (e) => handler(e.payload));
 }
 
-export const CHANGED_EVENT = "desk://changed";
-export const SORTED_EVENT = "desk://sorted";
+export const CHANGED_EVENT = "tote://changed";
+export const SORTED_EVENT = "tote://sorted";
 export type { SortedEvent };
 
 export const ipc = {
@@ -82,13 +82,13 @@ export const ipc = {
   defaultSubjectRules: () => invoke<SubjectRule[]>("default_subject_rules"),
   /** Native folder picker; null when she cancels. */
   pickFolder: async (): Promise<string | null> => {
-    if (window.__deskMock) return (await window.__deskMock.invoke("pick_folder", {})) as string | null;
-    const picked = await openDialog({ directory: true, multiple: false, title: "Choose a folder for Desk to look in" });
+    if (window.__toteMock) return (await window.__toteMock.invoke("pick_folder", {})) as string | null;
+    const picked = await openDialog({ directory: true, multiple: false, title: "Choose a folder for Tote to look in" });
     return typeof picked === "string" ? picked : null;
   },
   /** Native file picker for templates; null when she cancels. */
   pickFile: async (): Promise<string | null> => {
-    if (window.__deskMock) return (await window.__deskMock.invoke("pick_file", {})) as string | null;
+    if (window.__toteMock) return (await window.__toteMock.invoke("pick_file", {})) as string | null;
     const picked = await openDialog({
       multiple: false,
       title: "Choose a master file for the template shelf",

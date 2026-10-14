@@ -225,10 +225,14 @@ pub fn run(core: &crate::state::Core, rules: &[SubjectRule], wanted: &[String]) 
     let roots = &core.roots;
     let plan = plan(roots, rules)?;
     let batch = ops::new_batch("organize");
+    // The plan names files by their resolved paths; the confirmed list may
+    // spell the same file differently (an 8.3 short name, a `.` segment), so
+    // both sides are compared resolved.
+    let wanted: Vec<std::path::PathBuf> = wanted.iter().map(|w| paths::resolve(Path::new(w)).unwrap_or_else(|_| std::path::PathBuf::from(w))).collect();
     let mut moved = 0;
     let mut failed = Vec::new();
     let mut folders = std::collections::HashSet::new();
-    for m in plan.moves.iter().filter(|m| wanted.iter().any(|w| paths::same_path(Path::new(w), Path::new(&m.path)))) {
+    for m in plan.moves.iter().filter(|m| wanted.iter().any(|w| paths::same_path(w, Path::new(&m.path)))) {
         let conn = core.db()?;
         match ops::move_file_in_batch(&conn, roots, Path::new(&m.path), Path::new(&m.dest_dir), &batch) {
             Ok(_) => {
@@ -366,5 +370,28 @@ mod tests {
         assert!(desktop.join("Grade 7 Science Quiz.docx").is_file());
         assert!(desktop.join("notes.txt").is_file());
         assert!(!school.join("Grade 7").exists(), "folders the run created and left empty are removed");
+    }
+
+    /// The renderer's path and the plan's path can name the same file in
+    /// different spellings (a `.` segment here; an 8.3 short name such as
+    /// RUNNER~1 on the CI machine). The run must still move it.
+    #[test]
+    fn a_confirmed_file_moves_whatever_spelling_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (desktop, documents, downloads) = (dir.path().join("Desktop"), dir.path().join("Documents"), dir.path().join("Downloads"));
+        for d in [&desktop, &documents, &downloads] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(desktop.join("Grade 7 Science Quiz.docx"), "q").unwrap();
+        let core = crate::state::Core {
+            db: std::sync::Mutex::new(crate::db::open_memory().unwrap()),
+            roots: Roots::explicit(desktop.clone(), documents.clone(), downloads.clone()),
+            status: std::sync::Mutex::new(Default::default()),
+            recovered: false,
+        };
+        let spelled = desktop.join(".").join("Grade 7 Science Quiz.docx");
+        let result = run(&core, &default_rules(), &[spelled.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(result.moved, 1);
+        assert!(documents.join("School Files").join("Grade 7").join("Science").join("Grade 7 Science Quiz.docx").is_file());
     }
 }

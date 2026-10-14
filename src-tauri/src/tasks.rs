@@ -645,9 +645,13 @@ mod tests {
     #[test]
     fn attachments_follow_a_move_and_show_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let documents = dir.path().join("Documents");
+        // Resolved first, as ops::move_inner resolves before index::relocate:
+        // CI's temp folder sits under a short name (RUNNER~1) that resolves
+        // to the long one, so raw paths would not match the stored ones.
+        let base = paths::resolve(dir.path()).unwrap();
+        let documents = base.join("Documents");
         std::fs::create_dir_all(documents.join("Forms")).unwrap();
-        let roots = Roots::explicit(dir.path().join("Desktop"), documents.clone(), dir.path().join("Downloads"));
+        let roots = Roots::explicit(base.join("Desktop"), documents.clone(), base.join("Downloads"));
         let conn = memory();
         let from = documents.join("SF2 October.xlsx");
         std::fs::write(&from, b"x").unwrap();

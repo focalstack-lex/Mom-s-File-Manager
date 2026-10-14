@@ -3,7 +3,7 @@
 // Never bundled into the Tauri build (main.tsx imports it only in DEV).
 
 import type { MockBackend } from "../lib/ipc";
-import type { CleanupReport, Destination, FileRow, FindResult, Filters, Group, OpRow, Settings, Template } from "../lib/types";
+import type { CleanupReport, Destination, FileRow, FindResult, Filters, Group, OpRow, Repeat, Settings, Task, Template } from "../lib/types";
 
 const DOCS = "C:\\Users\\Teacher\\Documents";
 const DESKTOP = "C:\\Users\\Teacher\\Desktop";
@@ -92,11 +92,31 @@ const ops: OpRow[] = [
 ];
 let nextOp = 4;
 let templates: Template[] = [{ id: 1, path: `${DOCS}\\Forms\\SF9 Template.docx`, name: "SF9 Template", missing: false }];
-let settings: Settings = { startAtLogin: true, notifications: true, tourDone: false, schoolYear: null, quarters: [], extraFolders: [], excludedFolders: [], subjectRules: [], checkUpdates: true };
+let settings: Settings = { startAtLogin: true, notifications: true, tourDone: false, schoolYear: null, quarters: [], extraFolders: [], excludedFolders: [], subjectRules: [], checkUpdates: true, todoSeen: false };
 // No update is offered until the UI drive calls offerUpdate(), so every other
 // step sees the screens without the banner.
 let offeredUpdate: { version: string; notes: string | null } | null = null;
 const listeners = new Map<string, Set<(payload: unknown) => void>>();
+
+// The To do list in the harness: a small version of src-tauri/src/tasks.rs.
+type MockTask = Task & { repeatedFrom?: number; edited?: boolean; deleted?: boolean };
+let tasks: MockTask[] = [];
+let nextTask = 1;
+const pad = (n: number) => String(n).padStart(2, "0");
+const dayText = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+/** The next due day for weekly and monthly repeats, as tasks.rs computes it. */
+function nextDay(due: string, repeat: Repeat): string | null {
+  const [y, m, d] = due.split("-").map(Number);
+  if (repeat === "week") return dayText(new Date(y, m - 1, d + 7));
+  if (repeat === "month") return dayText(new Date(y, m, Math.min(d, new Date(y, m + 1, 0).getDate())));
+  return null;
+}
+function taskById(id: unknown): MockTask {
+  const task = tasks.find((t) => t.id === id && !t.deleted);
+  if (!task) throw { code: "validation", message: "That task is no longer on the list." };
+  return task;
+}
+const plain = ({ repeatedFrom: _r, edited: _e, deleted: _d, ...task }: MockTask): Task => ({ ...task, files: [...task.files] });
 const calls: { command: string; args: Record<string, unknown> }[] = [];
 
 function emit(event: string, payload: unknown = null) {
@@ -211,6 +231,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     index: { scanning: false, scanned: files.length, total: files.length, files: files.length },
     sortedThisWeek: 5,
     recovered: false,
+    tasksRestored: null,
   }),
   find: (a) => find(String(a.query ?? ""), (a.filters as Filters) ?? { kinds: [], sources: [] }),
   set_pinned: (a) => {
@@ -379,6 +400,61 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   check_update: () => (settings.checkUpdates ? offeredUpdate : null),
   // The real command closes the app; the mock just records the call.
   install_update: () => undefined,
+  list_tasks: () => tasks.filter((t) => !t.deleted).map(plain),
+  add_task: (a) => {
+    const title = String(a.title ?? "").trim();
+    if (!title) throw { code: "validation", message: "Type what needs doing first." };
+    const task: MockTask = { id: nextTask, title, due: (a.due as string | null) || null, repeat: "never", doneAt: null, createdAt: NOW + nextTask, files: [] };
+    nextTask += 1;
+    tasks.push(task);
+    return plain(task);
+  },
+  update_task: (a) => {
+    const task = taskById(a.id);
+    const due = (a.due as string | null) || null;
+    const repeat = a.repeat as Repeat;
+    if (repeat !== "never" && !due) throw { code: "validation", message: "Pick a due date first. A task needs one to repeat." };
+    if (repeat === "quarter" && !settings.quarters.some((q) => q.start && q.end)) throw { code: "validation", message: "Add the quarter dates in Settings first." };
+    Object.assign(task, { title: String(a.title).trim(), due, repeat, edited: true });
+    return plain(task);
+  },
+  complete_task: (a) => {
+    const task = taskById(a.id);
+    task.doneAt = NOW;
+    const day = task.due ? nextDay(task.due, task.repeat) : null;
+    let next: MockTask | null = null;
+    if (day) {
+      next = { id: nextTask, title: task.title, due: day, repeat: task.repeat, doneAt: null, createdAt: NOW + nextTask, files: [], repeatedFrom: task.id };
+      nextTask += 1;
+      tasks.push(next);
+    }
+    return { task: plain(task), next: next ? plain(next) : null, noNextQuarter: false };
+  },
+  reopen_task: (a) => {
+    const task = taskById(a.id);
+    task.doneAt = null;
+    tasks = tasks.filter((t) => !(t.repeatedFrom === task.id && !t.edited && t.doneAt === null && t.files.length === 0));
+  },
+  delete_task: (a) => {
+    taskById(a.id).deleted = true;
+  },
+  restore_task: (a) => {
+    const task = tasks.find((t) => t.id === a.id);
+    if (!task) throw { code: "validation", message: "That task is no longer on the list." };
+    task.deleted = false;
+  },
+  attach_file: (a) => {
+    const task = taskById(a.id);
+    const row = files.find((f) => f.path === a.path);
+    if (!row) throw { code: "notFound", message: "That file could not be found." };
+    if (!task.files.some((f) => f.path === row.path)) task.files.push({ path: row.path, name: row.name, ext: row.ext, kind: row.kind, missing: false });
+    return plain(task);
+  },
+  detach_file: (a) => {
+    const task = taskById(a.id);
+    task.files = task.files.filter((f) => f.path !== a.path);
+    return plain(task);
+  },
 };
 
 export function installMockBackend(): void {

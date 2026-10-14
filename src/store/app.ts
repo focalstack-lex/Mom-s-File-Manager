@@ -5,7 +5,7 @@ import { ipc } from "../lib/ipc";
 import { describeError } from "../lib/errors";
 import type { AppInfo, BrowserStatus, Settings, UpdateInfo } from "../lib/types";
 
-export type View = "find" | "cleanup" | "activity" | "settings";
+export type View = "find" | "todo" | "cleanup" | "activity" | "settings";
 
 export interface Toast {
   id: number;
@@ -15,6 +15,8 @@ export interface Toast {
   undoIds?: number[];
   /** An Organize run the toast's Undo reverses as a whole. */
   undoBatch?: string;
+  /** A task the toast's Undo puts back: ticked off (reopen) or deleted (restore). */
+  undoTask?: { action: "reopen" | "restore"; id: number };
 }
 
 interface AppStore {
@@ -38,7 +40,7 @@ interface AppStore {
   dismissUpdate(): void;
   loadInfo(): Promise<void>;
   saveSettings(settings: Settings): Promise<void>;
-  toast(text: string, kind?: Toast["kind"], undoIds?: number[], undoBatch?: string): void;
+  toast(text: string, kind?: Toast["kind"], undoIds?: number[], undoBatch?: string, undoTask?: Toast["undoTask"]): void;
   fail(error: unknown): void;
   dismissToast(id: number): void;
 }
@@ -104,11 +106,11 @@ export const useApp = create<AppStore>((set, get) => ({
       get().fail(error);
     }
   },
-  toast: (text, kind = "info", undoIds, undoBatch) => {
+  toast: (text, kind = "info", undoIds, undoBatch, undoTask) => {
     const id = nextToast++;
-    set((state) => ({ toasts: [...state.toasts.slice(-2), { id, text, kind, undoIds, undoBatch }] }));
+    set((state) => ({ toasts: [...state.toasts.slice(-2), { id, text, kind, undoIds, undoBatch, undoTask }] }));
     // A toast that can be undone stays long enough to reach the button.
-    window.setTimeout(() => get().dismissToast(id), kind === "error" ? 9000 : undoIds?.length || undoBatch ? 10000 : 6000);
+    window.setTimeout(() => get().dismissToast(id), kind === "error" ? 9000 : undoIds?.length || undoBatch || undoTask ? 10000 : 6000);
   },
   fail: (error) => {
     console.warn("Tote:", error);

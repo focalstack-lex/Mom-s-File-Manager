@@ -10,6 +10,7 @@ export const PAGE = {
   results: 20,
   cleanup: 10,
   activity: 10,
+  todo: 20,
 } as const;
 
 /** A Clean up card starts open only when it is this short; longer cards start folded with a count. */

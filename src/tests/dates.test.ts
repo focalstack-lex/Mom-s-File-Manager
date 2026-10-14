@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { availableChips, currentQuarter, parseDay, spanFor } from "../lib/dates";
 import type { Settings } from "../lib/types";
 
-const base: Settings = { startAtLogin: true, notifications: true, tourDone: true, schoolYear: null, quarters: [], extraFolders: [], excludedFolders: [], subjectRules: [], checkUpdates: true };
+const base: Settings = { startAtLogin: true, notifications: true, tourDone: true, schoolYear: null, quarters: [], extraFolders: [], excludedFolders: [], subjectRules: [], checkUpdates: true, todoSeen: true };
 const now = new Date(2026, 9, 14, 10, 0, 0); // Wednesday 14 October 2026
 const unix = (d: Date) => Math.floor(d.getTime() / 1000);
 

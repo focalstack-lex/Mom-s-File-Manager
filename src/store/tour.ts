@@ -1,4 +1,4 @@
-// The first-run walkthrough (spec 5.9): five steps, each pointing at a real
+// The first-run walkthrough (spec 5.9): six steps, each pointing at a real
 // control. Pure state here; the overlay draws it.
 
 import { create } from "zustand";
@@ -31,6 +31,13 @@ export const TOUR_STEPS: TourStep[] = [
     target: "open",
     title: "Open it",
     body: "One click opens the file. Show in folder takes you to where it lives.",
+    view: "find",
+  },
+  {
+    id: "todo",
+    target: "nav-todo",
+    title: "Your to-do list",
+    body: "Write what needs doing. On the morning it is due, Tote reminds you.",
     view: "find",
   },
   {

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { placeCard, TOUR_STEPS, useTour } from "../store/tour";
 
 describe("walkthrough", () => {
-  it("has five steps that each point at a real control", () => {
-    expect(TOUR_STEPS).toHaveLength(5);
-    expect(TOUR_STEPS.map((s) => s.target)).toEqual(["search", "recent", "open", "nav-cleanup", "nav-activity"]);
+  it("has six steps that each point at a real control", () => {
+    expect(TOUR_STEPS).toHaveLength(6);
+    expect(TOUR_STEPS.map((s) => s.target)).toEqual(["search", "recent", "open", "nav-todo", "nav-cleanup", "nav-activity"]);
     for (const step of TOUR_STEPS) {
       expect(step.title.length).toBeLessThan(40);
       expect(step.body.split(" ").length).toBeLessThan(30);
@@ -17,8 +17,8 @@ describe("walkthrough", () => {
     expect(useTour.getState()).toMatchObject({ active: true, index: 0 });
     tour.back();
     expect(useTour.getState().index).toBe(0);
-    for (let i = 0; i < 4; i += 1) tour.next();
-    expect(useTour.getState().index).toBe(4);
+    for (let i = 0; i < 5; i += 1) tour.next();
+    expect(useTour.getState().index).toBe(5);
     tour.next();
     expect(useTour.getState().active).toBe(false);
   });

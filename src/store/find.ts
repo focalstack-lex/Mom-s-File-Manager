@@ -49,6 +49,7 @@ function settingsNow(): Settings {
       excludedFolders: [],
       subjectRules: [],
       checkUpdates: true,
+      todoSeen: true,
     }
   );
 }

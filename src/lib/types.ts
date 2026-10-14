@@ -56,6 +56,8 @@ export interface Settings {
   subjectRules: SubjectRule[];
   /** Once a day, ask codewithlex.site whether a newer Tote exists. */
   checkUpdates: boolean;
+  /** She has opened To do once; the sidebar's New marker goes. */
+  todoSeen: boolean;
 }
 
 /** A newer version offered by the update check. */
@@ -114,6 +116,8 @@ export interface AppInfo {
   index: IndexStatus;
   sortedThisWeek: number;
   recovered: boolean;
+  /** A damaged to-do list was replaced on this start. */
+  tasksRestored: "snapshot" | "empty" | null;
 }
 
 export interface FindResult {
@@ -200,4 +204,33 @@ export interface SortedEvent {
   name: string;
   folder: string;
   path: string;
+}
+
+export type Repeat = "never" | "week" | "month" | "quarter";
+
+/** A file attached to a task; `missing` when it is no longer where it was. */
+export interface TaskFile {
+  path: string;
+  name: string;
+  ext: string;
+  kind: Kind;
+  missing: boolean;
+}
+
+export interface Task {
+  id: number;
+  title: string;
+  /** YYYY-MM-DD, or null for no date. */
+  due: string | null;
+  repeat: Repeat;
+  doneAt: number | null;
+  createdAt: number;
+  files: TaskFile[];
+}
+
+export interface Completed {
+  task: Task;
+  next: Task | null;
+  /** A quarterly task in the last quarter Settings knows about. */
+  noNextQuarter: boolean;
 }

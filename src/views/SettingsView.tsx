@@ -97,8 +97,8 @@ export function SettingsView({ info }: { info: AppInfo }) {
         </label>
         <label className="toggle">
           <span className="toggle-text">
-            Tell me when a download is filed
-            <span>A small Windows message in the corner.</span>
+            Windows messages
+            <span>When a download is filed, and on mornings when a task is due.</span>
           </span>
           <input type="checkbox" role="switch" className="switch" checked={draft.notifications} onChange={(e) => update({ notifications: e.target.checked })} />
         </label>
@@ -112,7 +112,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
         <div className="toggle">
           <span className="toggle-text">
             Walkthrough
-            <span>Five short steps that show how Tote works.</span>
+            <span>Six short steps that show how Tote works.</span>
           </span>
           <button
             type="button"

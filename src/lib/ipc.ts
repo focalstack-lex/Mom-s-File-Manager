@@ -5,7 +5,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { AppInfo, BatchUndo, BrowserStatus, OrganizePlan, OrganizeResult, SubjectRule, CleanupReport, Destination, FindResult, Filters, OpRow, Preview, Settings, SortedEvent, Template, UpdateInfo } from "./types";
+import type { AppInfo, BatchUndo, BrowserStatus, Completed, OrganizePlan, OrganizeResult, Repeat, SubjectRule, CleanupReport, Destination, FindResult, Filters, OpRow, Preview, Settings, SortedEvent, Task, Template, UpdateInfo } from "./types";
 
 export interface MockBackend {
   invoke(command: string, args: Record<string, unknown>): Promise<unknown>;
@@ -68,6 +68,15 @@ export const ipc = {
   checkUpdate: () => invoke<UpdateInfo | null>("check_update"),
   /** Downloads, verifies and installs it; Tote closes and reopens. */
   installUpdate: () => invoke<void>("install_update"),
+  tasks: () => invoke<Task[]>("list_tasks"),
+  addTask: (title: string, due: string | null) => invoke<Task>("add_task", { title, due }),
+  updateTask: (id: number, title: string, due: string | null, repeat: Repeat) => invoke<Task>("update_task", { id, title, due, repeat }),
+  completeTask: (id: number) => invoke<Completed>("complete_task", { id }),
+  reopenTask: (id: number) => invoke<void>("reopen_task", { id }),
+  deleteTask: (id: number) => invoke<void>("delete_task", { id }),
+  restoreTask: (id: number) => invoke<void>("restore_task", { id }),
+  attachFile: (id: number, path: string) => invoke<Task>("attach_file", { id, path }),
+  detachFile: (id: number, path: string) => invoke<Task>("detach_file", { id, path }),
   /** Native folder picker; null when she cancels. */
   pickFolder: async (): Promise<string | null> => {
     if (window.__toteMock) return (await window.__toteMock.invoke("pick_folder", {})) as string | null;

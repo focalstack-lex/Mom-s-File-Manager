@@ -3,7 +3,7 @@
 // box from anywhere. The sidebar folds into an icon rail; the choice is
 // remembered on this computer.
 
-import { BrushCleaning, ChevronLeft, ChevronRight, FolderOpen, History, Search, Settings } from "lucide-react";
+import { BrushCleaning, ChevronLeft, ChevronRight, FolderOpen, History, ListChecks, Search, Settings } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType } from "react";
 import { ToteMark } from "./components/icons";
 import { TitleBar } from "./components/TitleBar";
@@ -18,9 +18,11 @@ import { ActivityView } from "./views/ActivityView";
 import { CleanupView } from "./views/CleanupView";
 import { FindView } from "./views/FindView";
 import { SettingsView } from "./views/SettingsView";
+import { TodoView } from "./views/TodoView";
 
 const NAV: { id: View; label: string; icon: typeof Search; tour?: string }[] = [
   { id: "find", label: "Find", icon: Search },
+  { id: "todo", label: "To do", icon: ListChecks, tour: "nav-todo" },
   { id: "cleanup", label: "Clean up", icon: BrushCleaning, tour: "nav-cleanup" },
   { id: "activity", label: "Activity", icon: History, tour: "nav-activity" },
 ];
@@ -31,13 +33,14 @@ const NAV: { id: View; label: string; icon: typeof Search; tour?: string }[] = [
  * styles.css clips it to wherever the sliding tab is right now. So the text
  * is dark exactly where the tab is, at every frame of the slide.
  */
-function NavItem({ label, icon: Icon, active, onClick, testId, tour, title }: { label: string; icon: ComponentType<{ size?: number }>; active?: boolean; onClick(): void; testId: string; tour?: string; title?: string }) {
+function NavItem({ label, icon: Icon, active, onClick, testId, tour, title, badge }: { label: string; icon: ComponentType<{ size?: number }>; active?: boolean; onClick(): void; testId: string; tour?: string; title?: string; badge?: string }) {
   return (
     <button type="button" className={`nav-button${active ? " is-active" : ""}`} onClick={onClick} aria-current={active ? "page" : undefined} data-tour={tour} data-testid={testId} title={title ?? label}>
       <span className="nav-icon" aria-hidden>
         <Icon size={20} />
       </span>
       <span className="nav-label">{label}</span>
+      {badge && <span className="nav-new">{badge}</span>}
       <span className="nav-ink" aria-hidden>
         <span className="nav-icon">
           <Icon size={20} />
@@ -171,6 +174,16 @@ export default function App() {
     if (info && !info.settings.tourDone) startTour();
   }, [info?.settings.tourDone, info, startTour]);
 
+  // A damaged to-do list was replaced on this start (tasks.rs): say so once.
+  const restoredShown = useRef(false);
+  useEffect(() => {
+    const restored = info?.tasksRestored;
+    if (!restored || restoredShown.current) return;
+    restoredShown.current = true;
+    if (restored === "snapshot") toast("Your to-do list was restored from Tote's daily copy. Changes from today may be missing.");
+    else toast("Your to-do list could not be read, so it starts empty. The damaged copy was kept.", "error");
+  }, [info?.tasksRestored, toast]);
+
   const finishTour = () => {
     document.querySelector('[data-testid="main"]')?.scrollTo({ top: 0 });
     if (info && !info.settings.tourDone) void saveSettings({ ...info.settings, tourDone: true });
@@ -193,7 +206,7 @@ export default function App() {
           </button>
         </div>
         {NAV.map((item) => (
-          <NavItem key={item.id} label={item.label} icon={item.icon} active={view === item.id} onClick={() => setView(item.id)} testId={`nav-${item.id}`} tour={item.tour} />
+          <NavItem key={item.id} label={item.label} icon={item.icon} active={view === item.id} onClick={() => setView(item.id)} testId={`nav-${item.id}`} tour={item.tour} badge={item.id === "todo" && info && !info.settings.todoSeen ? "New" : undefined} />
         ))}
         <div className="nav-divider" aria-hidden />
         <NavItem label="Sorted folders" icon={FolderOpen} onClick={() => void openSchoolFiles()} testId="nav-folders" title="Open School Files in File Explorer" />
@@ -206,6 +219,8 @@ export default function App() {
           <p className="status-line">Starting Tote...</p>
         ) : view === "find" ? (
           <FindView info={info} />
+        ) : view === "todo" ? (
+          <TodoView info={info} />
         ) : view === "cleanup" ? (
           <CleanupView info={info} />
         ) : view === "activity" ? (

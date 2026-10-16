@@ -6,6 +6,7 @@ The Ask proxy for Tote (spec: `docs/superpowers/specs/2026-10-14-ask-assistant-d
 
 - `DEEPSEEK_API_KEY`: set by Lex in the Vercel project (Settings > Environment Variables, or `vercel env add DEEPSEEK_API_KEY production` in this folder). Never commit it, print it, or paste it into chat.
 - The Upstash pair, added by the Upstash integration (Storage > Marketplace > Upstash): `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`, or `KV_REST_API_URL` and `KV_REST_API_TOKEN`.
+- Not a secret, but read from every request: `X-Tote-Version`, the build Tote runs. It is only logged: the lines for a DeepSeek failure or a counter error end in `tote 0.4.0` so the Vercel log says which build a failing request came from; a missing header is logged as `none` and anything that is not a version as `unknown`, so no client text reaches the log. It is never required and never sent on to DeepSeek.
 
 Without any of them the function answers 503 and never calls DeepSeek. The order is the spec's: the method (405), the install id and the body (400) are checked first; the secrets and the counters only after that.
 

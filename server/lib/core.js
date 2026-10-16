@@ -28,6 +28,8 @@ const KEY_TTL_SECONDS = 48 * 3600;
 const ADDRESS_WINDOW_SECONDS = 60;
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+const MAX_VERSION_LENGTH = 20;
 
 export const SYSTEM_PROMPT = `You are Ask, the helper inside Tote, a file app on the Windows laptop of a public school teacher in the Philippines. She is not technical. Your job is to help her fix everyday computer problems and get her school work done on the computer.
 
@@ -237,6 +239,18 @@ function addressOf(request) {
 }
 
 /**
+ * The build that sent the request, from x-tote-version, for the log lines
+ * only: a version like 0.4.0, "none" when the header is missing, "unknown"
+ * when it is anything else, so no client text reaches the log. It is never
+ * required: an odd build still gets its answer.
+ */
+function versionOf(request) {
+  const version = (request.headers.get("x-tote-version") ?? "").trim();
+  if (version === "") return "none";
+  return version.length <= MAX_VERSION_LENGTH && VERSION.test(version) ? version : "unknown";
+}
+
+/**
  * Reads the body as text, counting bytes as they arrive and stopping as soon
  * as the limit is passed, so an oversized body is never held or parsed.
  * Returns null when the body is too large or cannot be read.
@@ -277,6 +291,7 @@ export function createHandler({ env, fetchImpl, now }) {
     if (request.method !== "POST") return answer(405, "method", { allow: "POST" });
     const install = (request.headers.get("x-tote-install") ?? "").toLowerCase();
     if (!UUID.test(install)) return answer(400, "invalid");
+    const version = versionOf(request);
     const raw = await readBody(request, MAX_BODY_BYTES);
     if (raw === null) return answer(400, "invalid");
     let body;
@@ -302,7 +317,7 @@ export function createHandler({ env, fetchImpl, now }) {
       verdict = await check(redis, keys, addressOf(request), isQuestion, Math.floor(at.getTime() / (ADDRESS_WINDOW_SECONDS * 1000)), day);
       if (!verdict.error) verdict = await record(redis, keys, isQuestion);
     } catch (error) {
-      console.error("ask: counter unavailable:", error.message);
+      console.error(`ask: counter unavailable, tote ${version}:`, error.message);
       return answer(503, "unavailable");
     }
     if (verdict.error) return answer(429, verdict.error);
@@ -324,15 +339,15 @@ export function createHandler({ env, fetchImpl, now }) {
         }),
       });
     } catch (error) {
-      console.error("ask: DeepSeek unreachable:", error.message);
+      console.error(`ask: DeepSeek unreachable, tote ${version}:`, error.message);
     }
     if (!upstream || !upstream.ok || !upstream.body) {
-      if (upstream) console.error("ask: DeepSeek answered", upstream.status);
+      if (upstream) console.error(`ask: DeepSeek answered ${upstream.status}, tote ${version}`);
       // No answer came back, so the request costs her nothing.
       try {
         await refund(redis, keys, isQuestion);
       } catch (error) {
-        console.error("ask: refund failed:", error.message);
+        console.error(`ask: refund failed, tote ${version}:`, error.message);
       }
       return answer(502, "upstream");
     }

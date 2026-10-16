@@ -49,8 +49,10 @@ function handlerWith(f, { env = ENV, now = NOON_MANILA } = {}) {
   return createHandler({ env, fetchImpl: f.fetchImpl, now: () => now });
 }
 
-function request(body, { install = INSTALL, method = "POST", address, stream } = {}) {
-  const headers = { "content-type": "application/json", "x-tote-install": install, "x-tote-version": "0.4.0" };
+/** `version` is the build header; null leaves it out. */
+function request(body, { install = INSTALL, method = "POST", address, stream, version = "0.4.0" } = {}) {
+  const headers = { "content-type": "application/json", "x-tote-install": install };
+  if (version !== null) headers["x-tote-version"] = version;
   if (address) headers["x-forwarded-for"] = address;
   if (stream) return new Request("https://tote-ask.test/api/ask", { method, headers, body: stream, duplex: "half" });
   return new Request("https://tote-ask.test/api/ask", {
@@ -249,6 +251,50 @@ describe("the upstream call", () => {
 
   it("answers 502 when DeepSeek fails", async () => {
     assert.deepEqual(await errorOf(await handlerWith(fakes({ upstreamStatus: 500 }))(request(ask("hi")))), { status: 502, error: "upstream" });
+  });
+});
+
+describe("the build that asked", () => {
+  /** The console.error lines written while `run` runs, joined one a line. */
+  async function logged(t, run) {
+    const errors = t.mock.method(console, "error", () => {});
+    try {
+      await run();
+    } finally {
+      errors.mock.restore();
+    }
+    return errors.mock.calls.map((c) => c.arguments.join(" "));
+  }
+
+  it("names the build in the log when DeepSeek or the counters fail, and never sends the header upstream", async (t) => {
+    const down = fakes({ upstreamStatus: 500 });
+    const lines = await logged(t, async () => {
+      assert.equal((await handlerWith(down)(request(ask("hi")))).status, 502);
+      assert.equal((await handlerWith(fakes({ upstreamThrows: true }))(request(ask("hi")))).status, 502);
+      assert.equal((await handlerWith(fakes({ redisDown: true }))(request(ask("hi")))).status, 503);
+    });
+    assert.deepEqual(
+      lines.map((line) => line.split(":")[1].trim()),
+      ["DeepSeek answered 500, tote 0.4.0", "DeepSeek unreachable, tote 0.4.0", "counter unavailable, tote 0.4.0"],
+      lines.join("\n"),
+    );
+    // The request helper sent 0.4.0, and DeepSeek saw neither it nor the install id.
+    assert.deepEqual(Object.keys(down.sent[0].headers), ["Authorization", "Content-Type"]);
+  });
+
+  it("answers without the header or with an odd one, and keeps the odd text out of the log", async (t) => {
+    const odd = ["0.4.0-beta", "1.2.3.4", "v0.4.0", `1.0.${"9".repeat(17)}`, "<script>alert(1)</script>\t0.4.0"];
+    const lines = await logged(t, async () => {
+      for (const version of [null, "", ...odd]) {
+        const f = fakes();
+        assert.equal((await handlerWith(f)(request(ask("hi"), { version }))).status, 200, JSON.stringify(version));
+        assert.equal(f.sent.length, 1, "the question still reached DeepSeek");
+        assert.equal((await handlerWith(fakes({ upstreamStatus: 500 }))(request(ask("hi"), { version }))).status, 502);
+      }
+    });
+    assert.equal(lines.filter((line) => line.includes("tote none")).length, 2, "a missing or empty header is logged as none");
+    assert.equal(lines.filter((line) => line.includes("tote unknown")).length, odd.length, "an odd header is logged as unknown");
+    for (const version of odd) assert.ok(lines.every((line) => !line.includes(version)), `the log never carries ${JSON.stringify(version)}`);
   });
 });
 

@@ -56,7 +56,15 @@ The real app, on throwaway folders, driven through its own window:
 npm run verify:native
 ```
 
-needs a release `tote.exe` (see Release). It seeds `%LOCALAPPDATA%\tote-native-check` with fake messy files, launches the app in test mode, drops downloads with real `Zone.Identifier` streams, and checks filing, search, move, rename, pin, Recycle Bin, Undo, Clean up, To do (attachments that follow a move, a restart, the morning reminder, recovery of a damaged list) and Settings against the disk and the database. Evidence lands in `reports/native-check/<stamp>/`.
+needs a release `tote.exe`. `npm run release` makes one (see Release), but it needs the updater key; without the key, build the release configuration that embeds `dist` yourself:
+
+```powershell
+npm run build
+cd src-tauri
+cargo build --release --features tauri/custom-protocol
+```
+
+The feature matters: a plain `cargo build --release` makes a dev-mode exe (tauri's build script turns dev on when `custom-protocol` is off) whose window asks `http://localhost:1430` for its page, so the native check stops at the first screen with ERR_CONNECTION_REFUSED. On this checkout, set the `TAURI_CONFIG` override first (see "Building on a path with an apostrophe"). The check seeds `%LOCALAPPDATA%\tote-native-check` with fake messy files, launches the app in test mode, drops downloads with real `Zone.Identifier` streams, and checks filing, search, move, rename, pin, Recycle Bin, Undo, Clean up, To do (attachments that follow a move, a restart, the morning reminder, recovery of a damaged list) and Settings against the disk and the database. Evidence lands in `reports/native-check/<stamp>/`.
 
 ### Test mode
 

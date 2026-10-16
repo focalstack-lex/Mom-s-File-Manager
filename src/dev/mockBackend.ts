@@ -3,7 +3,7 @@
 // Never bundled into the Tauri build (main.tsx imports it only in DEV).
 
 import type { MockBackend } from "../lib/ipc";
-import { hasWord, words as tokens } from "../lib/search";
+import { hasWord, indexedName, words as tokens } from "../lib/search";
 import type { CleanupReport, Destination, FileRow, FindResult, Filters, Group, OpRow, Repeat, Settings, Task, Template } from "../lib/types";
 
 const DOCS = "C:\\Users\\Teacher\\Documents";
@@ -156,7 +156,7 @@ function markWords(text: string, words: string[]): string {
 }
 
 function matches(row: FileRow, words: string[], filters: Filters): boolean {
-  if (!hasWords(`${row.name} ${CONTENT[row.name] ?? ""}`, words)) return false;
+  if (!hasWords(`${indexedName(row.name)} ${CONTENT[row.name] ?? ""}`, words)) return false;
   const when = row.downloadedAt ?? row.modified;
   if (filters.from && when < filters.from) return false;
   if (filters.to && when >= filters.to) return false;
@@ -177,10 +177,9 @@ function find(query: string, filters: Filters): FindResult {
   if (!searching) {
     return { groups: [], pinned: files.filter((f) => f.pinned), orphanPins: [], recent: files.filter((f) => f.downloadedAt).sort((a, b) => (b.downloadedAt ?? 0) - (a.downloadedAt ?? 0)), index };
   }
+  // No word beside a chip (empty, or only punctuation) browses the chip's files, as index.rs answers.
   const words = tokens(query);
-  // Typed text with no word in it (only punctuation) beside a chip matches nothing, as index.rs answers.
-  if (query.trim() !== "" && words.length === 0) return { groups: [], pinned: [], orphanPins: [], recent: [], index };
-  const inName = (f: FileRow) => hasWords(f.name, words);
+  const inName = (f: FileRow) => hasWords(indexedName(f.name), words);
   const hits = files
     .filter((f) => matches(f, words, filters))
     // A file whose name holds every word comes before one that only mentions them inside.

@@ -12,3 +12,13 @@ export function words(text: string): string[] {
 export function hasWord(text: string): boolean {
   return words(text).length > 0;
 }
+
+/**
+ * The text the index holds for a file name (`index::indexed_name`): the name
+ * and, when it has an apostrophe, the name without them, so "teachers day"
+ * finds "Teacher's Day". The mock matches names through this.
+ */
+export function indexedName(name: string): string {
+  const stripped = name.replace(/['‘’]/g, "");
+  return stripped === name ? name : `${name} ${stripped}`;
+}

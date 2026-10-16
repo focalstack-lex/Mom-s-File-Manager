@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasWord, words } from "../lib/search";
+import { hasWord, indexedName, words } from "../lib/search";
 import { useFind } from "../store/find";
 
 describe("words", () => {
@@ -17,6 +17,15 @@ describe("words", () => {
     expect(hasWord("---")).toBe(false);
     expect(hasWord("   ")).toBe(false);
     expect(hasWord("")).toBe(false);
+  });
+});
+
+describe("indexedName", () => {
+  it("adds the apostrophe-free form, so teachers day finds Teacher's Day", () => {
+    expect(indexedName("Teacher's Day.docx")).toBe("Teacher's Day.docx Teachers Day.docx");
+    expect(indexedName("Juan’s Report.pdf")).toBe("Juan’s Report.pdf Juans Report.pdf");
+    expect(indexedName("Book1.xlsx")).toBe("Book1.xlsx");
+    expect(words(indexedName("Teacher's Day.docx"))).toContain("teachers");
   });
 });
 

@@ -194,6 +194,17 @@ async function drive(browser) {
   await capture(page, "04b-search-punctuation");
   record("Typing punctuation alone keeps the pinned and recent lists instead of saying nothing matched", resultsGone && recentBack && nothingMatched === 0, JSON.stringify({ resultsGone, recentBack, nothingMatched }));
 
+  // 4c. Punctuation beside a type chip browses the chip's files, the same as an empty box: no dead end.
+  await page.locator('[data-testid="more-filters"]').click();
+  await page.locator('[aria-label="File type"] .chip', { hasText: "Excel" }).click();
+  const chipRows = await visible(page, '[data-testid="results"] [data-testid="file-row"]');
+  const chipNames = await page.locator('[data-testid="results"] .row-name-text').allTextContents();
+  const chipDeadEnd = await page.getByText("Nothing matched yet").count();
+  await capture(page, "04c-punctuation-with-chip");
+  record("Punctuation beside the Excel chip lists the Excel files instead of saying nothing matched", chipRows && chipNames.length > 0 && chipNames.every((name) => name.endsWith(".xlsx")) && chipDeadEnd === 0, JSON.stringify({ chipNames, chipDeadEnd }));
+  await page.locator('[aria-label="File type"] .chip', { hasText: "Excel" }).click();
+  await page.locator('[data-testid="more-filters"]').click();
+
   // 5. Copies are grouped with Latest marked and the others behind one button.
   await page.locator('[data-testid="search-input"]').fill("lesson plan");
   await page.waitForFunction(() => document.querySelector('[data-testid="results"] .latest'), null, { timeout: STEP_TIMEOUT_MS });

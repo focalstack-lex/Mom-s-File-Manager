@@ -16,7 +16,7 @@ Days are Philippine dates; the daily keys expire after 48 hours. Only a request 
 - Questions: 20 a day per laptop (`q:<install id>:<day>`). A question is a request whose last message is hers. Over it: 429 `{ "error": "limit" }`.
 - Calls: 100 a day per laptop, tool steps included (`c:<install id>:<day>`). Over it: 429 `{ "error": "busy" }`.
 - Everyone: 3,000 calls a day for all laptops together (`all:<day>`). Over it: 429 `busy`.
-- One address: 60 requests a minute (`ip:<address>:<minute>`, expires after 60 seconds), whatever install ids it uses, so one client cannot use up the day for everyone. Over it: 429 `busy`. The address comes from `x-forwarded-for`, which Vercel fills in; without the header there is no address limit.
+- One address: 60 requests a minute (`ip:<address>:<minute>`, expires after 60 seconds) and 300 requests a day (`ipd:<address>:<day>`), whatever install ids it uses, so one client cannot use up the day for everyone by rotating install ids. Every request from the address counts here, refused ones too. Over either: 429 `busy`. The address comes from `x-forwarded-for`, which Vercel fills in; without the header there is no address limit. A signed install token (proof that a request comes from Tote) is still to come; until then these two limits are the brake.
 - A blocked laptop: 429 `busy`.
 
 ## Commands

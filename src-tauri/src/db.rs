@@ -124,6 +124,23 @@ fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE ops ADD COLUMN batch TEXT; CREATE INDEX IF NOT EXISTS ops_batch ON ops(batch);")?;
         log::info!("database: added ops.batch");
     }
+    // Since 2026-10-16 a name with an apostrophe is indexed with and without
+    // it (index::indexed_name), so "teachers day" finds "Teacher's Day". Rows
+    // written before that are rewritten once; the marker keeps it to once.
+    if get_setting(conn, "fts_name_forms")?.is_none() {
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare("SELECT id, name FROM files WHERE name LIKE '%''%' OR name LIKE '%\u{2019}%' OR name LIKE '%\u{2018}%'")?;
+            let found = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            found.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for (id, name) in &rows {
+            conn.execute("UPDATE files_fts SET name = ?2 WHERE rowid = ?1", rusqlite::params![id, crate::index::indexed_name(name)])?;
+        }
+        set_setting(conn, "fts_name_forms", "1")?;
+        if !rows.is_empty() {
+            log::info!("database: reindexed {} names with an apostrophe", rows.len());
+        }
+    }
     Ok(())
 }
 
@@ -181,6 +198,25 @@ mod tests {
         migrate(&conn).unwrap();
         let batch: Option<String> = conn.query_row("SELECT batch FROM ops", [], |r| r.get(0)).unwrap();
         assert_eq!(batch, None, "old rows keep working");
+    }
+
+    #[test]
+    fn an_older_database_reindexes_names_with_an_apostrophe_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "INSERT INTO files(id, path, parent, name, ext, kind, size, modified, group_key) VALUES(1, 'C:\\a\\Teacher''s Day.docx', 'C:\\a', 'Teacher''s Day.docx', 'docx', 'word', 1, 1, 'teacher s day|docx'), (2, 'C:\\a\\Book1.xlsx', 'C:\\a', 'Book1.xlsx', 'xlsx', 'excel', 1, 1, 'book1|xlsx');
+             INSERT INTO files_fts(rowid, name, content) VALUES(1, 'Teacher''s Day.docx', ''), (2, 'Book1.xlsx', '');",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let fts_name = |id: i64| -> String { conn.query_row("SELECT name FROM files_fts WHERE rowid = ?1", [id], |r| r.get(0)).unwrap() };
+        assert_eq!(fts_name(1), "Teacher's Day.docx Teachers Day.docx");
+        assert_eq!(fts_name(2), "Book1.xlsx", "a name without an apostrophe is left alone");
+        assert_eq!(get_setting(&conn, "fts_name_forms").unwrap().as_deref(), Some("1"));
+        conn.execute("UPDATE files_fts SET name = 'changed' WHERE rowid = 1", []).unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(fts_name(1), "changed", "the rewrite runs once");
     }
 
     #[test]

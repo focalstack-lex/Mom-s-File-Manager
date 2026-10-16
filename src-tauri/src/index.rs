@@ -268,7 +268,7 @@ pub fn write(conn: &Connection, entry: &Entry, change: Change, content: Option<S
     let content = content.map(|c| if c.contains([MARK_START, MARK_END]) { c.replace([MARK_START, MARK_END], " ") } else { c });
     conn.execute(
         "INSERT INTO files_fts(rowid, name, content) VALUES(?1, ?2, ?3)",
-        params![id, name, content.unwrap_or_default()],
+        params![id, indexed_name(&name), content.unwrap_or_default()],
     )?;
     Ok(id)
 }
@@ -331,7 +331,7 @@ pub fn relocate(conn: &Connection, from: &Path, to: &Path) -> Result<()> {
         refresh_path(conn, to)?;
     } else {
         let id: i64 = conn.query_row("SELECT id FROM files WHERE path = ?1", [&to_text], |r| r.get(0))?;
-        conn.execute("UPDATE files_fts SET name = ?2 WHERE rowid = ?1", params![id, name])?;
+        conn.execute("UPDATE files_fts SET name = ?2 WHERE rowid = ?1", params![id, indexed_name(&name)])?;
     }
     conn.execute("UPDATE pins SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
     conn.execute("UPDATE templates SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
@@ -434,6 +434,20 @@ pub fn words(input: &str) -> Vec<String> {
         .collect()
 }
 
+/// The text the index holds for a file name: the name itself and, when it
+/// has an apostrophe, the same name with the apostrophes taken out. The
+/// tokenizer cuts "Teacher's" into "teacher" and "s", which a typed
+/// "teachers" never matches, so the second form is what finds it. The
+/// renderer's `indexedName` (src/lib/search.ts) does the same for the mock.
+pub fn indexed_name(name: &str) -> String {
+    const APOSTROPHES: [char; 3] = ['\'', '\u{2019}', '\u{2018}'];
+    if name.contains(APOSTROPHES) {
+        format!("{name} {}", name.replace(APOSTROPHES, ""))
+    } else {
+        name.to_string()
+    }
+}
+
 /// Turns what she typed into an FTS5 prefix query: every word must match.
 /// None when there is no word at all (empty, or only punctuation).
 pub fn fts_query(input: &str) -> Option<String> {
@@ -445,10 +459,10 @@ pub fn fts_query(input: &str) -> Option<String> {
     }
 }
 
-/// True when every typed word starts a word of the name: the name column
-/// matched on its own, so the row needs no snippet.
+/// True when every typed word starts a word of the name (in either indexed
+/// form): the name column matched on its own, so the row needs no snippet.
 fn name_matches(name: &str, query_words: &[String]) -> bool {
-    let name_words = words(name);
+    let name_words = words(&indexed_name(name));
     query_words.iter().all(|q| name_words.iter().any(|n| n.starts_with(q.as_str())))
 }
 
@@ -497,8 +511,9 @@ fn filter_sql(filters: &Filters, args: &mut Vec<Box<dyn rusqlite::ToSql>>) -> St
 
 /// Ranked search. A file whose name holds every word comes before one that
 /// only mentions them inside, then bm25, then recency. Typed text with no
-/// word in it (only punctuation) matches nothing; an empty box with chips
-/// browses the newest files that fit the chips.
+/// word in it (empty, or only punctuation) browses the newest files that fit
+/// the chips; `commands::find` keeps a wordless box with no chips out of
+/// search, so the chips alone decide what such a box shows.
 pub fn search(conn: &Connection, input: &str, filters: &Filters, limit: usize) -> Result<Vec<FileRow>> {
     let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let rows = match fts_query(input) {
@@ -522,7 +537,6 @@ pub fn search(conn: &Connection, input: &str, filters: &Filters, limit: usize) -
             attach_snippets(conn, input, &mut out)?;
             out
         }
-        None if !input.trim().is_empty() => Vec::new(),
         None => {
             let extra = filter_sql(filters, &mut args);
             args.push(Box::new(limit as i64));
@@ -796,6 +810,7 @@ mod tests {
             ("SF2_October", "SF2_October.xlsx"),
             ("Grade-7", "Grade-7 Science Quiz.docx"),
             ("Teacher's Day", "Teacher's Day Program.docx"),
+            ("teachers day", "Teacher's Day Program.docx"),
             ("2026-10-14", "2026-10-14 Attendance.xlsx"),
             ("Dela Cruz, Juan", "Dela Cruz, Juan.pdf"),
         ] {
@@ -803,9 +818,27 @@ mod tests {
             assert_eq!(hits.first().map(|h| h.name.as_str()), Some(expected), "typed {typed:?}");
             assert!(hits[0].snippet.is_none(), "the name explains the hit for {typed:?}");
         }
-        assert!(search(&conn, "---", &Filters::default(), 50).unwrap().is_empty(), "no word typed, so no file matches");
-        assert!(search(&conn, "'", &Filters::default(), 50).unwrap().is_empty());
         assert_eq!(search(&conn, "", &Filters::default(), 50).unwrap().len(), names.len(), "an empty box with chips still browses");
+        // Typed text with no word in it is the same as an empty box: the chip alone decides.
+        let excel = Filters { kinds: vec!["excel".into()], ..Default::default() };
+        let names_of = |typed: &str| {
+            let mut found: Vec<String> = search(&conn, typed, &excel, 50).unwrap().into_iter().map(|h| h.name).collect();
+            found.sort();
+            found
+        };
+        let browsed = names_of("");
+        assert_eq!(browsed, vec!["2026-10-14 Attendance.xlsx", "Book1.xlsx", "SF2_October.xlsx"], "an empty box with a chip browses the chip's files");
+        for wordless in ["---", "'"] {
+            assert_eq!(names_of(wordless), browsed, "typed {wordless:?} holds no word, so the chip browses as an empty box does");
+        }
+    }
+
+    #[test]
+    fn a_name_with_an_apostrophe_is_indexed_with_and_without_it() {
+        assert_eq!(indexed_name("Teacher's Day.docx"), "Teacher's Day.docx Teachers Day.docx");
+        assert_eq!(indexed_name("Juan\u{2019}s Report.pdf"), "Juan\u{2019}s Report.pdf Juans Report.pdf");
+        assert_eq!(indexed_name("Book1.xlsx"), "Book1.xlsx", "no apostrophe, nothing added");
+        assert!(words(&indexed_name("Teacher's Day.docx")).contains(&"teachers".to_string()));
     }
 
     #[test]

@@ -355,6 +355,24 @@ describe("limits", () => {
     assert.equal((await later(request(step(), { address }))).status, 200, "the next minute starts fresh");
   });
 
+  it("allows 300 requests a day from one address, whatever the install id, so rotating ids cannot spend the day", async () => {
+    const f = fakes();
+    const h = handlerWith(f);
+    const address = "203.0.113.7";
+    f.store.set(`ipd:${address}:${DAY}`, LIMITS.addressPerDay - 1);
+    assert.equal((await h(request(step(), { address }))).status, 200, "the last request of the day's allowance");
+    assert.deepEqual(await errorOf(await h(request(step(), { address }))), { status: 429, error: "busy" });
+    assert.deepEqual(await errorOf(await h(request(ask("hi"), { address, install: "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9" }))), { status: 429, error: "busy" }, "a fresh install id does not help");
+    assert.equal(f.store.get(`ipd:${address}:${DAY}`), LIMITS.addressPerDay + 2, "refused requests count against the address");
+    assert.equal(f.sent.length, 1, "only the allowed request reached DeepSeek");
+    assert.equal(f.store.get(`all:${DAY}`), 1, "refused requests are not in the daily total");
+    assert.equal(f.store.get(`q:1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9:${DAY}`), undefined, "the refused question was not counted");
+    assert.equal((await h(request(step(), { address: "198.51.100.9" }))).status, 200, "another address is not affected");
+    assert.equal((await h(request(step()))).status, 200, "no address, no address limit");
+    const tomorrow = handlerWith(f, { now: new Date("2026-10-14T16:01:00Z") });
+    assert.equal((await tomorrow(request(step(), { address }))).status, 200, "the next Philippine day starts fresh");
+  });
+
   it("reads the install id in lower case, so the block key is lower case", async () => {
     const f = fakes();
     const h = handlerWith(f);

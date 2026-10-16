@@ -14,6 +14,8 @@ export const LIMITS = Object.freeze({
   global: 3000,
   /** Requests one address may send a minute, whatever install ids it uses. */
   perMinute: 60,
+  /** Requests one address may send a day, whatever install ids it uses: three laptops' worth of calls. */
+  addressPerDay: 300,
 });
 
 const MAX_MESSAGES = 40;
@@ -167,20 +169,28 @@ function keysOf(install, day) {
 
 /**
  * Reads the counters and says whether this request may go upstream. Nothing
- * daily is counted here, so a refused request never uses up a question or
- * the total for everyone. The only key touched is the address's own minute
- * key: a flood from one address fills that key and nothing else.
+ * per laptop or for everyone is counted here, so a refused request never
+ * uses up a question or the total for everyone. The only keys touched are
+ * the address's own minute and day keys: a flood from one address fills
+ * those and nothing else, so it cannot spend the day's total by rotating
+ * install ids (a signed install token, proof that a request comes from
+ * Tote, is still to come).
  */
-async function check(redis, keys, address, isQuestion, minute) {
+async function check(redis, keys, address, isQuestion, minute, day) {
   const commands = [["GET", keys.blocked], ["GET", keys.c], ["GET", keys.all], ["GET", keys.q]];
-  if (address) commands.push(["INCR", `ip:${address}:${minute}`], ["EXPIRE", `ip:${address}:${minute}`, ADDRESS_WINDOW_SECONDS]);
+  if (address) {
+    const perMinute = `ip:${address}:${minute}`;
+    const perDay = `ipd:${address}:${day}`;
+    commands.push(["INCR", perMinute], ["EXPIRE", perMinute, ADDRESS_WINDOW_SECONDS], ["INCR", perDay], ["EXPIRE", perDay, KEY_TTL_SECONDS]);
+  }
   const results = await redis(commands);
   const blocked = results[0] !== null && results[0] !== undefined;
   const calls = Number(results[1]) || 0;
   const everyone = Number(results[2]) || 0;
   const questions = Number(results[3]) || 0;
   const fromAddress = address ? Number(results[4]) || 0 : 0;
-  if (fromAddress > LIMITS.perMinute || blocked || calls >= LIMITS.calls || everyone >= LIMITS.global) return { error: "busy" };
+  const fromAddressToday = address ? Number(results[6]) || 0 : 0;
+  if (fromAddress > LIMITS.perMinute || fromAddressToday > LIMITS.addressPerDay || blocked || calls >= LIMITS.calls || everyone >= LIMITS.global) return { error: "busy" };
   if (isQuestion && questions >= LIMITS.questions) return { error: "limit" };
   return {};
 }
@@ -284,11 +294,12 @@ export function createHandler({ env, fetchImpl, now }) {
     if (!key || !redis) return answer(503, "unavailable");
 
     const at = now();
-    const keys = keysOf(install, philippineDay(at));
+    const day = philippineDay(at);
+    const keys = keysOf(install, day);
     const isQuestion = messages.at(-1).role === "user";
     let verdict;
     try {
-      verdict = await check(redis, keys, addressOf(request), isQuestion, Math.floor(at.getTime() / (ADDRESS_WINDOW_SECONDS * 1000)));
+      verdict = await check(redis, keys, addressOf(request), isQuestion, Math.floor(at.getTime() / (ADDRESS_WINDOW_SECONDS * 1000)), day);
       if (!verdict.error) verdict = await record(redis, keys, isQuestion);
     } catch (error) {
       console.error("ask: counter unavailable:", error.message);

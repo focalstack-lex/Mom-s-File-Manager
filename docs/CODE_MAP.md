@@ -15,8 +15,8 @@ Where things live. Read this before changing anything; update it in the same cha
 | `stability.rs` | `Pending`, quiet period, backoff, `can_open_exclusively`. |
 | `extract.rs` | Text from docx, xlsx, pptx, pdf, txt, csv with size caps. |
 | `dupes.rs` | `group_key` for near-duplicate names. |
-| `db.rs` | Schema, open with damage recovery, settings table. |
-| `index.rs` | `walk`, `upsert`, `relocate`, `remove`, `search` (`words` and `fts_query` cut typed text like the tokenizer; names rank before contents; `MARK_START` and `MARK_END` wrap snippet matches), `recent_downloads`, pins, `group`. |
+| `db.rs` | Schema, open with damage recovery, settings table, `migrate` (columns added later; a one-time rewrite of apostrophe names in `files_fts` under the `fts_name_forms` marker). |
+| `index.rs` | `walk`, `upsert`, `relocate`, `remove`, `search` (`words` and `fts_query` cut typed text like the tokenizer; `indexed_name` stores a name with an apostrophe with and without it; names rank before contents; a wordless box browses with the chips; `MARK_START` and `MARK_END` wrap snippet matches), `recent_downloads`, pins, `group`. |
 | `ops.rs` | Logged operations: move, rename, new folder, recycle, undo, `transfer`. |
 | `cleanup.rs` | The three Clean up lists. |
 | `organize.rs` | Organize now: grade and subject rules, `destination_for`, `plan` (read from disk), `run` (one batch, lock per file). |

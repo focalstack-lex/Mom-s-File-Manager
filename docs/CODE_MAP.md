@@ -15,19 +15,19 @@ Where things live. Read this before changing anything; update it in the same cha
 | `stability.rs` | `Pending`, quiet period, backoff, `can_open_exclusively`. |
 | `extract.rs` | Text from docx, xlsx, pptx, pdf, txt, csv with size caps. |
 | `dupes.rs` | `group_key` for near-duplicate names. |
-| `db.rs` | Schema, open with damage recovery (`set_aside` moves the main file with its -wal and -shm under one stamp, `salvage` copies settings, pins, templates and ops out of the damaged copy one table per statement, `Rebuilt { kept }` reports it), settings table, `migrate` (columns added later: `ops.batch`, `ops.size`, `ops.recycled_at`; a one-time rewrite of apostrophe names in `files_fts` under the `fts_name_forms` marker). |
+| `db.rs` | Schema, open with damage recovery (`set_aside` moves the main file with its -wal and -shm under one stamp; a sidecar another program holds is logged and left, never a failed start; `salvage` copies settings, pins, templates and ops out of the damaged copy one table per statement, `Rebuilt { kept }` reports it), settings table, `migrate` (columns added later: `ops.batch`, `ops.size`, `ops.recycled_at`; a one-time rewrite of apostrophe names in `files_fts` under the `fts_name_forms` marker). |
 | `index.rs` | `walk`, `upsert`, `relocate`, `remove`, `search` (`words` and `fts_query` cut typed text like the tokenizer; `indexed_name` stores a name with an apostrophe with and without it; names rank before contents; a wordless box browses with the chips; `MARK_START` and `MARK_END` wrap snippet matches), `recent_downloads`, pins, `group`. |
 | `ops.rs` | Logged operations: move, rename, new folder, recycle (`recycle_refusal`: no Recycle Bin on a drive that is not fixed, through winsafe `GetDriveType`, or for a path of 260 or more UTF-16 units; the Recycle Bin is listed once after the deletes to confirm each item; the row records the size and the moment), undo (`pick_restore` matches a Recycle Bin item by path, recorded moment and size, and the restored file's size is checked), `transfer`. |
 | `cleanup.rs` | The three Clean up lists. |
 | `organize.rs` | Organize now: grade and subject rules, `destination_for`, `plan` (read from disk), `run` (one batch, lock per file). |
 | `browsers.rs` | Reads Chrome, Edge, Brave and Firefox download settings (read only) and says which need a change. |
-| `tasks.rs` | The To do list: `tasks.sqlite` attached as schema `todo` (`open_store` with damage recovery from the daily `snapshot`, a missing file restored the same way; `snapshot` keeps the copy it replaces as `tasks.backup.previous.sqlite` and never replaces tasks with an empty list), `purge`, task commands' logic, repeats (`next_due`), the morning `reminder` text. |
+| `tasks.rs` | The To do list: `tasks.sqlite` attached as schema `todo` (`open_store` with damage recovery from the daily `snapshot`, a missing file restored the same way after any stale -wal or -shm is set aside; `usable_backup` falls back to `tasks.backup.previous.sqlite` when the latest copy is missing or unreadable; `snapshot` keeps the copy it replaces as the previous one, leaving the latest in place until the new copy has its name, and never replaces either generation's tasks with an empty list), `purge`, task commands' logic, repeats (`next_due`), the morning `reminder` text. |
 | `templates.rs` | Shelf storage and dated copies. |
 | `clipboard.rs` | Files on the clipboard (CF_HDROP). |
 | `worker.rs` | Downloads watcher and sorting loop, index watchers, initial scan, notification, the 15-minute To do check (`tasks_check`: purge, snapshot, reminder). |
 | `tray.rs` | Tray icon and menu, `show`. |
 | `update.rs` | Daily update check against codewithlex.site and the signed one-click install. |
-| `commands.rs` | Every `#[tauri::command]`, `Settings`, `AppInfo` (`rebuilt`, `tasks_unavailable`); `check_folder_choice` and `choose_folder` behind `add_folder`. |
+| `commands.rs` | Every `#[tauri::command]`, `Settings`, `AppInfo` (`rebuilt`, `tasks_unavailable`); `check_folder_choice` (against `covered_folders`: the roots Tote started with plus the folders added this session) and `choose_folder` behind `add_folder`. |
 | `state.rs` | `Core` (db mutex, roots, status, `rebuilt`, `tasks_unavailable`) and `AppState`. |
 | `update.rs` | Once-a-day update check against codewithlex.site/tote/latest.json, signed download and install; never online in a dry run unless TOTE_UPDATE_VERIFY. |
 

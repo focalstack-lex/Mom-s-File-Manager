@@ -12,7 +12,7 @@ use crate::sorter;
 use chrono::{Days, Months, NaiveDate, NaiveDateTime, Timelike};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const FILE: &str = "tasks.sqlite";
 const BACKUP: &str = "tasks.backup.sqlite";
@@ -253,27 +253,41 @@ fn not_found() -> ToteError {
 /// snapshot replace the good copy.
 pub fn open_store(conn: &Connection, data_dir: &Path) -> Result<Option<Restored>> {
     let file = data_dir.join(FILE);
-    let backup = data_dir.join(BACKUP);
     let mut restored = None;
     if file.exists() && !healthy(&file) {
         set_aside(data_dir, db::now())?;
-        if backup.exists() && healthy(&backup) {
-            std::fs::copy(&backup, &file)?;
-            log::warn!("{FILE} could not be read; restored it from {BACKUP}");
-            restored = Some(Restored::Snapshot);
-        } else {
-            log::warn!("{FILE} could not be read and no healthy snapshot exists; the list starts empty");
-            restored = Some(Restored::Empty);
+        match usable_backup(data_dir) {
+            Some((name, backup)) => {
+                std::fs::copy(&backup, &file)?;
+                log::warn!("{FILE} could not be read; restored it from {name}");
+                restored = Some(Restored::Snapshot);
+            }
+            None => {
+                log::warn!("{FILE} could not be read and no healthy snapshot exists; the list starts empty");
+                restored = Some(Restored::Empty);
+            }
         }
-    } else if !file.exists() && backup.exists() && healthy(&backup) {
-        std::fs::copy(&backup, &file)?;
-        log::warn!("{FILE} was missing; restored it from {BACKUP}");
-        restored = Some(Restored::Snapshot);
+    } else if !file.exists() {
+        if let Some((name, backup)) = usable_backup(data_dir) {
+            // A -wal left beside the missing file would be replayed onto
+            // the copy: SQLite checks a WAL against its own header, not
+            // against the database, so it goes aside first.
+            set_aside(data_dir, db::now())?;
+            std::fs::copy(&backup, &file)?;
+            log::warn!("{FILE} was missing; restored it from {name}");
+            restored = Some(Restored::Snapshot);
+        }
     }
     conn.execute("ATTACH DATABASE ?1 AS todo", [paths::display(&file)])?;
     conn.pragma_update(Some("todo"), "journal_mode", "WAL")?;
     conn.execute_batch(SCHEMA)?;
     Ok(restored)
+}
+
+/// The newest snapshot that still reads, with its file name: the latest
+/// copy, else the one before it.
+fn usable_backup(data_dir: &Path) -> Option<(&'static str, PathBuf)> {
+    [BACKUP, PREVIOUS_BACKUP].into_iter().map(|name| (name, data_dir.join(name))).find(|(_, copy)| copy.exists() && healthy(copy))
 }
 
 /// Opened read-write, like the main database, so a WAL left by a crash is
@@ -303,25 +317,34 @@ pub fn attach_memory(conn: &Connection) -> Result<()> {
 /// Copies the list to tasks.backup.sqlite at most once a day, through a
 /// temporary file so a failed copy never replaces a good one. The copy it
 /// replaces is kept as tasks.backup.previous.sqlite, and a copy that holds
-/// tasks is never replaced by a list that holds none: an empty list is more
-/// likely a loss than a choice (audit T-03).
+/// tasks (either generation) is never replaced by a list that holds none:
+/// an empty list is more likely a loss than a choice (audit T-03).
 pub fn snapshot(conn: &Connection, data_dir: &Path, today: NaiveDate) -> Result<bool> {
     let stamp = day_text(today);
     if db::get_setting(conn, SNAPSHOT_KEY)?.as_deref() == Some(stamp.as_str()) {
         return Ok(false);
     }
     let backup = data_dir.join(BACKUP);
-    if live_count(conn)? == 0 && backup.exists() && backup_count(&backup) > 0 {
-        log::warn!("tasks snapshot skipped: the list is empty while {BACKUP} holds tasks");
-        return Ok(false);
+    let previous = data_dir.join(PREVIOUS_BACKUP);
+    if live_count(conn)? == 0 {
+        if let Some(name) = [BACKUP, PREVIOUS_BACKUP].into_iter().find(|name| {
+            let copy = data_dir.join(name);
+            copy.exists() && backup_count(&copy) > 0
+        }) {
+            log::warn!("tasks snapshot skipped: the list is empty while {name} holds tasks");
+            return Ok(false);
+        }
     }
     let temp = data_dir.join("tasks.backup.tmp");
     if temp.exists() {
         std::fs::remove_file(&temp)?;
     }
     conn.execute("VACUUM todo INTO ?1", [paths::display(&temp)])?;
-    if backup.exists() {
-        std::fs::rename(&backup, data_dir.join(PREVIOUS_BACKUP))?;
+    // The latest copy keeps its name until the new one takes it, so a
+    // failure between the two steps never leaves the folder without a
+    // backup; a copy that cannot be read is not kept over the one before it.
+    if backup.exists() && healthy(&backup) {
+        std::fs::copy(&backup, &previous)?;
     }
     std::fs::rename(&temp, &backup)?;
     db::set_setting(conn, SNAPSHOT_KEY, &stamp)?;
@@ -753,31 +776,97 @@ mod tests {
         assert_eq!(open_with_due(&conn).unwrap(), vec![("Today".to_string(), d("2026-10-14"))]);
     }
 
-    fn backup_titles(dir: &Path) -> Vec<String> {
-        let conn = Connection::open(dir.join(BACKUP)).unwrap();
+    fn titles_in(file: &Path) -> Vec<String> {
+        let conn = Connection::open(file).unwrap();
         let mut stmt = conn.prepare("SELECT title FROM tasks WHERE deleted_at IS NULL ORDER BY id").unwrap();
         stmt.query_map([], |r| r.get(0)).unwrap().collect::<std::result::Result<Vec<String>, _>>().unwrap()
+    }
+
+    fn backup_titles(dir: &Path) -> Vec<String> {
+        titles_in(&dir.join(BACKUP))
+    }
+
+    fn live_titles(conn: &Connection) -> Vec<String> {
+        list(conn, NOW).unwrap().into_iter().map(|t| t.title).collect()
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect()
     }
 
     #[test]
     fn a_missing_list_comes_back_from_the_snapshot_and_the_backup_keeps_its_tasks() {
         let dir = tempfile::tempdir().unwrap();
+        let stale_wal = dir.path().join("stale.wal");
         {
             let conn = db::open(dir.path()).unwrap().connection;
             open_store(&conn, dir.path()).unwrap();
             add(&conn, "Submit SF2", Some("2026-10-20"), NOW).unwrap();
             add(&conn, "Print report cards", None, NOW).unwrap();
             assert!(snapshot(&conn, dir.path(), d("2026-10-14")).unwrap());
+            // A change after the snapshot sits in the WAL until the file
+            // closes; a copy of that WAL stands in for the one Tote leaves
+            // behind when it is killed.
+            add(&conn, "Only in the WAL", None, NOW).unwrap();
+            std::fs::copy(dir.path().join(format!("{FILE}-wal")), &stale_wal).unwrap();
         }
-        // A cleaner takes SQLite's own files with the list.
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(dir.path().join(format!("{FILE}{suffix}")));
-        }
+        // A cleaner takes the list and leaves SQLite's own file behind.
+        std::fs::remove_file(dir.path().join(FILE)).unwrap();
+        std::fs::rename(&stale_wal, dir.path().join(format!("{FILE}-wal"))).unwrap();
         let conn = db::open(dir.path()).unwrap().connection;
         assert_eq!(open_store(&conn, dir.path()).unwrap(), Some(Restored::Snapshot));
-        assert_eq!(list(&conn, NOW).unwrap().len(), 2);
+        assert!(healthy(&dir.path().join(FILE)), "the restored copy reads");
+        assert_eq!(live_titles(&conn), ["Submit SF2", "Print report cards"], "the stale WAL was not replayed onto the copy");
+        let names = names_in(dir.path());
+        assert!(names.iter().any(|n| n.starts_with("tasks.damaged-") && n.ends_with(".sqlite-wal")), "the stale WAL was set aside: {names:?}");
         assert!(snapshot(&conn, dir.path(), d("2026-10-15")).unwrap(), "the next day's snapshot runs");
         assert_eq!(backup_titles(dir.path()), ["Submit SF2", "Print report cards"]);
+    }
+
+    #[test]
+    fn an_unreadable_latest_copy_falls_back_to_the_one_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let conn = db::open(dir.path()).unwrap().connection;
+            open_store(&conn, dir.path()).unwrap();
+            add(&conn, "Submit SF2", None, NOW).unwrap();
+            assert!(snapshot(&conn, dir.path(), d("2026-10-14")).unwrap());
+            add(&conn, "Print report cards", None, NOW).unwrap();
+            assert!(snapshot(&conn, dir.path(), d("2026-10-15")).unwrap());
+        }
+        // The list and the latest copy are both lost; the copy before it reads.
+        std::fs::write(dir.path().join(BACKUP), b"junk, not a database at all").unwrap();
+        std::fs::remove_file(dir.path().join(FILE)).unwrap();
+        {
+            let conn = db::open(dir.path()).unwrap().connection;
+            assert_eq!(open_store(&conn, dir.path()).unwrap(), Some(Restored::Snapshot), "a missing list");
+            assert_eq!(live_titles(&conn), ["Submit SF2"], "the copy before the latest one");
+        }
+        std::fs::write(dir.path().join(FILE), b"junk, not a database at all").unwrap();
+        let conn = db::open(dir.path()).unwrap().connection;
+        assert_eq!(open_store(&conn, dir.path()).unwrap(), Some(Restored::Snapshot), "a damaged list");
+        assert_eq!(live_titles(&conn), ["Submit SF2"]);
+    }
+
+    #[test]
+    fn an_empty_list_never_replaces_the_copy_before_the_latest_either() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open(dir.path()).unwrap().connection;
+        open_store(&conn, dir.path()).unwrap();
+        let a = add(&conn, "Submit SF2", None, NOW).unwrap();
+        assert!(snapshot(&conn, dir.path(), d("2026-10-14")).unwrap());
+        let b = add(&conn, "Print report cards", None, NOW).unwrap();
+        assert!(snapshot(&conn, dir.path(), d("2026-10-15")).unwrap());
+        // The latest copy is damaged; the one before it still holds a task.
+        std::fs::write(dir.path().join(BACKUP), b"junk, not a database at all").unwrap();
+        delete(&conn, a.id, NOW).unwrap();
+        delete(&conn, b.id, NOW).unwrap();
+        assert!(!snapshot(&conn, dir.path(), d("2026-10-16")).unwrap(), "an empty list never replaces the copy before the latest one");
+        assert_eq!(titles_in(&dir.path().join(PREVIOUS_BACKUP)), ["Submit SF2"]);
+        add(&conn, "Call parents", None, NOW).unwrap();
+        assert!(snapshot(&conn, dir.path(), d("2026-10-16")).unwrap());
+        assert_eq!(backup_titles(dir.path()), ["Call parents"]);
+        assert_eq!(titles_in(&dir.path().join(PREVIOUS_BACKUP)), ["Submit SF2"], "a copy that cannot be read is not kept over the one before it");
     }
 
     #[test]

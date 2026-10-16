@@ -37,6 +37,14 @@ function showable(op: OpRow): boolean {
   return op.status === "done" && op.dst !== null && (op.kind === "autoSort" || op.kind === "move" || op.kind === "rename" || op.kind === "copy");
 }
 
+/** The sentence ops.rs records when Windows deleted a file instead of recycling it. */
+const REMOVED_BY_WINDOWS = "Windows removed it without putting it in the Recycle Bin, so it cannot be brought back.";
+
+/** A failed change whose file is still where it was, so File Explorer can show it. */
+export function fileStillThere(op: OpRow): boolean {
+  return !(op.kind === "recycle" && op.message === REMOVED_BY_WINDOWS);
+}
+
 export function describeOp(op: OpRow, roots: string[]): { title: string; detail: string } {
   const name = nameOf(op.kind === "newFolder" ? op.src : op.dst ?? op.src);
   switch (op.kind) {
@@ -51,7 +59,9 @@ export function describeOp(op: OpRow, roots: string[]): { title: string; detail:
     case "newFolder":
       return { title: `New folder ${name}`, detail: folderOf(op.src, roots) };
     case "recycle":
-      return { title: `Moved ${nameOf(op.src)} to the Recycle Bin`, detail: folderOf(op.src, roots) };
+      return op.status === "failed"
+        ? { title: `Could not send ${nameOf(op.src)} to the Recycle Bin`, detail: op.message ?? "" }
+        : { title: `Moved ${nameOf(op.src)} to the Recycle Bin`, detail: folderOf(op.src, roots) };
     case "copy":
       return { title: `New copy ${name}`, detail: `from template ${nameOf(op.src)}` };
   }
@@ -218,10 +228,12 @@ export function ActivityView({ info }: { info: AppInfo }) {
                     ) : (
                       <span className="activity-actions">
                         <span className="activity-state">Not done</span>
-                        <button type="button" className="button button-subtle activity-undo" onClick={() => void ipc.reveal(op.src).catch(fail)} data-testid="failed-reveal">
-                          <FolderOpen size={18} aria-hidden />
-                          Show the file
-                        </button>
+                        {fileStillThere(op) && (
+                          <button type="button" className="button button-subtle activity-undo" onClick={() => void ipc.reveal(op.src).catch(fail)} data-testid="failed-reveal">
+                            <FolderOpen size={18} aria-hidden />
+                            Show the file
+                          </button>
+                        )}
                       </span>
                     )}
                   </div>

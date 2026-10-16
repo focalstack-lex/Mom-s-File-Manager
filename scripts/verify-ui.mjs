@@ -286,11 +286,23 @@ async function drive(browser) {
   const activityRows = await page.locator('[data-testid="activity-row"]').count();
   const failedRow = await page.locator(".activity-row.is-failed").count();
   const firstTitle = await page.locator('[data-testid="activity-row"] strong').first().textContent();
+  // A Recycle Bin row that failed says so with the reason; the file Windows removed cannot be shown.
+  const refusedRow = page.locator(".activity-row.is-failed", { hasText: "too long for the Recycle Bin" }).first();
+  const refusedTitle = await refusedRow.locator("strong").textContent();
+  const refusedReason = await refusedRow.locator(".activity-text span").textContent();
+  const refusedShow = await refusedRow.locator('[data-testid="failed-reveal"]').count();
+  const goneRow = page.locator(".activity-row.is-failed", { hasText: "Windows removed it" }).first();
+  const goneTitle = await goneRow.locator("strong").textContent();
+  const goneShow = await goneRow.locator('[data-testid="failed-reveal"]').count();
   await page.locator('[data-testid="undo"]').first().click();
   await page.waitForFunction(() => document.querySelector(".activity-state")?.textContent?.includes("Undone"), null, { timeout: STEP_TIMEOUT_MS });
   const undone = await page.locator(".activity-state", { hasText: "Undone" }).count();
   await capture(page, "10-activity");
-  record("Activity lists changes in plain words, marks the failed sort, and Undo marks the row undone", activityOk && activityRows >= 5 && failedRow === 1 && firstTitle?.startsWith("Moved") && undone >= 1, JSON.stringify({ activityRows, failedRow, firstTitle, undone }));
+  record(
+    "Activity lists changes in plain words, marks the failed sort and the two failed Recycle Bin rows with their reasons (Show the file only while the file is still there), and Undo marks the row undone",
+    activityOk && activityRows >= 5 && failedRow === 3 && firstTitle?.startsWith("Moved") && refusedTitle === "Could not send Deep Quiz.docx to the Recycle Bin" && refusedReason?.includes("Move it to a shorter folder first") && refusedShow === 1 && goneTitle === "Could not send Field Trip Photos.zip to the Recycle Bin" && goneShow === 0 && undone >= 1,
+    JSON.stringify({ activityRows, failedRow, firstTitle, refusedTitle, refusedReason, refusedShow, goneTitle, goneShow, undone }),
+  );
 
   // 11b. Two files sent to the Recycle Bin at once are one Activity row with Undo all; a filed file can be shown in its folder.
   await page.locator('[data-testid="nav-find"]').click();

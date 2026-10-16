@@ -550,13 +550,21 @@ pub async fn add_folder(state: State<'_, AppState>, path: String) -> Result<Sett
         if !folder.is_dir() {
             return Err(ToteError::new(ErrorCode::NotFound, "That folder could not be found.").with_path(path));
         }
-        check_folder_choice(&folder, &core.roots.all(), dirs::home_dir().as_deref())?;
         let mut settings = settings_of(&core);
+        check_folder_choice(&folder, &covered_folders(core.roots.all(), &settings), dirs::home_dir().as_deref())?;
         choose_folder(&mut settings, &folder);
         save_settings(&core, &settings)?;
         Ok(settings)
     })
     .await
+}
+
+/// The folders a choice is checked against: the roots Tote started with
+/// plus the folders added since, which only become roots at the next start.
+fn covered_folders(roots: Vec<PathBuf>, settings: &Settings) -> Vec<PathBuf> {
+    let mut covered = roots;
+    covered.extend(settings.extra_folders.iter().map(PathBuf::from));
+    covered
 }
 
 /// A folder she may add: not a whole drive, not her home folder, not above
@@ -817,6 +825,17 @@ mod tests {
         assert_eq!(message(&lessons), "Tote already looks in that folder.");
         assert!(check_folder_choice(&other, &roots, Some(&home)).is_ok(), "a folder beside the roots");
         assert!(check_folder_choice(&other, &roots, None).is_ok());
+        // A folder added earlier in the same session is a root only after
+        // the restart; until then the saved choice counts the same way.
+        let inside_other = other.join("Grade 7");
+        std::fs::create_dir_all(&inside_other).unwrap();
+        let pending = |folder: &Path| Settings { extra_folders: vec![paths::display(folder)], ..Settings::default() };
+        let with_other = covered_folders(roots.clone(), &pending(&other));
+        assert_eq!(check_folder_choice(&inside_other, &with_other, Some(&home)).unwrap_err().message, "Tote already looks in that folder.", "inside a folder added this session");
+        assert_eq!(check_folder_choice(&other, &with_other, Some(&home)).unwrap_err().message, "Tote already looks in that folder.", "the folder added this session itself");
+        let with_inside = covered_folders(roots.clone(), &pending(&inside_other));
+        assert_eq!(check_folder_choice(&other, &with_inside, Some(&home)).unwrap_err().message, too_wide, "above a folder added this session");
+        assert!(check_folder_choice(&base.join("Elsewhere"), &with_inside, Some(&home)).is_ok());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { describeError, recycleFailureText } from "../lib/errors";
 import { snippetHtml } from "../components/ResultRow";
+import { describeOp, fileStillThere } from "../views/ActivityView";
 import type { OpRow } from "../lib/types";
 
 describe("describeError", () => {
@@ -34,6 +35,18 @@ describe("recycleFailureText", () => {
     expect(recycleFailureText([refused])).toBe("Deep Quiz.docx: This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.");
     expect(recycleFailureText([row("C:\\a\\A.docx", "done"), refused, row("C:\\a\\B.docx", "done")])).toBe("Moved 2 of 3 to the Recycle Bin. Deep Quiz.docx: This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.");
     expect(recycleFailureText([row("C:\\a\\C.docx", "failed")])).toBe("C.docx: Windows could not move it to the Recycle Bin.");
+  });
+
+  it("words a failed Recycle Bin row in Activity with its reason, and hides Show the file once the file is gone", () => {
+    const roots = ["C:\\a"];
+    expect(describeOp(row("C:\\a\\Quiz.docx", "done"), roots).title).toBe("Moved Quiz.docx to the Recycle Bin");
+    const refused = row("C:\\a\\Deep Quiz.docx", "failed", "This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.");
+    expect(describeOp(refused, roots)).toEqual({ title: "Could not send Deep Quiz.docx to the Recycle Bin", detail: "This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first." });
+    expect(fileStillThere(refused)).toBe(true);
+    const gone = row("C:\\a\\Photos.zip", "failed", "Windows removed it without putting it in the Recycle Bin, so it cannot be brought back.");
+    expect(describeOp(gone, roots).title).toBe("Could not send Photos.zip to the Recycle Bin");
+    expect(fileStillThere(gone)).toBe(false);
+    expect(fileStillThere(row("C:\\a\\C.docx", "failed"))).toBe(true);
   });
 });
 

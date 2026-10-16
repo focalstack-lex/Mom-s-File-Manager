@@ -90,8 +90,11 @@ const ops: OpRow[] = [
   { id: 1, kind: "autoSort", src: `${DOWNLOADS}\\Grade 7 Quiz 2.docx`, dst: `${SCHOOL}\\Word\\2026-10\\Grade 7 Quiz 2.docx`, status: "done", message: null, automatic: true, createdAt: EARLIER_TODAY, batch: null },
   { id: 2, kind: "autoSort", src: `${DOWNLOADS}\\DepEd Order 2026-014.pdf`, dst: `${SCHOOL}\\PDF\\2026-10\\DepEd Order 2026-014.pdf`, status: "done", message: null, automatic: true, createdAt: NOW - DAY, batch: null },
   { id: 3, kind: "autoSort", src: `${DOWNLOADS}\\budget.xlsx`, dst: null, status: "failed", message: "The file stayed open in another program for a day, so it was left in Downloads.", automatic: true, createdAt: NOW - 2 * DAY, batch: null },
+  // Two Recycle Bin rows that failed, worded as ops.rs words them: a refused file that stayed, and one Windows removed.
+  { id: 4, kind: "recycle", src: `${DESKTOP}\\Deep Quiz.docx`, dst: null, status: "failed", message: "This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.", automatic: false, createdAt: NOW - 2 * DAY, batch: null },
+  { id: 5, kind: "recycle", src: `${DOWNLOADS}\\Field Trip Photos.zip`, dst: null, status: "failed", message: "Windows removed it without putting it in the Recycle Bin, so it cannot be brought back.", automatic: false, createdAt: NOW - 3 * DAY, batch: null },
 ];
-let nextOp = 4;
+let nextOp = 6;
 let templates: Template[] = [{ id: 1, path: `${DOCS}\\Forms\\SF9 Template.docx`, name: "SF9 Template", missing: false }];
 let settings: Settings = { startAtLogin: true, notifications: true, tourDone: false, schoolYear: null, quarters: [], extraFolders: [], excludedFolders: [], subjectRules: [], checkUpdates: true, todoSeen: false };
 // No update is offered until the UI drive calls offerUpdate(), so every other

@@ -95,17 +95,23 @@ pub fn open(data_dir: &Path) -> Result<Opened> {
 
 /// Moves tote.sqlite and its -wal and -shm files aside under one stamp, so
 /// the kept copy carries the changes SQLite had not folded in yet. Returns
-/// the main copy's new path when there was one.
+/// the main copy's new path when there was one. A sidecar another program
+/// holds (an antivirus, Windows Search) is logged and left where it is:
+/// once the main file has moved, failing here would end the start, and the
+/// next one would build a fresh index with nothing salvaged and no notice.
 fn set_aside(data_dir: &Path, stamp: i64) -> Result<Option<PathBuf>> {
     let mut main = None;
     for suffix in ["", "-wal", "-shm"] {
         let from = data_dir.join(format!("tote.sqlite{suffix}"));
-        if from.exists() {
-            let to = data_dir.join(format!("tote.damaged-{stamp}.sqlite{suffix}"));
-            std::fs::rename(&from, &to)?;
-            if suffix.is_empty() {
-                main = Some(to);
-            }
+        if !from.exists() {
+            continue;
+        }
+        let to = data_dir.join(format!("tote.damaged-{stamp}.sqlite{suffix}"));
+        match std::fs::rename(&from, &to) {
+            Ok(()) if suffix.is_empty() => main = Some(to),
+            Ok(()) => {}
+            Err(error) if suffix.is_empty() => return Err(error.into()),
+            Err(error) => log::warn!("database rebuild: could not set {} aside ({error}); the kept copy misses its last changes", from.display()),
         }
     }
     Ok(main)
@@ -417,5 +423,27 @@ mod tests {
             perms.set_readonly(false);
             std::fs::set_permissions(&moved, perms).unwrap();
         }
+    }
+
+    /// A sidecar another program holds without delete sharing cannot be
+    /// renamed; the rebuild still goes on and keeps her things.
+    #[cfg(windows)]
+    #[test]
+    fn a_held_sidecar_does_not_stop_the_rebuild() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        seed_then_damage_an_index_page(dir.path());
+        let shm = dir.path().join("tote.sqlite-shm");
+        std::fs::write(&shm, b"stale").unwrap();
+        // FILE_SHARE_READ | FILE_SHARE_WRITE without FILE_SHARE_DELETE: a
+        // rename is refused while this handle is open, as during a scan.
+        let held = std::fs::OpenOptions::new().read(true).share_mode(0x1 | 0x2).open(&shm).unwrap();
+        let opened = open(dir.path()).unwrap();
+        assert!(opened.recovered);
+        assert_eq!(opened.rebuilt, Some(Rebuilt { kept: true }), "the damaged copy was still read");
+        let names = names_in(dir.path());
+        assert!(names.iter().any(|n| n.starts_with("tote.damaged-") && n.ends_with(".sqlite")), "{names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("tote.damaged-") && n.ends_with(".sqlite-shm")), "the held sidecar stayed: {names:?}");
+        drop(held);
     }
 }

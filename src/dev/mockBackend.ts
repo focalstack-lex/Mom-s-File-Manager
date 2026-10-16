@@ -3,6 +3,7 @@
 // Never bundled into the Tauri build (main.tsx imports it only in DEV).
 
 import type { MockBackend } from "../lib/ipc";
+import { hasWord, words as tokens } from "../lib/search";
 import type { CleanupReport, Destination, FileRow, FindResult, Filters, Group, OpRow, Repeat, Settings, Task, Template } from "../lib/types";
 
 const DOCS = "C:\\Users\\Teacher\\Documents";
@@ -139,10 +140,23 @@ function group(rows: FileRow[]): Group[] {
   });
 }
 
-function matches(row: FileRow, query: string, filters: Filters): boolean {
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const hay = `${row.name} ${CONTENT[row.name] ?? ""}`.toLowerCase();
-  if (!words.every((w) => hay.includes(w))) return false;
+// Snippet marks, as index.rs sets them: private-use characters no document holds.
+const MARK_START = "\uE000";
+const MARK_END = "\uE001";
+
+/** FTS5 prefix matching: every typed word starts a word of the text. */
+function hasWords(text: string, words: string[]): boolean {
+  const own = tokens(text);
+  return words.every((w) => own.some((t) => t.startsWith(w)));
+}
+
+/** Wraps every word that starts with a typed word in the snippet marks, as FTS5's snippet() does. */
+function markWords(text: string, words: string[]): string {
+  return text.replace(/[\p{L}\p{N}]+/gu, (word) => (words.some((w) => word.toLowerCase().startsWith(w)) ? `${MARK_START}${word}${MARK_END}` : word));
+}
+
+function matches(row: FileRow, words: string[], filters: Filters): boolean {
+  if (!hasWords(`${row.name} ${CONTENT[row.name] ?? ""}`, words)) return false;
   const when = row.downloadedAt ?? row.modified;
   if (filters.from && when < filters.from) return false;
   if (filters.to && when >= filters.to) return false;
@@ -157,18 +171,23 @@ function matches(row: FileRow, query: string, filters: Filters): boolean {
 }
 
 function find(query: string, filters: Filters): FindResult {
-  const searching = query.trim() !== "" || filters.from !== undefined || filters.to !== undefined || filters.kinds.length > 0 || filters.sources.length > 0;
+  // Punctuation alone is no word, so it is no search (commands::find decides the same way).
+  const searching = hasWord(query) || filters.from !== undefined || filters.to !== undefined || filters.kinds.length > 0 || filters.sources.length > 0;
   const index = { scanning: false, scanned: files.length, total: files.length, files: files.length };
   if (!searching) {
     return { groups: [], pinned: files.filter((f) => f.pinned), orphanPins: [], recent: files.filter((f) => f.downloadedAt).sort((a, b) => (b.downloadedAt ?? 0) - (a.downloadedAt ?? 0)), index };
   }
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const words = tokens(query);
+  // Typed text with no word in it (only punctuation) beside a chip matches nothing, as index.rs answers.
+  if (query.trim() !== "" && words.length === 0) return { groups: [], pinned: [], orphanPins: [], recent: [], index };
+  const inName = (f: FileRow) => hasWords(f.name, words);
   const hits = files
-    .filter((f) => matches(f, query, filters))
+    .filter((f) => matches(f, words, filters))
+    // A file whose name holds every word comes before one that only mentions them inside.
+    .sort((a, b) => Number(inName(b)) - Number(inName(a)))
     .map((f) => {
-      const inName = words.every((w) => f.name.toLowerCase().includes(w));
       const content = CONTENT[f.name];
-      const snippet = !inName && content ? content.replace(new RegExp(`(${words.join("|")})`, "ig"), "[$1]") : null;
+      const snippet = !inName(f) && content ? markWords(content, words) : null;
       return { ...f, snippet };
     });
   return { groups: group(hits), pinned: [], orphanPins: [], recent: [], index };

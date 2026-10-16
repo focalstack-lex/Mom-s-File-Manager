@@ -5,6 +5,7 @@
 import { create } from "zustand";
 import { ipc } from "../lib/ipc";
 import { spanFor, type DateChip } from "../lib/dates";
+import { hasWord } from "../lib/search";
 import type { FileRow, FindResult, Kind, Settings, Template } from "../lib/types";
 import { useApp } from "./app";
 
@@ -121,7 +122,8 @@ export const useFind = create<FindStore>((set, get) => ({
   setPreview: (previewPath) => set({ previewPath }),
   isSearching: () => {
     const { query, dateChip, kinds, sources } = get();
-    return query.trim() !== "" || dateChip !== "all" || kinds.length > 0 || sources.length > 0;
+    // Punctuation alone is no word, so it is no search: the pinned and recent lists stay.
+    return hasWord(query) || dateChip !== "all" || kinds.length > 0 || sources.length > 0;
   },
 }));
 

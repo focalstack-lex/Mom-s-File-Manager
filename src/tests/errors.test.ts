@@ -13,7 +13,16 @@ describe("describeError", () => {
 });
 
 describe("snippetHtml", () => {
-  it("marks matches and escapes markup", () => {
-    expect(snippetHtml("Grade 7 [Santos] <b>")).toBe("Grade 7 <mark>Santos</mark> &lt;b&gt;");
+  it("marks matches wrapped in the private-use marks and escapes markup", () => {
+    expect(snippetHtml("Grade 7 \uE000Santos\uE001 <b>")).toBe("Grade 7 <mark>Santos</mark> &lt;b&gt;");
+  });
+
+  it("shows literal brackets from a document as plain text", () => {
+    expect(snippetHtml("[\uE000Name\uE001] [Section] [[Santos]]")).toBe("[<mark>Name</mark>] [Section] [[Santos]]");
+    expect(snippetHtml("[Name] [Section]")).toBe("[Name] [Section]");
+  });
+
+  it("drops a stray mark instead of showing it", () => {
+    expect(snippetHtml("odd \uE000mark")).toBe("odd mark");
   });
 });

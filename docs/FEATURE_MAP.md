@@ -5,7 +5,8 @@ Every surface a user can reach, where it lives, and which verify step proves it.
 | Surface | Spec | Renderer | Native | Verify step |
 | --- | --- | --- | --- | --- |
 | Walkthrough (first run, six steps, arrows, Enter and Escape) | 5.9 | `src/components/Tour.tsx`, `src/store/tour.ts` | settings `tourDone` | UI drive 1, 2, 13, native 2 |
-| Find: search box (Ctrl+F or / from anywhere), status line, result count, searching state | 5.3 | `src/views/FindView.tsx`, `src/App.tsx` | `commands::find`, `index::search` | UI drive 3, 4, native 3 |
+| Find: search box (Ctrl+F or / from anywhere), status line, result count, searching state; typed text is cut into words the way names are indexed (Book1.xlsx, Grade-7, Teacher's Day, 2026-10-14 all find their files), name matches come before content matches, punctuation alone is no search (the pinned and recent lists stay) | 5.3 | `src/views/FindView.tsx`, `src/App.tsx`, `src/store/find.ts` (`isSearching`), `src/lib/search.ts` | `commands::find`, `index::search`, `index::fts_query` | UI drive 3, 4, 4b, native 3, cargo test index, vitest search |
+| Find: content snippet with the matched words marked (private-use marks from `index.rs`, so brackets in a document stay plain text) | 5.3 | `src/components/ResultRow.tsx` (`snippetHtml`) | `index::attach_snippets` | UI drive 4, cargo test index, vitest errors (`snippetHtml`) |
 | Find: Recent downloads with source and location | 5.3 | `src/components/ResultRow.tsx` | `index::recent_downloads`, `origin` | UI drive 3, 14, native 4 |
 | Find: Pinned and orphan pins | 5.4 | `src/views/FindView.tsx` | `index::pinned`, `index::orphan_pins` | UI drive 3 |
 | Find: copies grouped with Latest | 5.3 | `src/components/ResultRow.tsx` | `dupes`, `index::group` | UI drive 5 |

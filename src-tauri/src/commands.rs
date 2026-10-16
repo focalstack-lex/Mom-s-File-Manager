@@ -197,7 +197,8 @@ pub async fn find(state: State<'_, AppState>, query: String, filters: Filters) -
     blocking("find", move || {
         let conn = core.db()?;
         let has_filters = filters.from.is_some() || filters.to.is_some() || !filters.kinds.is_empty() || !filters.sources.is_empty();
-        let searching = !query.trim().is_empty() || has_filters;
+        // Punctuation alone is no word, so it is no search: the pinned and recent lists stay.
+        let searching = index::fts_query(&query).is_some() || has_filters;
         let groups = if searching { index::group(index::search(&conn, &query, &filters, 200)?) } else { Vec::new() };
         Ok(FindResult {
             groups,

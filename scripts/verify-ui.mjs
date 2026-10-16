@@ -186,6 +186,14 @@ async function drive(browser) {
   await capture(page, "04-search-content");
   record("Searching a student's name finds Book1.xlsx by its contents and marks the match", hitName === "Book1.xlsx" && snippet === "Santos", JSON.stringify({ hitName, snippet }));
 
+  // 4b. Punctuation alone is no search: the pinned and recent lists stay instead of "Nothing matched yet".
+  await page.locator('[data-testid="search-input"]').fill("---");
+  const resultsGone = await hidden(page, '[data-testid="results"]');
+  const recentBack = await visible(page, '[data-testid="recent"] [data-testid="file-row"]');
+  const nothingMatched = await page.getByText("Nothing matched yet").count();
+  await capture(page, "04b-search-punctuation");
+  record("Typing punctuation alone keeps the pinned and recent lists instead of saying nothing matched", resultsGone && recentBack && nothingMatched === 0, JSON.stringify({ resultsGone, recentBack, nothingMatched }));
+
   // 5. Copies are grouped with Latest marked and the others behind one button.
   await page.locator('[data-testid="search-input"]').fill("lesson plan");
   await page.waitForFunction(() => document.querySelector('[data-testid="results"] .latest'), null, { timeout: STEP_TIMEOUT_MS });

@@ -12,6 +12,8 @@ export const LIMITS = Object.freeze({
   calls: 100,
   /** Upstream calls for every laptop together per day. */
   global: 3000,
+  /** Requests one address may send a minute, whatever install ids it uses. */
+  perMinute: 60,
 });
 
 const MAX_MESSAGES = 40;
@@ -21,6 +23,7 @@ const MAX_TOTAL = 40000;
 const MAX_BODY_BYTES = 200_000;
 const MAX_TOOL_CALLS = 4;
 const KEY_TTL_SECONDS = 48 * 3600;
+const ADDRESS_WINDOW_SECONDS = 60;
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -56,7 +59,7 @@ export const TOOLS = Object.freeze([
   tool("check_office_and_class", "Look at Office (installed, version), connected displays such as a projector, and sound and microphone devices."),
   tool("search_files", "Search her files on this laptop by words from the file name or contents. Only the number of matches comes back; she sees the files.", {
     type: "object",
-    properties: { query: { type: "string", description: "A few words from the file name, for example: SF2 September" } },
+    properties: { query: { type: "string", minLength: 1, maxLength: 100, description: "A few words from the file name, for example: SF2 September" } },
     required: ["query"],
     additionalProperties: false,
   }),
@@ -64,7 +67,7 @@ export const TOOLS = Object.freeze([
     type: "object",
     properties: {
       title: { type: "string", description: "The task in a few words, in her language" },
-      due: { type: "string", description: "Optional due date as YYYY-MM-DD" },
+      due: { type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", description: "Optional due date as YYYY-MM-DD" },
     },
     required: ["title"],
     additionalProperties: false,
@@ -119,7 +122,11 @@ export function validate(body) {
       if (!isText(content, MAX_TEXT)) return null;
       const calls = message.tool_calls;
       if (calls !== undefined && (!Array.isArray(calls) || calls.length === 0 || calls.length > MAX_TOOL_CALLS || !calls.every(validToolCall))) return null;
-      for (const call of calls ?? []) callIds.add(call.id);
+      for (const call of calls ?? []) {
+        callIds.add(call.id);
+        // Arguments go upstream like any other text, so they count toward the total.
+        total += call.function.arguments.length;
+      }
       clean.push(calls ? { role: "assistant", content, tool_calls: calls.map((c) => ({ id: c.id, type: "function", function: { name: c.function.name, arguments: c.function.arguments } })) } : { role: "assistant", content });
     } else if (message.role === "tool") {
       if (!onlyKeys(message, ["role", "content", "tool_call_id"]) || !isText(message.content, MAX_TOOL_TEXT) || !callIds.has(message.tool_call_id)) return null;
@@ -153,25 +160,99 @@ function upstash(env, fetchImpl) {
   };
 }
 
+/** The counter keys of one laptop on one Philippine day. */
+function keysOf(install, day) {
+  return { q: `q:${install}:${day}`, c: `c:${install}:${day}`, all: `all:${day}`, blocked: `blocked:${install}` };
+}
+
 /**
- * Counts this request and says whether it may go upstream. A question is a
- * request whose last message is hers; tool steps only count as calls.
+ * Reads the counters and says whether this request may go upstream. Nothing
+ * daily is counted here, so a refused request never uses up a question or
+ * the total for everyone. The only key touched is the address's own minute
+ * key: a flood from one address fills that key and nothing else.
  */
-async function count(redis, install, isQuestion, day) {
-  const q = `q:${install}:${day}`;
-  const c = `c:${install}:${day}`;
-  const all = `all:${day}`;
-  const commands = [["GET", `blocked:${install}`], ["INCR", c], ["EXPIRE", c, KEY_TTL_SECONDS], ["INCR", all], ["EXPIRE", all, KEY_TTL_SECONDS]];
-  if (isQuestion) commands.push(["INCR", q], ["EXPIRE", q, KEY_TTL_SECONDS]);
-  else commands.push(["GET", q]);
+async function check(redis, keys, address, isQuestion, minute) {
+  const commands = [["GET", keys.blocked], ["GET", keys.c], ["GET", keys.all], ["GET", keys.q]];
+  if (address) commands.push(["INCR", `ip:${address}:${minute}`], ["EXPIRE", `ip:${address}:${minute}`, ADDRESS_WINDOW_SECONDS]);
   const results = await redis(commands);
   const blocked = results[0] !== null && results[0] !== undefined;
-  const calls = Number(results[1]);
-  const everyone = Number(results[3]);
-  const questions = Number(results[5]) || 0;
-  if (blocked || calls > LIMITS.calls || everyone > LIMITS.global) return { error: "busy" };
-  if (isQuestion && questions > LIMITS.questions) return { error: "limit" };
+  const calls = Number(results[1]) || 0;
+  const everyone = Number(results[2]) || 0;
+  const questions = Number(results[3]) || 0;
+  const fromAddress = address ? Number(results[4]) || 0 : 0;
+  if (fromAddress > LIMITS.perMinute || blocked || calls >= LIMITS.calls || everyone >= LIMITS.global) return { error: "busy" };
+  if (isQuestion && questions >= LIMITS.questions) return { error: "limit" };
+  return {};
+}
+
+/**
+ * Counts a request that `check` allowed, just before it goes upstream. A
+ * question is a request whose last message is hers; tool steps only count
+ * as calls. The counts after INCR are checked once more so two requests
+ * racing past a cap do not both go through; the loser is refunded.
+ */
+async function record(redis, keys, isQuestion) {
+  const commands = [["INCR", keys.c], ["EXPIRE", keys.c, KEY_TTL_SECONDS], ["INCR", keys.all], ["EXPIRE", keys.all, KEY_TTL_SECONDS]];
+  if (isQuestion) commands.push(["INCR", keys.q], ["EXPIRE", keys.q, KEY_TTL_SECONDS]);
+  else commands.push(["GET", keys.q]);
+  const results = await redis(commands);
+  const calls = Number(results[0]);
+  const everyone = Number(results[2]);
+  const questions = Number(results[4]) || 0;
+  if (calls > LIMITS.calls || everyone > LIMITS.global) {
+    await refund(redis, keys, isQuestion);
+    return { error: "busy" };
+  }
+  if (isQuestion && questions > LIMITS.questions) {
+    await refund(redis, keys, isQuestion);
+    return { error: "limit" };
+  }
   return { questionsLeft: Math.max(0, LIMITS.questions - questions) };
+}
+
+/** Gives back what `record` counted when the request goes no further (no answer, or a lost race). */
+function refund(redis, keys, isQuestion) {
+  const commands = [["DECR", keys.c], ["DECR", keys.all]];
+  if (isQuestion) commands.push(["DECR", keys.q]);
+  return redis(commands);
+}
+
+/**
+ * The client's address as the platform reports it (Vercel fills in
+ * x-forwarded-for from the connection), or "" when there is none.
+ */
+function addressOf(request) {
+  const forwarded = request.headers.get("x-forwarded-for") ?? "";
+  return forwarded.split(",")[0].trim().toLowerCase().slice(0, 64);
+}
+
+/**
+ * Reads the body as text, counting bytes as they arrive and stopping as soon
+ * as the limit is passed, so an oversized body is never held or parsed.
+ * Returns null when the body is too large or cannot be read.
+ */
+async function readBody(request, maxBytes) {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return text + decoder.decode();
+      bytes += value.byteLength;
+      if (bytes > maxBytes) {
+        await reader.cancel();
+        return null;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch (error) {
+    // A body that breaks off half way is a malformed request, like bad JSON.
+    console.error("ask: body not readable:", error.message);
+    return null;
+  }
 }
 
 function answer(status, error, extra = {}) {
@@ -181,15 +262,13 @@ function answer(status, error, extra = {}) {
 /** The request handler, with its outside world passed in so tests can replace it. */
 export function createHandler({ env, fetchImpl, now }) {
   return async function handle(request) {
+    // The spec's order: the method, the install id and the body are checked
+    // before the secrets and the counters are even looked at.
     if (request.method !== "POST") return answer(405, "method", { allow: "POST" });
-    const key = env.DEEPSEEK_API_KEY;
-    const redis = upstash(env, fetchImpl);
-    if (!key || !redis) return answer(503, "unavailable");
-
-    const install = request.headers.get("x-tote-install") ?? "";
+    const install = (request.headers.get("x-tote-install") ?? "").toLowerCase();
     if (!UUID.test(install)) return answer(400, "invalid");
-    const raw = await request.text();
-    if (raw.length > MAX_BODY_BYTES) return answer(400, "invalid");
+    const raw = await readBody(request, MAX_BODY_BYTES);
+    if (raw === null) return answer(400, "invalid");
     let body;
     try {
       body = JSON.parse(raw);
@@ -200,16 +279,24 @@ export function createHandler({ env, fetchImpl, now }) {
     const messages = validate(body);
     if (!messages) return answer(400, "invalid");
 
+    const key = env.DEEPSEEK_API_KEY;
+    const redis = upstash(env, fetchImpl);
+    if (!key || !redis) return answer(503, "unavailable");
+
+    const at = now();
+    const keys = keysOf(install, philippineDay(at));
+    const isQuestion = messages.at(-1).role === "user";
     let verdict;
     try {
-      verdict = await count(redis, install.toLowerCase(), messages.at(-1).role === "user", philippineDay(now()));
+      verdict = await check(redis, keys, addressOf(request), isQuestion, Math.floor(at.getTime() / (ADDRESS_WINDOW_SECONDS * 1000)));
+      if (!verdict.error) verdict = await record(redis, keys, isQuestion);
     } catch (error) {
       console.error("ask: counter unavailable:", error.message);
       return answer(503, "unavailable");
     }
     if (verdict.error) return answer(429, verdict.error);
 
-    let upstream;
+    let upstream = null;
     try {
       upstream = await fetchImpl(DEEPSEEK_URL, {
         method: "POST",
@@ -227,10 +314,15 @@ export function createHandler({ env, fetchImpl, now }) {
       });
     } catch (error) {
       console.error("ask: DeepSeek unreachable:", error.message);
-      return answer(502, "upstream");
     }
-    if (!upstream.ok || !upstream.body) {
-      console.error("ask: DeepSeek answered", upstream.status);
+    if (!upstream || !upstream.ok || !upstream.body) {
+      if (upstream) console.error("ask: DeepSeek answered", upstream.status);
+      // No answer came back, so the request costs her nothing.
+      try {
+        await refund(redis, keys, isQuestion);
+      } catch (error) {
+        console.error("ask: refund failed:", error.message);
+      }
       return answer(502, "upstream");
     }
     return new Response(upstream.body, {

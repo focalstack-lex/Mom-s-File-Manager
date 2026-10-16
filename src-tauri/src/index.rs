@@ -264,6 +264,8 @@ pub fn write(conn: &Connection, entry: &Entry, change: Change, content: Option<S
             conn.last_insert_rowid()
         }
     };
+    // A document that happens to hold the snippet marks must not light up.
+    let content = content.map(|c| if c.contains([MARK_START, MARK_END]) { c.replace([MARK_START, MARK_END], " ") } else { c });
     conn.execute(
         "INSERT INTO files_fts(rowid, name, content) VALUES(?1, ?2, ?3)",
         params![id, name, content.unwrap_or_default()],
@@ -414,19 +416,40 @@ fn row_from(row: &rusqlite::Row<'_>, snippet: Option<String>) -> rusqlite::Resul
     })
 }
 
-/// Turns what she typed into an FTS5 prefix query: every word must match.
-pub fn fts_query(input: &str) -> Option<String> {
-    let terms: Vec<String> = input
-        .split_whitespace()
-        .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>())
+/// Snippet marks around a matched word. Private-use characters, so brackets
+/// or any other text inside a document can never be taken for a match; the
+/// renderer turns them into <mark> and `write` keeps them out of the index.
+pub const MARK_START: char = '\u{E000}';
+pub const MARK_END: char = '\u{E001}';
+
+/// What she typed, cut into words the way the index cuts names and contents:
+/// on every character that is not a letter or digit (the unicode61 tokenizer
+/// in db.rs). "Book1.xlsx" is "book1" and "xlsx", "Teacher's" is "teacher"
+/// and "s", "2026-10-14" is three words.
+pub fn words(input: &str) -> Vec<String> {
+    input
+        .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
-        .map(|w| format!("\"{w}\"*"))
-        .collect();
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+
+/// Turns what she typed into an FTS5 prefix query: every word must match.
+/// None when there is no word at all (empty, or only punctuation).
+pub fn fts_query(input: &str) -> Option<String> {
+    let terms: Vec<String> = words(input).iter().map(|w| format!("\"{w}\"*")).collect();
     if terms.is_empty() {
         None
     } else {
         Some(terms.join(" "))
     }
+}
+
+/// True when every typed word starts a word of the name: the name column
+/// matched on its own, so the row needs no snippet.
+fn name_matches(name: &str, query_words: &[String]) -> bool {
+    let name_words = words(name);
+    query_words.iter().all(|q| name_words.iter().any(|n| n.starts_with(q.as_str())))
 }
 
 fn filter_sql(filters: &Filters, args: &mut Vec<Box<dyn rusqlite::ToSql>>) -> String {
@@ -472,16 +495,21 @@ fn filter_sql(filters: &Filters, args: &mut Vec<Box<dyn rusqlite::ToSql>>) -> St
     sql
 }
 
-/// Ranked search. Name matches outrank content matches; ties break by recency.
+/// Ranked search. A file whose name holds every word comes before one that
+/// only mentions them inside, then bm25, then recency. Typed text with no
+/// word in it (only punctuation) matches nothing; an empty box with chips
+/// browses the newest files that fit the chips.
 pub fn search(conn: &Connection, input: &str, filters: &Filters, limit: usize) -> Result<Vec<FileRow>> {
     let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let rows = match fts_query(input) {
         Some(query) => {
+            // ?2 is the same words restricted to the name column.
+            args.push(Box::new(format!("name : ({query})")));
             args.push(Box::new(query));
             let extra = filter_sql(filters, &mut args);
             args.push(Box::new(limit as i64));
             let sql = format!(
-                "{SELECT} JOIN files_fts t ON t.rowid = f.id WHERE files_fts MATCH ?1{extra} ORDER BY bm25(files_fts, 20.0, 1.0), f.modified DESC LIMIT ?{}",
+                "{SELECT} JOIN files_fts t ON t.rowid = f.id WHERE files_fts MATCH ?2{extra} ORDER BY (f.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?1)) DESC, bm25(files_fts, 20.0, 1.0), f.modified DESC LIMIT ?{}",
                 args.len()
             );
             let mut stmt = conn.prepare(&sql)?;
@@ -494,6 +522,7 @@ pub fn search(conn: &Connection, input: &str, filters: &Filters, limit: usize) -
             attach_snippets(conn, input, &mut out)?;
             out
         }
+        None if !input.trim().is_empty() => Vec::new(),
         None => {
             let extra = filter_sql(filters, &mut args);
             args.push(Box::new(limit as i64));
@@ -510,11 +539,11 @@ pub fn search(conn: &Connection, input: &str, filters: &Filters, limit: usize) -
 /// Adds a content snippet to rows whose name does not already explain the hit.
 fn attach_snippets(conn: &Connection, input: &str, rows: &mut [FileRow]) -> Result<()> {
     let Some(query) = fts_query(input) else { return Ok(()) };
-    let words: Vec<String> = input.split_whitespace().map(|w| w.to_lowercase()).collect();
-    let mut stmt = conn.prepare("SELECT snippet(files_fts, 1, '[', ']', ' ... ', 12) FROM files_fts WHERE rowid = ?1 AND files_fts MATCH ?2")?;
+    let query_words = words(input);
+    let sql = format!("SELECT snippet(files_fts, 1, '{MARK_START}', '{MARK_END}', ' ... ', 12) FROM files_fts WHERE rowid = ?1 AND files_fts MATCH ?2");
+    let mut stmt = conn.prepare(&sql)?;
     for row in rows.iter_mut() {
-        let lower = row.name.to_lowercase();
-        if words.iter().all(|w| lower.contains(w)) {
+        if name_matches(&row.name, &query_words) {
             continue;
         }
         let snippet: Option<String> = stmt.query_row(params![row.id, query], |r| r.get(0)).optional()?;
@@ -636,7 +665,7 @@ mod tests {
         let content = search(&conn, "santos", &Filters::default(), 50).unwrap();
         assert_eq!(content.len(), 1);
         assert_eq!(content[0].name, "notes.txt");
-        assert!(content[0].snippet.as_deref().unwrap().contains("[Santos]"));
+        assert!(content[0].snippet.as_deref().unwrap().contains(&format!("{MARK_START}Santos{MARK_END}")));
         let kinds = Filters { kinds: vec!["word".into()], ..Default::default() };
         assert_eq!(search(&conn, "", &kinds, 50).unwrap().len(), 2);
     }
@@ -739,5 +768,84 @@ mod tests {
     fn fts_query_is_prefix_and_quoted() {
         assert_eq!(fts_query("grade 7 \"quiz\"").unwrap(), "\"grade\"* \"7\"* \"quiz\"*");
         assert_eq!(fts_query("   "), None);
+    }
+
+    #[test]
+    fn fts_query_cuts_words_the_way_names_are_indexed() {
+        assert_eq!(fts_query("Book1.xlsx").unwrap(), "\"book1\"* \"xlsx\"*");
+        assert_eq!(fts_query("SF2_October").unwrap(), "\"sf2\"* \"october\"*");
+        assert_eq!(fts_query("Grade-7").unwrap(), "\"grade\"* \"7\"*");
+        assert_eq!(fts_query("Teacher's Day").unwrap(), "\"teacher\"* \"s\"* \"day\"*");
+        assert_eq!(fts_query("2026-10-14").unwrap(), "\"2026\"* \"10\"* \"14\"*");
+        assert_eq!(fts_query("Dela Cruz, Juan").unwrap(), "\"dela\"* \"cruz\"* \"juan\"*");
+        assert_eq!(fts_query("--- ' ..."), None, "punctuation alone is no word");
+    }
+
+    #[test]
+    fn typed_names_find_their_files_however_they_are_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_memory().unwrap();
+        let names = ["Book1.xlsx", "SF2_October.xlsx", "Grade-7 Science Quiz.docx", "Teacher's Day Program.docx", "2026-10-14 Attendance.xlsx", "Dela Cruz, Juan.pdf"];
+        for name in names {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"x").unwrap();
+            upsert(&conn, &entry_for(&path).unwrap()).unwrap();
+        }
+        for (typed, expected) in [
+            ("Book1.xlsx", "Book1.xlsx"),
+            ("SF2_October", "SF2_October.xlsx"),
+            ("Grade-7", "Grade-7 Science Quiz.docx"),
+            ("Teacher's Day", "Teacher's Day Program.docx"),
+            ("2026-10-14", "2026-10-14 Attendance.xlsx"),
+            ("Dela Cruz, Juan", "Dela Cruz, Juan.pdf"),
+        ] {
+            let hits = search(&conn, typed, &Filters::default(), 50).unwrap();
+            assert_eq!(hits.first().map(|h| h.name.as_str()), Some(expected), "typed {typed:?}");
+            assert!(hits[0].snippet.is_none(), "the name explains the hit for {typed:?}");
+        }
+        assert!(search(&conn, "---", &Filters::default(), 50).unwrap().is_empty(), "no word typed, so no file matches");
+        assert!(search(&conn, "'", &Filters::default(), 50).unwrap().is_empty());
+        assert_eq!(search(&conn, "", &Filters::default(), 50).unwrap().len(), names.len(), "an empty box with chips still browses");
+    }
+
+    #[test]
+    fn snippet_marks_cannot_come_from_the_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_memory().unwrap();
+        let form = dir.path().join("form.txt");
+        std::fs::write(&form, "[Name] [Section] Santos Reyes attendance").unwrap();
+        upsert(&conn, &entry_for(&form).unwrap()).unwrap();
+        let hits = search(&conn, "name", &Filters::default(), 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].snippet.as_deref(), Some(format!("[{MARK_START}Name{MARK_END}] [Section] Santos Reyes attendance").as_str()), "brackets stay plain text");
+        let faked = dir.path().join("faked.txt");
+        std::fs::write(&faked, format!("Reyes {MARK_START}Santos{MARK_END} list")).unwrap();
+        upsert(&conn, &entry_for(&faked).unwrap()).unwrap();
+        let hits = search(&conn, "reyes", &Filters::default(), 10).unwrap();
+        let snippet = hits.iter().find(|h| h.name == "faked.txt").unwrap().snippet.clone().unwrap();
+        assert_eq!(snippet.matches(MARK_START).count(), 1, "only the match is marked: {snippet:?}");
+        assert!(snippet.starts_with(&format!("{MARK_START}Reyes{MARK_END} ")), "{snippet:?}");
+    }
+
+    #[test]
+    fn names_come_before_contents_whatever_bm25_says() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_memory().unwrap();
+        // A long name scores low in bm25; a short note that says the word
+        // twenty times scores high. The name still comes first.
+        let named = dir.path().join("Santos Attendance Record Grade 7 Mabini First Quarter 2026.xlsx");
+        std::fs::write(&named, b"x").unwrap();
+        let inside = dir.path().join("notes.txt");
+        std::fs::write(&inside, "Santos ".repeat(20)).unwrap();
+        let other = dir.path().join("other.txt");
+        std::fs::write(&other, "attendance list").unwrap();
+        for path in [&named, &inside, &other] {
+            upsert(&conn, &entry_for(path).unwrap()).unwrap();
+        }
+        let hits = search(&conn, "santos", &Filters::default(), 10).unwrap();
+        let names: Vec<&str> = hits.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["Santos Attendance Record Grade 7 Mabini First Quarter 2026.xlsx", "notes.txt"]);
+        assert!(hits[0].snippet.is_none(), "the name explains the hit");
+        assert!(hits[1].snippet.is_some(), "the content hit shows where the word is");
     }
 }

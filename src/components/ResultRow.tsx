@@ -181,8 +181,12 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
   );
 }
 
-/** The snippet uses [ ] around matches (set in index.rs); render them as marks. */
+/**
+ * Matches arrive wrapped in U+E000 and U+E001 (MARK_START and MARK_END in
+ * index.rs), private-use characters no document holds; render them as marks
+ * and everything else, brackets included, as plain text.
+ */
 export function snippetHtml(snippet: string): string {
   const escaped = snippet.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return escaped.replace(/\[([^\]]+)\]/g, "<mark>$1</mark>");
+  return escaped.replace(/\uE000([^\uE000\uE001]*)\uE001/g, "<mark>$1</mark>").replace(/[\uE000\uE001]/g, "");
 }

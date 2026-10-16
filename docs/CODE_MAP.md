@@ -16,7 +16,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | `extract.rs` | Text from docx, xlsx, pptx, pdf, txt, csv with size caps. |
 | `dupes.rs` | `group_key` for near-duplicate names. |
 | `db.rs` | Schema, open with damage recovery, settings table. |
-| `index.rs` | `walk`, `upsert`, `relocate`, `remove`, `search`, `recent_downloads`, pins, `group`. |
+| `index.rs` | `walk`, `upsert`, `relocate`, `remove`, `search` (`words` and `fts_query` cut typed text like the tokenizer; names rank before contents; `MARK_START` and `MARK_END` wrap snippet matches), `recent_downloads`, pins, `group`. |
 | `ops.rs` | Logged operations: move, rename, new folder, recycle, undo, `transfer`. |
 | `cleanup.rs` | The three Clean up lists. |
 | `organize.rs` | Organize now: grade and subject rules, `destination_for`, `plan` (read from disk), `run` (one batch, lock per file). |
@@ -48,11 +48,12 @@ Where things live. Read this before changing anything; update it in the same cha
 | `lib/todo.ts` | To do groups (Overdue to No date), due dates in words, repeat words, `hasQuarters`. |
 | `lib/paging.ts` | Page sizes, day grouping, `takeRows`, `useShown` (grow on request, reset on a new search). |
 | `lib/focus.ts` | Tab trapping for the dialog and walkthrough; arrow-key movement between file rows. |
+| `lib/search.ts` | `words` and `hasWord`: typed text cut the way `index::words` cuts names; the Find store and the mock decide with it whether typed text is a search. |
 | `store/app.ts` | View, app info, settings save, toasts. |
 | `store/find.ts` | Query, chips, results, selection, preview. |
 | `store/tour.ts` | Walkthrough steps and state, `placeCard`. |
 | `store/todo.ts` | Tasks, the open task, actions with toast Undo (reopen, restore). |
-| `components/ResultRow.tsx` | One file row with actions, inline rename, copies. |
+| `components/ResultRow.tsx` | One file row with actions, inline rename, copies; `snippetHtml` turns the snippet marks into `<mark>`. |
 | `components/Chips.tsx` | Date chips and More filters. |
 | `components/ActionBar.tsx` | Bottom bar for selected files. |
 | `components/FolderPicker.tsx` | Move to dialog with New folder. |
@@ -65,7 +66,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | `components/TitleBar.tsx` | The window's own title bar on the green shell: drag region and Windows-style window buttons; no controls in the browser harness. |
 | `components/Dialog.tsx`, `Toasts.tsx`, `icons.tsx`, `Skeleton.tsx`, `ShowMore.tsx` | Shared pieces: modal with focus trap, toasts with Undo, kind tiles and the Tote mark, loading rows, the "Showing 10 of 84" foot with Show more. |
 | `views/FindView.tsx`, `TodoView.tsx`, `CleanupView.tsx`, `ActivityView.tsx`, `SettingsView.tsx` | The five screens. |
-| `dev/mockBackend.ts` | Fake native side for the browser harness and the UI drive. |
+| `dev/mockBackend.ts` | Fake native side for the browser harness and the UI drive; its search matches by word start and marks snippets the way `index.rs` does. |
 | `tests/*.test.ts` | vitest for helpers, stores and the text gate. |
 
 ## Brand (`brand`)

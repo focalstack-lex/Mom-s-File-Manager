@@ -237,6 +237,14 @@ function organizePlan() {
   return { moves, folders, skipped };
 }
 
+// Edge states a real start can report, asked for through the page's query
+// string so the UI drive can see them: ?rebuilt=kept or ?rebuilt=lost (the
+// index was rebuilt, with or without her settings), ?tasks=unavailable (the
+// To do store could not be opened).
+const edge = new URLSearchParams(window.location.search);
+const rebuilt = edge.get("rebuilt") === "kept" ? { kept: true } : edge.get("rebuilt") === "lost" ? { kept: false } : null;
+const tasksUnavailable = edge.get("tasks") === "unavailable";
+
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   get_app_info: () => ({
     version: "0.1.0-mock",
@@ -248,8 +256,10 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     settings,
     index: { scanning: false, scanned: files.length, total: files.length, files: files.length },
     sortedThisWeek: 5,
-    recovered: false,
+    recovered: rebuilt !== null,
+    rebuilt,
     tasksRestored: null,
+    tasksUnavailable,
   }),
   find: (a) => find(String(a.query ?? ""), (a.filters as Filters) ?? { kinds: [], sources: [] }),
   set_pinned: (a) => {
@@ -286,13 +296,25 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     return row.path;
   },
   create_folder: (a) => `${a.parent}\\${a.name}`,
+  // A path of 260 characters or more is refused the way ops.rs refuses it.
   recycle_files: (a) => {
     const out: OpRow[] = [];
     const paths = a.paths as string[];
     const batch = paths.length > 1 ? `recycle-${nextOp}` : null;
     for (const path of paths) {
-      files = files.filter((f) => f.path !== path);
-      const op: OpRow = { id: nextOp++, kind: "recycle", src: path, dst: null, status: "done", message: null, automatic: false, createdAt: NOW, batch };
+      const refused = path.length >= 260;
+      if (!refused) files = files.filter((f) => f.path !== path);
+      const op: OpRow = {
+        id: nextOp++,
+        kind: "recycle",
+        src: path,
+        dst: null,
+        status: refused ? "failed" : "done",
+        message: refused ? "This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first." : null,
+        automatic: false,
+        createdAt: NOW,
+        batch,
+      };
       ops.unshift(op);
       out.push(op);
     }

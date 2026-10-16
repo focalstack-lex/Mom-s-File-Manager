@@ -116,8 +116,12 @@ export interface AppInfo {
   index: IndexStatus;
   sortedThisWeek: number;
   recovered: boolean;
+  /** tote.sqlite was rebuilt on this start; kept says whether her settings, pins, templates and Activity came along. */
+  rebuilt: { kept: boolean } | null;
   /** A damaged to-do list was replaced on this start. */
   tasksRestored: "snapshot" | "empty" | null;
+  /** The To do store could not be opened on this start. */
+  tasksUnavailable: boolean;
 }
 
 export interface FindResult {
@@ -186,7 +190,12 @@ export interface ToteError {
     | "db"
     | "validation"
     | "network"
-    | "unsupported";
+    | "unsupported"
+    | "inUse"
+    | "notInRecycleBin"
+    | "noRecycleBin"
+    | "updateSignature"
+    | "updateInstall";
   message: string;
   path?: string;
 }

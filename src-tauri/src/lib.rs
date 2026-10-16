@@ -105,12 +105,13 @@ pub fn run() {
                     std::process::exit(1);
                 }
             };
-            // The To do list has its own file; a problem with it never stops Tote.
-            let tasks_restored = match tasks::open_store(&opened.connection, &data_dir) {
-                Ok(restored) => restored,
+            // The To do list has its own file; a problem with it never stops
+            // Tote, but the To do screen says so (AppInfo.tasks_unavailable).
+            let (tasks_restored, tasks_unavailable) = match tasks::open_store(&opened.connection, &data_dir) {
+                Ok(restored) => (restored, false),
                 Err(error) => {
                     log::error!("the to-do list could not be opened: {error}");
-                    None
+                    (None, true)
                 }
             };
             let roots = paths::Roots::detect(&commands::root_choices(&opened.connection));
@@ -127,8 +128,10 @@ pub fn run() {
                 roots,
                 status: std::sync::Mutex::new(index::IndexStatus::default()),
                 recovered: opened.recovered,
+                rebuilt: opened.rebuilt,
                 data_dir: data_dir.clone(),
                 tasks_restored,
+                tasks_unavailable,
             });
             app.manage(state::AppState(core.clone()));
 
@@ -170,7 +173,13 @@ pub fn run() {
                 log::warn!("tray icon: {error}");
             }
             let settings = commands::settings_of(&core);
-            commands::apply_autostart(app.handle(), settings.start_at_login);
+            // Settings lost in a rebuild would read as the default (on); her
+            // choice in Windows is left as it is until she sets it again.
+            if opened.rebuilt.is_none_or(|rebuilt| rebuilt.kept) {
+                commands::apply_autostart(app.handle(), settings.start_at_login);
+            } else {
+                log::warn!("start at login left as it is: settings were lost when the database was rebuilt");
+            }
             if let Err(error) = worker::start(core.clone(), app.handle().clone()) {
                 log::error!("watchers did not start: {error}");
             }

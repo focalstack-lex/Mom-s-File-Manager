@@ -99,13 +99,14 @@ async function hidden(page, selector) {
 const capture = (page, name) => page.screenshot({ path: join(EVIDENCE_DIR, `${name}.png`) });
 const errorToasts = (page) => page.locator(".toast-error").count();
 
-async function newPage(browser, viewport = VIEWPORT) {
+/** A fresh page on the app; `path` carries the query string the mock reads for edge states. */
+async function newPage(browser, viewport = VIEWPORT, path = "/") {
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
   page.on("crash", () => pageErrors.push("renderer crashed"));
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+  await page.goto(`${BASE_URL}${path}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector('[data-testid="app"]', { timeout: READY_TIMEOUT_MS });
   await page.waitForSelector('[data-testid="find-view"]', { timeout: STEP_TIMEOUT_MS });
   return { context, page };
@@ -596,6 +597,37 @@ async function drive(browser) {
     record(`${size.width} px: To do with a task open fits without sideways scrolling`, todoLayout.ok && !todoLayout.docOverflow, JSON.stringify(todoLayout));
     await narrow.context.close();
   }
+
+  // 18. Edge states a real start can report (the mock reads them from the
+  // query string): the index was rebuilt, with or without her settings, and
+  // the To do store could not be opened.
+  const kept = await newPage(browser, VIEWPORT, "/?rebuilt=kept");
+  const keptNotice = await visible(kept.page, '.toast:not(.toast-error):has-text("Your pins, templates and settings were kept.")');
+  await capture(kept.page, "18-rebuilt-kept");
+  await kept.context.close();
+  const lost = await newPage(browser, VIEWPORT, "/?rebuilt=lost");
+  const lostNotice = await visible(lost.page, '.toast-error:has-text("could not be kept. Check Settings.")');
+  const lostText = await lost.page.locator(".toast-error .toast-text").first().textContent().catch(() => null);
+  await capture(lost.page, "18-rebuilt-lost");
+  await lost.context.close();
+  record("A start after an index rebuild shows one notice: quiet when her pins, templates and settings were kept, coral when they were lost",
+    keptNotice && lostNotice && Boolean(lostText?.startsWith("Tote's index had to be rebuilt. Your files were not touched.")),
+    JSON.stringify({ keptNotice, lostNotice, lostText }));
+
+  const unavailable = await newPage(browser, VIEWPORT, "/?tasks=unavailable");
+  await unavailable.page.keyboard.press("Escape");
+  await unavailable.page.locator('[data-testid="nav-todo"]').click();
+  const unavailableNotice = await visible(unavailable.page, '[data-testid="todo-unavailable"]');
+  const unavailableText = await unavailable.page.locator('[data-testid="todo-unavailable"]').textContent().catch(() => null);
+  const addOff = await unavailable.page.locator('[data-testid="todo-add"]').isDisabled();
+  const inputOff = await unavailable.page.locator('[data-testid="todo-input"]').isDisabled();
+  const noSkeleton = (await unavailable.page.locator('[data-testid="todo-view"] .skeleton-row').count()) === 0;
+  const noListCall = await unavailable.page.evaluate(() => !window.__toteMock.calls.some((c) => c.command === "list_tasks"));
+  await capture(unavailable.page, "18-todo-unavailable");
+  await unavailable.context.close();
+  record("A To do store that could not be opened shows the plain sentence instead of the skeleton, with the add row off and no list request",
+    unavailableNotice && Boolean(unavailableText?.includes("Restart Tote. If this keeps happening, tell Lex.")) && addOff && inputOff && noSkeleton && noListCall,
+    JSON.stringify({ unavailableNotice, unavailableText, addOff, inputOff, noSkeleton, noListCall }));
 }
 
 async function main() {

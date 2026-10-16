@@ -22,9 +22,10 @@ export function TodoView({ info }: { info: AppInfo }) {
   const [doneOpen, setDoneOpen] = useState(false);
   const input = useRef<HTMLInputElement>(null);
 
+  // A store that could not be opened (info.tasksUnavailable) has nothing to load.
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!info.tasksUnavailable) void load();
+  }, [load, info.tasksUnavailable]);
 
   // Opening the list once retires the sidebar's New marker.
   useEffect(() => {
@@ -58,16 +59,21 @@ export function TodoView({ info }: { info: AppInfo }) {
         <label className="visually-hidden" htmlFor="todo-title">
           What needs doing?
         </label>
-        <input id="todo-title" ref={input} className="todo-add-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs doing? For example: Submit SF2 for October" maxLength={200} autoComplete="off" data-testid="todo-input" />
+        <input id="todo-title" ref={input} className="todo-add-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs doing? For example: Submit SF2 for October" maxLength={200} autoComplete="off" disabled={info.tasksUnavailable} data-testid="todo-input" />
         <label className="todo-due">
           Due
-          <input type="date" value={due} onChange={(e) => setDue(e.target.value)} aria-label="Due date, optional" data-testid="todo-due" />
+          <input type="date" value={due} onChange={(e) => setDue(e.target.value)} aria-label="Due date, optional" disabled={info.tasksUnavailable} data-testid="todo-due" />
         </label>
-        <button type="submit" className="button button-primary" disabled={title.trim() === ""} data-testid="todo-add">
+        <button type="submit" className="button button-primary" disabled={info.tasksUnavailable || title.trim() === ""} data-testid="todo-add">
           Add
         </button>
       </form>
-      {tasks === null ? (
+      {info.tasksUnavailable ? (
+        <div className="card empty" role="alert" data-testid="todo-unavailable">
+          <strong>Your to-do list could not be opened.</strong>
+          Restart Tote. If this keeps happening, tell Lex.
+        </div>
+      ) : tasks === null ? (
         <SkeletonList label="Loading your list" rows={3} />
       ) : tasks.length === 0 ? (
         <div className="card empty" data-testid="todo-empty">

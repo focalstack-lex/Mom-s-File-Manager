@@ -16,6 +16,8 @@ use std::path::Path;
 
 pub const FILE: &str = "tasks.sqlite";
 const BACKUP: &str = "tasks.backup.sqlite";
+/// The copy before the latest one, so one day's snapshot never costs the list.
+const PREVIOUS_BACKUP: &str = "tasks.backup.previous.sqlite";
 const SNAPSHOT_KEY: &str = "tasks_snapshot_on";
 /// The last day the morning reminder was shown (settings table).
 pub const REMINDED_KEY: &str = "reminded_on";
@@ -245,13 +247,16 @@ fn not_found() -> ToteError {
 
 /// Opens tasks.sqlite beside the main database and attaches it as `todo`.
 /// A file that cannot be read is set aside (never deleted) and the daily
-/// snapshot takes its place; without a healthy snapshot the list starts empty.
+/// snapshot takes its place; without a healthy snapshot the list starts
+/// empty. A file that is missing while a healthy snapshot exists is damage
+/// too (a cleaner, a failed restore): starting empty would let the next
+/// snapshot replace the good copy.
 pub fn open_store(conn: &Connection, data_dir: &Path) -> Result<Option<Restored>> {
     let file = data_dir.join(FILE);
+    let backup = data_dir.join(BACKUP);
     let mut restored = None;
     if file.exists() && !healthy(&file) {
         set_aside(data_dir, db::now())?;
-        let backup = data_dir.join(BACKUP);
         if backup.exists() && healthy(&backup) {
             std::fs::copy(&backup, &file)?;
             log::warn!("{FILE} could not be read; restored it from {BACKUP}");
@@ -260,6 +265,10 @@ pub fn open_store(conn: &Connection, data_dir: &Path) -> Result<Option<Restored>
             log::warn!("{FILE} could not be read and no healthy snapshot exists; the list starts empty");
             restored = Some(Restored::Empty);
         }
+    } else if !file.exists() && backup.exists() && healthy(&backup) {
+        std::fs::copy(&backup, &file)?;
+        log::warn!("{FILE} was missing; restored it from {BACKUP}");
+        restored = Some(Restored::Snapshot);
     }
     conn.execute("ATTACH DATABASE ?1 AS todo", [paths::display(&file)])?;
     conn.pragma_update(Some("todo"), "journal_mode", "WAL")?;
@@ -292,10 +301,18 @@ pub fn attach_memory(conn: &Connection) -> Result<()> {
 }
 
 /// Copies the list to tasks.backup.sqlite at most once a day, through a
-/// temporary file so a failed copy never replaces a good one.
+/// temporary file so a failed copy never replaces a good one. The copy it
+/// replaces is kept as tasks.backup.previous.sqlite, and a copy that holds
+/// tasks is never replaced by a list that holds none: an empty list is more
+/// likely a loss than a choice (audit T-03).
 pub fn snapshot(conn: &Connection, data_dir: &Path, today: NaiveDate) -> Result<bool> {
     let stamp = day_text(today);
     if db::get_setting(conn, SNAPSHOT_KEY)?.as_deref() == Some(stamp.as_str()) {
+        return Ok(false);
+    }
+    let backup = data_dir.join(BACKUP);
+    if live_count(conn)? == 0 && backup.exists() && backup_count(&backup) > 0 {
+        log::warn!("tasks snapshot skipped: the list is empty while {BACKUP} holds tasks");
         return Ok(false);
     }
     let temp = data_dir.join("tasks.backup.tmp");
@@ -303,9 +320,23 @@ pub fn snapshot(conn: &Connection, data_dir: &Path, today: NaiveDate) -> Result<
         std::fs::remove_file(&temp)?;
     }
     conn.execute("VACUUM todo INTO ?1", [paths::display(&temp)])?;
-    std::fs::rename(&temp, data_dir.join(BACKUP))?;
+    if backup.exists() {
+        std::fs::rename(&backup, data_dir.join(PREVIOUS_BACKUP))?;
+    }
+    std::fs::rename(&temp, &backup)?;
     db::set_setting(conn, SNAPSHOT_KEY, &stamp)?;
     Ok(true)
+}
+
+/// Tasks on the list, open or done, not deleted.
+fn live_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT count(*) FROM todo.tasks WHERE deleted_at IS NULL", [], |r| r.get(0))?)
+}
+
+/// Tasks in a backup file; 0 when it cannot be read, so it is replaced.
+fn backup_count(file: &Path) -> i64 {
+    let Ok(conn) = Connection::open(file) else { return 0 };
+    conn.query_row("SELECT count(*) FROM tasks WHERE deleted_at IS NULL", [], |r| r.get(0)).unwrap_or(0)
 }
 
 /// Removes tasks deleted over a week ago and tasks done over 30 days ago.
@@ -720,5 +751,53 @@ mod tests {
         let done = add(&conn, "Done", Some("2026-10-14"), NOW).unwrap();
         complete(&conn, done.id, &[], NOW).unwrap();
         assert_eq!(open_with_due(&conn).unwrap(), vec![("Today".to_string(), d("2026-10-14"))]);
+    }
+
+    fn backup_titles(dir: &Path) -> Vec<String> {
+        let conn = Connection::open(dir.join(BACKUP)).unwrap();
+        let mut stmt = conn.prepare("SELECT title FROM tasks WHERE deleted_at IS NULL ORDER BY id").unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().collect::<std::result::Result<Vec<String>, _>>().unwrap()
+    }
+
+    #[test]
+    fn a_missing_list_comes_back_from_the_snapshot_and_the_backup_keeps_its_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let conn = db::open(dir.path()).unwrap().connection;
+            open_store(&conn, dir.path()).unwrap();
+            add(&conn, "Submit SF2", Some("2026-10-20"), NOW).unwrap();
+            add(&conn, "Print report cards", None, NOW).unwrap();
+            assert!(snapshot(&conn, dir.path(), d("2026-10-14")).unwrap());
+        }
+        // A cleaner takes SQLite's own files with the list.
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(dir.path().join(format!("{FILE}{suffix}")));
+        }
+        let conn = db::open(dir.path()).unwrap().connection;
+        assert_eq!(open_store(&conn, dir.path()).unwrap(), Some(Restored::Snapshot));
+        assert_eq!(list(&conn, NOW).unwrap().len(), 2);
+        assert!(snapshot(&conn, dir.path(), d("2026-10-15")).unwrap(), "the next day's snapshot runs");
+        assert_eq!(backup_titles(dir.path()), ["Submit SF2", "Print report cards"]);
+    }
+
+    #[test]
+    fn the_snapshot_never_replaces_tasks_with_an_empty_list_and_keeps_the_previous_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open(dir.path()).unwrap().connection;
+        open_store(&conn, dir.path()).unwrap();
+        let a = add(&conn, "Submit SF2", None, NOW).unwrap();
+        let b = add(&conn, "Print report cards", None, NOW).unwrap();
+        assert!(snapshot(&conn, dir.path(), d("2026-10-14")).unwrap());
+        delete(&conn, a.id, NOW).unwrap();
+        delete(&conn, b.id, NOW).unwrap();
+        assert!(!snapshot(&conn, dir.path(), d("2026-10-15")).unwrap(), "an empty list never replaces a copy that holds tasks");
+        assert_eq!(backup_titles(dir.path()), ["Submit SF2", "Print report cards"]);
+        assert!(!dir.path().join(PREVIOUS_BACKUP).exists());
+        add(&conn, "Call parents", None, NOW).unwrap();
+        assert!(snapshot(&conn, dir.path(), d("2026-10-15")).unwrap(), "with a task on the list the day's snapshot is taken");
+        assert_eq!(backup_titles(dir.path()), ["Call parents"]);
+        let previous = Connection::open(dir.path().join(PREVIOUS_BACKUP)).unwrap();
+        let kept: i64 = previous.query_row("SELECT count(*) FROM tasks WHERE deleted_at IS NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, 2, "the copy before it is kept as the previous backup");
     }
 }

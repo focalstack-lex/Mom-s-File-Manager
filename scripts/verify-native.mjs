@@ -24,6 +24,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BUILT_EXE = join(ROOT, "src-tauri", "target", "release", "tote.exe");
 const EXE = existsSync(BUILT_EXE) ? BUILT_EXE : join(ROOT, "installers", "tote-release.exe");
 const LAB = resolve(process.env.LOCALAPPDATA ?? ROOT, "tote-native-check");
+// A file whose full path passes the 260 characters the Recycle Bin accepts (audit T-01).
+const DEEP_DIR = join(LAB, "Documents", "Forms", "A".repeat(120), "B".repeat(120));
+const DEEP_FILE = join(DEEP_DIR, "Deep Quiz.docx");
 const PORT = 9333;
 const STEP_TIMEOUT_MS = 10_000;
 const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -57,6 +60,8 @@ function seedLab() {
   writeFileSync(join(LAB, "Desktop", "AP 8 Reviewer.docx"), "reviewer");
   writeFileSync(join(LAB, "Desktop", "Zoom.lnk"), "shortcut");
   writeFileSync(join(LAB, "Documents", "Forms", "SF9 Template.docx"), "master");
+  mkdirSync(DEEP_DIR, { recursive: true });
+  writeFileSync(DEEP_FILE, "deep");
   // A code project in Documents: its build output must stay out of the index.
   mkdirSync(join(LAB, "Documents", "app", "target", "release"), { recursive: true });
   writeFileSync(join(LAB, "Documents", "app", "Cargo.toml"), "[package]");
@@ -243,6 +248,25 @@ async function main() {
     const back = await until(() => filed("PDF", "DepEd Order 014.pdf"), 15_000);
     await capture("04-activity");
     record("Recycle Bin removes the file and Undo restores it from the Recycle Bin", gone && firstTitle?.includes("Recycle Bin") && back, JSON.stringify({ gone, firstTitle, back }));
+
+    // 7b. A file whose path is too long for the Recycle Bin is refused with one plain sentence and stays where it is.
+    await page.locator('[data-testid="nav-find"]').click();
+    await page.locator('[data-testid="search-input"]').fill("Deep Quiz");
+    const deepRow = page.locator('[data-testid="results"] [data-testid="file-row"]', { hasText: "Deep Quiz.docx" }).first();
+    const deepFound = await until(async () => (await deepRow.count()) === 1);
+    let refusedText = null;
+    if (deepFound) {
+      await deepRow.locator("input[type=checkbox]").check();
+      await page.getByRole("button", { name: "Recycle Bin" }).click();
+      await page.getByRole("button", { name: "Move to Recycle Bin" }).click();
+      refusedText = await page.locator(".toast-error .toast-text").first().textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+    }
+    const deepStayed = existsSync(DEEP_FILE);
+    await capture("04b-long-path-refused");
+    record("A file whose path is too long for the Recycle Bin is refused with the plain sentence and stays where it is",
+      deepFound && String(refusedText).includes("This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.") && deepStayed,
+      JSON.stringify({ deepFound, refusedText, deepStayed }));
+    await page.locator('[data-testid="search-input"]').fill("");
 
     // 8. Clean up sees the duplicate lesson plans and the old download.
     await page.locator('[data-testid="nav-cleanup"]').click();

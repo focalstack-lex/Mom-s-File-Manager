@@ -54,6 +54,10 @@ tauri-plugin-updater = "2.13"
 [target.'cfg(windows)'.dependencies]
 # Files on the clipboard as files (CF_HDROP), so she can paste into Messenger or Gmail.
 clipboard-win = "5"
+# GetDriveType through a safe wrapper (this crate denies unsafe code): the
+# Recycle Bin exists only on a fixed drive, so a file elsewhere is refused
+# instead of being deleted for good (audit T-01, 2026-10-16). Kernel part only.
+winsafe = { version = "0.0.24", default-features = false, features = ["kernel"] }
 
 [dev-dependencies]
 tempfile = "3"

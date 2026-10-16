@@ -4,6 +4,7 @@
 
 import { FolderInput, Pencil, Pin, Trash, X } from "lucide-react";
 import { useState } from "react";
+import { recycleFailureText } from "../lib/errors";
 import { ipc } from "../lib/ipc";
 import { moveOpIds, useApp } from "../store/app";
 import { allRows, useFind } from "../store/find";
@@ -55,8 +56,9 @@ export function ActionBar({ onRename }: { onRename(path: string): void }) {
       const ops = await ipc.recycleFiles(selected);
       clear();
       await refresh();
-      const failed = ops.filter((o) => o.status === "failed");
-      if (failed.length > 0) toast(failed[0].message ?? "Some files could not be moved to the Recycle Bin.", "error");
+      // A refused or lost file comes back as a failed row with its reason.
+      const trouble = recycleFailureText(ops);
+      if (trouble) toast(trouble, "error");
       else toast(ops.length === 1 ? "Moved to the Recycle Bin." : `${ops.length} files moved to the Recycle Bin.`, "info", ops.map((o) => o.id));
     } catch (error) {
       fail(error);
@@ -103,7 +105,9 @@ export function ActionBar({ onRename }: { onRename(path: string): void }) {
             ))}
             {rows.length > 5 && <li className="more">and {rows.length - 5} more</li>}
           </ul>
-          <p>Nothing is deleted for good. You can bring {selected.length === 1 ? "it" : "them"} back from Activity or from the Recycle Bin.</p>
+          <p>
+            {selected.length === 1 ? "A file on this computer goes" : "Files on this computer go"} to the Recycle Bin, so you can bring {selected.length === 1 ? "it" : "them"} back from Activity or from the Recycle Bin. A file on a flash drive or a network folder stays where it is.
+          </p>
           <div className="dialog-actions">
             <button type="button" className="button" onClick={() => setConfirmRecycle(false)}>
               {selected.length === 1 ? "Keep it" : "Keep them"}

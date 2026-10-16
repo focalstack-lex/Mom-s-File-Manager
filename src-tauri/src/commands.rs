@@ -116,8 +116,13 @@ pub struct AppInfo {
     pub index: IndexStatus,
     pub sorted_this_week: usize,
     pub recovered: bool,
+    /// tote.sqlite was rebuilt on this start; `kept` says whether her
+    /// settings, pins, templates and Activity came along.
+    pub rebuilt: Option<db::Rebuilt>,
     /// A damaged to-do list was replaced on this start.
     pub tasks_restored: Option<tasks::Restored>,
+    /// The To do store could not be opened on this start.
+    pub tasks_unavailable: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -185,7 +190,9 @@ pub async fn get_app_info(state: State<'_, AppState>) -> Result<AppInfo> {
             index: core.status(),
             sorted_this_week: index::sorted_since(&conn, week_ago)?,
             recovered: core.recovered,
+            rebuilt: core.rebuilt,
             tasks_restored: core.tasks_restored,
+            tasks_unavailable: core.tasks_unavailable,
         })
     })
     .await
@@ -543,19 +550,38 @@ pub async fn add_folder(state: State<'_, AppState>, path: String) -> Result<Sett
         if !folder.is_dir() {
             return Err(ToteError::new(ErrorCode::NotFound, "That folder could not be found.").with_path(path));
         }
-        if core.roots.all().iter().any(|r| paths::same_path(r, &folder) || folder.starts_with(r)) {
-            return Err(ToteError::validation("Tote already looks in that folder."));
-        }
-        let text = paths::display(&folder);
+        check_folder_choice(&folder, &core.roots.all(), dirs::home_dir().as_deref())?;
         let mut settings = settings_of(&core);
-        settings.excluded_folders.retain(|e| !paths::same_path(Path::new(e), &folder));
-        if !settings.extra_folders.iter().any(|e| paths::same_path(Path::new(e), &folder)) {
-            settings.extra_folders.push(text);
-        }
+        choose_folder(&mut settings, &folder);
         save_settings(&core, &settings)?;
         Ok(settings)
     })
     .await
+}
+
+/// A folder she may add: not a whole drive, not her home folder, not above
+/// a folder Tote already looks in (its file commands would reach all of it,
+/// and the scan would cover it twice), and not one already covered.
+fn check_folder_choice(folder: &Path, roots: &[PathBuf], home: Option<&Path>) -> Result<()> {
+    let whole_drive = folder.parent().is_none();
+    let above_a_root = roots.iter().any(|r| !paths::same_path(r, folder) && r.starts_with(folder));
+    if whole_drive || home.is_some_and(|h| paths::same_path(h, folder)) || above_a_root {
+        return Err(ToteError::validation("Pick a folder inside your files, not a whole drive."));
+    }
+    if roots.iter().any(|r| paths::same_path(r, folder) || folder.starts_with(r)) {
+        return Err(ToteError::validation("Tote already looks in that folder."));
+    }
+    Ok(())
+}
+
+/// Records the choice: a default folder she switched off is switched back
+/// on, and only that; any other folder joins the added list once.
+fn choose_folder(settings: &mut Settings, folder: &Path) {
+    let was_excluded = settings.excluded_folders.iter().any(|e| paths::same_path(Path::new(e), folder));
+    settings.excluded_folders.retain(|e| !paths::same_path(Path::new(e), folder));
+    if !was_excluded && !settings.extra_folders.iter().any(|e| paths::same_path(Path::new(e), folder)) {
+        settings.extra_folders.push(paths::display(folder));
+    }
 }
 
 /// Switches a folder off. Documents and Downloads cannot be removed.
@@ -762,4 +788,45 @@ pub async fn detach_file(state: State<'_, AppState>, id: i64, path: String) -> R
         tasks::detach_file(&conn, id, &path)
     })
     .await
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_choice_is_checked_against_the_drive_the_home_and_the_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = paths::resolve(dir.path()).unwrap();
+        let documents = base.join("Documents");
+        let lessons = documents.join("Lessons");
+        let other = base.join("Other");
+        for d in [&lessons, &other, &base.join("Desktop"), &base.join("Downloads")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let roots = vec![base.join("Desktop"), documents.clone(), base.join("Downloads")];
+        let home = base.join("Home");
+        let drive = base.ancestors().last().unwrap().to_path_buf();
+        let message = |folder: &Path| check_folder_choice(folder, &roots, Some(&home)).unwrap_err().message;
+        let too_wide = "Pick a folder inside your files, not a whole drive.";
+        assert_eq!(message(&drive), too_wide, "a drive root");
+        assert_eq!(message(&home), too_wide, "the home folder");
+        assert_eq!(message(&base), too_wide, "a parent of every root");
+        assert_eq!(message(&documents), "Tote already looks in that folder.");
+        assert_eq!(message(&lessons), "Tote already looks in that folder.");
+        assert!(check_folder_choice(&other, &roots, Some(&home)).is_ok(), "a folder beside the roots");
+        assert!(check_folder_choice(&other, &roots, None).is_ok());
+    }
+
+    #[test]
+    fn re_adding_a_switched_off_default_only_clears_the_switch() {
+        let mut settings = Settings { excluded_folders: vec!["C:\\Users\\Her\\Desktop".into()], ..Settings::default() };
+        choose_folder(&mut settings, Path::new("c:\\users\\her\\desktop"));
+        assert!(settings.excluded_folders.is_empty(), "the switch is cleared");
+        assert!(settings.extra_folders.is_empty(), "a default folder is never listed as an added one");
+        choose_folder(&mut settings, Path::new("D:\\Lessons"));
+        choose_folder(&mut settings, Path::new("d:\\lessons"));
+        assert_eq!(settings.extra_folders, vec!["D:\\Lessons".to_string()], "an added folder is listed once");
+    }
 }

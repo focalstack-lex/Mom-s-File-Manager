@@ -13,6 +13,7 @@ import { KindTile } from "../components/icons";
 import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
 import { OPEN_CARD_MAX, PAGE, useShown } from "../lib/paging";
+import { recycleFailureText } from "../lib/errors";
 import { locationLine, monthName, relativeTime } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import type { AppInfo, CleanupReport, OrganizePlan, Suggestion } from "../lib/types";
@@ -116,14 +117,19 @@ export function CleanupView({ info }: { info: AppInfo }) {
     setPicking(null);
     return act(async () => moveOpIds(await ipc.moveFiles([path], dir)), "Moved.");
   };
-  const recycleTicked = () => {
+  const recycleTicked = async () => {
     setConfirm(false);
-    const count = ticked.length;
-    return act(async () => {
+    try {
       const ops = await ipc.recycleFiles(ticked);
       setTicked([]);
-      return ops.map((o) => o.id);
-    }, count === 1 ? "1 copy moved to the Recycle Bin." : `${count} copies moved to the Recycle Bin.`);
+      // A refused or lost copy comes back as a failed row with its reason.
+      const trouble = recycleFailureText(ops);
+      if (trouble) toast(trouble, "error");
+      else toast(ops.length === 1 ? "1 copy moved to the Recycle Bin." : `${ops.length} copies moved to the Recycle Bin.`, "info", ops.map((o) => o.id));
+    } catch (error) {
+      fail(error);
+    }
+    await load();
   };
   const acceptAll = (items: Suggestion[]) => {
     const live = items.filter((s) => !skipped.includes(s.file.path));
@@ -291,7 +297,7 @@ export function CleanupView({ info }: { info: AppInfo }) {
       {picking && <FolderPicker count={1} warnOld onPick={(dir) => void moveTo(picking, dir)} onClose={() => setPicking(null)} />}
       {confirm && (
         <Dialog title={ticked.length === 1 ? "Move 1 copy to the Recycle Bin?" : `Move ${ticked.length} copies to the Recycle Bin?`} onClose={() => setConfirm(false)}>
-          <p>The Latest copy stays. Nothing is deleted for good.</p>
+          <p>The Latest copy stays. Copies on this computer go to the Recycle Bin, so you can bring them back. A copy on a flash drive or a network folder stays where it is.</p>
           <div className="dialog-actions">
             <button type="button" className="button" onClick={() => setConfirm(false)}>
               Keep them

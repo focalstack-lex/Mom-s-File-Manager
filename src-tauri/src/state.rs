@@ -12,10 +12,15 @@ pub struct Core {
     pub roots: Roots,
     pub status: Mutex<IndexStatus>,
     pub recovered: bool,
+    /// Set when tote.sqlite was rebuilt on this start; `kept` says whether
+    /// her settings, pins, templates and Activity came along.
+    pub rebuilt: Option<crate::db::Rebuilt>,
     /// Where tote.sqlite and tasks.sqlite live (the daily snapshot goes here too).
     pub data_dir: std::path::PathBuf,
     /// Set when a damaged tasks.sqlite was replaced on this start.
     pub tasks_restored: Option<crate::tasks::Restored>,
+    /// The To do store could not be opened on this start; its commands fail.
+    pub tasks_unavailable: bool,
 }
 
 impl Core {

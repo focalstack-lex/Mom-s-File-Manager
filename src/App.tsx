@@ -184,6 +184,17 @@ export default function App() {
     else toast("Your to-do list could not be read, so it starts empty. The damaged copy was kept.", "error");
   }, [info?.tasksRestored, toast]);
 
+  // tote.sqlite was rebuilt on this start (db.rs): one notice, and whether
+  // her pins, templates and settings came along.
+  const rebuiltShown = useRef(false);
+  useEffect(() => {
+    const rebuilt = info?.rebuilt;
+    if (!rebuilt || rebuiltShown.current) return;
+    rebuiltShown.current = true;
+    if (rebuilt.kept) toast("Tote's index had to be rebuilt. Your files were not touched. Your pins, templates and settings were kept.");
+    else toast("Tote's index had to be rebuilt. Your files were not touched. Your pins, templates and settings could not be kept. Check Settings.", "error");
+  }, [info?.rebuilt, toast]);
+
   const finishTour = () => {
     document.querySelector('[data-testid="main"]')?.scrollTo({ top: 0 });
     if (info && !info.settings.tourDone) void saveSettings({ ...info.settings, tourDone: true });

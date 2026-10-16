@@ -19,6 +19,16 @@ pub enum ErrorCode {
     Unsupported,
     /// The update check or download could not reach codewithlex.site.
     Network,
+    /// The file is open in another program (a Windows sharing violation).
+    InUse,
+    /// Undo of a Recycle Bin change found nothing to restore.
+    NotInRecycleBin,
+    /// The file's drive has no Recycle Bin, or its path is too long for it.
+    NoRecycleBin,
+    /// The downloaded update did not match Tote's key.
+    UpdateSignature,
+    /// The installer could not run.
+    UpdateInstall,
 }
 
 #[derive(Debug, Clone, Serialize, thiserror::Error)]
@@ -88,5 +98,19 @@ mod tests {
     fn serializes_in_camel_case_without_an_empty_path() {
         let json = serde_json::to_value(ToteError::validation("bad")).unwrap();
         assert_eq!(json, serde_json::json!({ "code": "validation", "message": "bad" }));
+    }
+
+    #[test]
+    fn the_newer_codes_serialize_as_the_renderer_expects() {
+        let codes = [
+            (ErrorCode::InUse, "inUse"),
+            (ErrorCode::NotInRecycleBin, "notInRecycleBin"),
+            (ErrorCode::NoRecycleBin, "noRecycleBin"),
+            (ErrorCode::UpdateSignature, "updateSignature"),
+            (ErrorCode::UpdateInstall, "updateInstall"),
+        ];
+        for (code, text) in codes {
+            assert_eq!(serde_json::to_value(code).unwrap(), serde_json::json!(text));
+        }
     }
 }

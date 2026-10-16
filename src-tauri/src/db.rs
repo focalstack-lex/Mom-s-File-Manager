@@ -4,12 +4,27 @@
 
 use crate::error::{ToteError, Result};
 use rusqlite::Connection;
-use std::path::Path;
+use serde::Serialize;
+use std::path::{Path, PathBuf};
 
 pub struct Opened {
     pub connection: Connection,
     pub recovered: bool,
+    /// Set when tote.sqlite was rebuilt on this start.
+    pub rebuilt: Option<Rebuilt>,
 }
+
+/// What a rebuild could keep from the damaged file: `kept` is true when her
+/// settings, pins, templates and Activity all came across (sent to the
+/// renderer in AppInfo, which words the one notice).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rebuilt {
+    pub kept: bool,
+}
+
+/// The tables the scan cannot rebuild, copied out of a damaged file.
+const KEPT_TABLES: [&str; 4] = ["settings", "pins", "templates", "ops"];
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -58,22 +73,84 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 "#;
 
-/// Opens (or creates) `tote.sqlite` in `data_dir`.
+/// Opens (or creates) `tote.sqlite` in `data_dir`. A file that cannot be
+/// used is set aside with its -wal and -shm files and a fresh one is built;
+/// what lives only in the database (settings, pins, templates, Activity) is
+/// copied out of the damaged file first, as far as it can still be read.
 pub fn open(data_dir: &Path) -> Result<Opened> {
     std::fs::create_dir_all(data_dir)?;
     let file = data_dir.join("tote.sqlite");
     match open_at(&file) {
-        Ok(connection) => Ok(Opened { connection, recovered: false }),
+        Ok(connection) => Ok(Opened { connection, recovered: false, rebuilt: None }),
         Err(error) => {
             log::warn!("database at {} is unusable ({error}); rebuilding", file.display());
-            let aside = data_dir.join(format!("tote.damaged-{}.sqlite", chrono::Utc::now().timestamp()));
-            if file.exists() {
-                std::fs::rename(&file, &aside)?;
-            }
+            let damaged = set_aside(data_dir, chrono::Utc::now().timestamp())?;
             let connection = open_at(&file)?;
-            Ok(Opened { connection, recovered: true })
+            // With no file to set aside nothing was lost.
+            let kept = damaged.as_deref().is_none_or(|damaged| salvage(&connection, damaged));
+            Ok(Opened { connection, recovered: true, rebuilt: Some(Rebuilt { kept }) })
         }
     }
+}
+
+/// Moves tote.sqlite and its -wal and -shm files aside under one stamp, so
+/// the kept copy carries the changes SQLite had not folded in yet. Returns
+/// the main copy's new path when there was one.
+fn set_aside(data_dir: &Path, stamp: i64) -> Result<Option<PathBuf>> {
+    let mut main = None;
+    for suffix in ["", "-wal", "-shm"] {
+        let from = data_dir.join(format!("tote.sqlite{suffix}"));
+        if from.exists() {
+            let to = data_dir.join(format!("tote.damaged-{stamp}.sqlite{suffix}"));
+            std::fs::rename(&from, &to)?;
+            if suffix.is_empty() {
+                main = Some(to);
+            }
+        }
+    }
+    Ok(main)
+}
+
+/// Copies the kept tables out of the damaged file into the fresh one, one
+/// table per statement, so a table that cannot be read costs only itself.
+/// Returns true when every table came across.
+fn salvage(conn: &Connection, damaged: &Path) -> bool {
+    if let Err(error) = conn.execute("ATTACH DATABASE ?1 AS old", [damaged.to_string_lossy().as_ref()]) {
+        log::warn!("database rebuild: the damaged copy could not be read ({error})");
+        return false;
+    }
+    let mut kept = true;
+    for table in KEPT_TABLES {
+        match copy_table(conn, table) {
+            Ok(rows) => log::info!("database rebuild: kept {rows} rows of {table}"),
+            Err(error) => {
+                kept = false;
+                log::warn!("database rebuild: could not keep {table} ({error})");
+            }
+        }
+    }
+    if let Err(error) = conn.execute("DETACH DATABASE old", []) {
+        log::warn!("database rebuild: the damaged copy stayed attached ({error})");
+    }
+    kept
+}
+
+/// The columns `table` has in both files, copied in one statement; rows the
+/// fresh file already holds (migration markers) are kept as they are.
+fn copy_table(conn: &Connection, table: &str) -> Result<usize> {
+    let old_columns = columns_of(conn, "old", table)?;
+    let shared: Vec<String> = columns_of(conn, "main", table)?.into_iter().filter(|c| old_columns.contains(c)).collect();
+    if shared.is_empty() {
+        return Err(ToteError::db(format!("{table}: no columns in common")));
+    }
+    let list = shared.join(", ");
+    Ok(conn.execute(&format!("INSERT OR IGNORE INTO main.{table}({list}) SELECT {list} FROM old.{table}"), [])?)
+}
+
+fn columns_of(conn: &Connection, schema: &str, table: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA {schema}.table_info({table})"))?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    Ok(names.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
 /// The app was called Desk until 2026-10-14 and kept `desk.sqlite` under the
@@ -123,6 +200,15 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_batch {
         conn.execute_batch("ALTER TABLE ops ADD COLUMN batch TEXT; CREATE INDEX IF NOT EXISTS ops_batch ON ops(batch);")?;
         log::info!("database: added ops.batch");
+    }
+    // Since 2026-10-16 a Recycle Bin row records the file's size and the
+    // moment of the delete, so Undo restores that item and no other.
+    for column in ["size", "recycled_at"] {
+        let present = conn.prepare("SELECT 1 FROM pragma_table_info('ops') WHERE name = ?1")?.exists([column])?;
+        if !present {
+            conn.execute_batch(&format!("ALTER TABLE ops ADD COLUMN {column} INTEGER"))?;
+            log::info!("database: added ops.{column}");
+        }
     }
     // Since 2026-10-16 a name with an apostrophe is indexed with and without
     // it (index::indexed_name), so "teachers day" finds "Teacher's Day". Rows
@@ -198,6 +284,8 @@ mod tests {
         migrate(&conn).unwrap();
         let batch: Option<String> = conn.query_row("SELECT batch FROM ops", [], |r| r.get(0)).unwrap();
         assert_eq!(batch, None, "old rows keep working");
+        let recorded: (Option<i64>, Option<i64>) = conn.query_row("SELECT size, recycled_at FROM ops", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(recorded, (None, None), "the recycle columns are added too");
     }
 
     #[test]
@@ -249,7 +337,85 @@ mod tests {
         std::fs::write(dir.path().join("tote.sqlite"), b"this is not a database file at all, just junk bytes").unwrap();
         let opened = open(dir.path()).unwrap();
         assert!(opened.recovered);
+        assert_eq!(opened.rebuilt, Some(Rebuilt { kept: false }), "junk holds nothing to keep");
         let damaged = std::fs::read_dir(dir.path()).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains("damaged")).count();
         assert_eq!(damaged, 1);
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
+    /// Her things in a database, then one page of a `files` index
+    /// overwritten: the integrity check fails while the small tables read.
+    fn seed_then_damage_an_index_page(dir: &Path) {
+        {
+            let conn = open(dir).unwrap().connection;
+            set_setting(&conn, "settings", "{\"startAtLogin\":false}").unwrap();
+            conn.execute("INSERT INTO pins(path, created_at) VALUES('C:\\a\\Quiz.docx', 1)", []).unwrap();
+            conn.execute("INSERT INTO templates(path, name, created_at) VALUES('C:\\a\\SF9.docx', 'SF9', 1)", []).unwrap();
+            conn.execute("INSERT INTO ops(kind, src, dst, status, created_at) VALUES('move', 'C:\\a\\x.docx', 'C:\\b\\x.docx', 'done', 1)", []).unwrap();
+            conn.execute("INSERT INTO files(path, parent, name, ext, kind, size, modified, group_key) VALUES('C:\\a\\x.docx', 'C:\\a', 'x.docx', 'docx', 'word', 1, 1, 'x|docx')", []).unwrap();
+        }
+        let file = dir.join("tote.sqlite");
+        let (page, size): (i64, i64) = {
+            let conn = Connection::open(&file).unwrap();
+            let page = conn.query_row("SELECT rootpage FROM sqlite_master WHERE name = 'files_modified'", [], |r| r.get(0)).unwrap();
+            let size = conn.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap();
+            (page, size)
+        };
+        let mut bytes = std::fs::read(&file).unwrap();
+        let start = usize::try_from((page - 1) * size).unwrap();
+        let end = usize::try_from(page * size).unwrap();
+        for byte in &mut bytes[start..end] {
+            *byte = 0xA7;
+        }
+        std::fs::write(&file, bytes).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_database_keeps_her_settings_pins_templates_and_activity() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_then_damage_an_index_page(dir.path());
+        let opened = open(dir.path()).unwrap();
+        assert!(opened.recovered);
+        assert_eq!(opened.rebuilt, Some(Rebuilt { kept: true }));
+        let conn = opened.connection;
+        let count = |table: &str| -> i64 { conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap() };
+        assert_eq!(get_setting(&conn, "settings").unwrap().as_deref(), Some("{\"startAtLogin\":false}"));
+        assert_eq!((count("pins"), count("templates"), count("ops")), (1, 1, 1));
+        assert_eq!(count("files"), 0, "the index is rebuilt by the scan");
+        let names = names_in(dir.path());
+        assert!(names.iter().any(|n| n.starts_with("tote.damaged-") && n.ends_with(".sqlite")), "{names:?}");
+    }
+
+    #[test]
+    fn damage_recovery_moves_the_wal_and_shm_aside_with_the_main_file() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_then_damage_an_index_page(dir.path());
+        // SQLite deletes a WAL it can fold into the file when it closes; one it
+        // cannot touch (here read-only, as after a failed checkpoint) stays,
+        // and the set-aside must carry it with the main file.
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = dir.path().join(format!("tote.sqlite{suffix}"));
+            std::fs::write(&sidecar, b"stale").unwrap();
+            let mut perms = std::fs::metadata(&sidecar).unwrap().permissions();
+            perms.set_readonly(true);
+            std::fs::set_permissions(&sidecar, perms).unwrap();
+        }
+        let opened = open(dir.path()).unwrap();
+        assert!(opened.recovered);
+        let names = names_in(dir.path());
+        let stamp = names.iter().find_map(|n| n.strip_prefix("tote.damaged-").and_then(|rest| rest.strip_suffix(".sqlite"))).map(str::to_string).unwrap();
+        for suffix in ["-wal", "-shm"] {
+            let moved = dir.path().join(format!("tote.damaged-{stamp}.sqlite{suffix}"));
+            assert!(moved.exists(), "{suffix} follows the damaged copy: {names:?}");
+            let mut perms = std::fs::metadata(&moved).unwrap().permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            std::fs::set_permissions(&moved, perms).unwrap();
+        }
     }
 }

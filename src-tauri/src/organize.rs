@@ -354,8 +354,10 @@ mod tests {
             roots,
             status: std::sync::Mutex::new(Default::default()),
             recovered: false,
+            rebuilt: None,
             data_dir: std::path::PathBuf::new(),
             tasks_restored: None,
+            tasks_unavailable: false,
         };
         let rules = default_rules();
         let wanted = vec![desktop.join("Grade 7 Science Quiz.docx").to_string_lossy().into_owned(), desktop.join("notes.txt").to_string_lossy().into_owned()];
@@ -390,8 +392,10 @@ mod tests {
             roots: Roots::explicit(desktop.clone(), documents.clone(), downloads.clone()),
             status: std::sync::Mutex::new(Default::default()),
             recovered: false,
+            rebuilt: None,
             data_dir: std::path::PathBuf::new(),
             tasks_restored: None,
+            tasks_unavailable: false,
         };
         let spelled = desktop.join(".").join("Grade 7 Science Quiz.docx");
         let result = run(&core, &default_rules(), &[spelled.to_string_lossy().into_owned()]).unwrap();

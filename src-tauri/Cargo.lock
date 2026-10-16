@@ -5009,6 +5009,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "trash",
+ "winsafe",
  "zip 9.0.1",
 ]
 
@@ -5958,6 +5959,12 @@ dependencies = [
  "cfg-if",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "winsafe"
+version = "0.0.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4271ae8f63c109d73bc6fcf352b117166757fabcce6a769649ef18303dbf2491"
 
 [[package]]
 name = "wit-bindgen"

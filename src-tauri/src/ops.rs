@@ -180,22 +180,104 @@ pub fn create_folder(conn: &Connection, roots: &Roots, parent: &Path, name: &str
     result
 }
 
+/// The longest path the Recycle Bin takes: with 260 or more UTF-16 units
+/// Windows deletes the file for good instead, and says nothing when no
+/// window is shown (audit T-01).
+const RECYCLE_BIN_MAX_PATH: usize = 260;
+
+/// How far the Recycle Bin's deletion time may sit from the moment Tote
+/// recorded for Undo to accept an item as the file it recycled.
+const RESTORE_TIME_SLACK_SECS: i64 = 30;
+
+#[cfg(windows)]
+fn path_units(path: &Path) -> usize {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str().encode_wide().count()
+}
+
+#[cfg(not(windows))]
+fn path_units(path: &Path) -> usize {
+    path.as_os_str().len()
+}
+
+/// Only a fixed local drive has a Recycle Bin: a flash drive, a network
+/// folder or a disc has none, and Windows deletes for good there.
+#[cfg(windows)]
+fn drive_has_recycle_bin(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    let root = match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => format!("{}:\\", char::from(letter)),
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => format!("\\\\{}\\{}\\", server.to_string_lossy(), share.to_string_lossy()),
+            _ => return false,
+        },
+        _ => return false,
+    };
+    winsafe::GetDriveType(Some(&root)) == winsafe::co::DRIVE::FIXED
+}
+
+#[cfg(not(windows))]
+fn drive_has_recycle_bin(_path: &Path) -> bool {
+    true
+}
+
+/// Why `path` must not go to the Recycle Bin, as the sentence she sees, or
+/// None when Windows can take it there.
+fn recycle_refusal(path: &Path) -> Option<ToteError> {
+    if path_units(path) >= RECYCLE_BIN_MAX_PATH {
+        return Some(
+            ToteError::new(ErrorCode::NoRecycleBin, "This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.").with_path(paths::display(path)),
+        );
+    }
+    if !drive_has_recycle_bin(path) {
+        return Some(
+            ToteError::new(ErrorCode::NoRecycleBin, "Files on a flash drive or a network folder cannot go to the Recycle Bin. Delete it in File Explorer if you are sure.")
+                .with_path(paths::display(path)),
+        );
+    }
+    None
+}
+
 /// Sends files to the Recycle Bin, one logged operation per file. Several
-/// files sent together share a batch, so Activity shows them as one row.
+/// files sent together share a batch, so Activity shows them as one row. A
+/// file the Recycle Bin cannot take is refused and stays, its row failed
+/// with the reason; after the deletes the Recycle Bin is read once, and a
+/// file not listed there is reported as gone, never as recycled.
 pub fn recycle(conn: &Connection, roots: &Roots, targets: &[PathBuf]) -> Result<Vec<OpRow>> {
     let batch = (targets.len() > 1).then(|| new_batch("recycle"));
-    let mut rows = Vec::new();
+    let mut sent = Vec::new();
     for target in targets {
         let src = roots.confine(target)?;
         if !src.exists() {
             continue;
         }
         let id = record_in(conn, OpKind::Recycle, &src, None, false, batch.as_deref())?;
-        let result = trash::delete(&src)
-            .map(|_| src.clone())
-            .map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not move it to the Recycle Bin: {e}")).with_path(paths::display(&src)));
+        let size = std::fs::metadata(&src).map(|m| m.len()).ok();
+        let recycled_at = crate::db::now();
+        let result = match recycle_refusal(&src) {
+            Some(refusal) => Err(refusal),
+            None => trash::delete(&src)
+                .map(|_| src.clone())
+                .map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not move it to the Recycle Bin: {e}")).with_path(paths::display(&src))),
+        };
+        sent.push((id, src, size, recycled_at, result));
+    }
+    let listing = sent.iter().any(|(_, _, _, _, result)| result.is_ok()).then(bin_listing);
+    let mut rows = Vec::new();
+    for (id, src, size, recycled_at, result) in sent {
+        let result = result.and_then(|path| match &listing {
+            Some(Ok(items)) if !items.iter().any(|item| is_same_original(item, &path) && (item.time_deleted - recycled_at).abs() <= RESTORE_TIME_SLACK_SECS) => {
+                log::warn!("recycle: Windows removed {} without putting it in the Recycle Bin", path.display());
+                Err(ToteError::new(ErrorCode::Io, "Windows removed it without putting it in the Recycle Bin, so it cannot be brought back.").with_path(paths::display(&path)))
+            }
+            // A listing that failed was logged; the delete itself succeeded.
+            _ => Ok(path),
+        });
         finish(conn, id, &result)?;
         if result.is_ok() {
+            conn.execute("UPDATE ops SET size = ?2, recycled_at = ?3 WHERE id = ?1", params![id, size.and_then(|s| i64::try_from(s).ok()), recycled_at])?;
+        }
+        if !src.exists() {
             index::remove(conn, &src)?;
         }
         if let Some(row) = get(conn, id)? {
@@ -203,6 +285,73 @@ pub fn recycle(conn: &Connection, roots: &Roots, targets: &[PathBuf]) -> Result<
         }
     }
     Ok(rows)
+}
+
+/// One Recycle Bin item the way the shell reports it, kept apart from the
+/// trash crate's type so the matching rules can be tested without a bin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinItem {
+    pub parent: String,
+    pub name: String,
+    pub time_deleted: i64,
+    /// Asked for only when a recorded size must be matched: one shell call per item.
+    pub size: Option<u64>,
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+impl From<&trash::TrashItem> for BinItem {
+    fn from(item: &trash::TrashItem) -> Self {
+        Self { parent: item.original_parent.to_string_lossy().into_owned(), name: item.name.to_string_lossy().into_owned(), time_deleted: item.time_deleted, size: None }
+    }
+}
+
+/// The shell reports an item the way Explorer shows it, which can be
+/// without the extension, so the match accepts the full name or the stem.
+fn is_same_original(item: &BinItem, original: &Path) -> bool {
+    let parent = original.parent().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let name = original.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let stem = original.file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let item_name = item.name.to_lowercase();
+    item.parent.to_lowercase().trim_end_matches('\\') == parent.trim_end_matches('\\') && (item_name == name || item_name == stem)
+}
+
+/// Which of `items` Undo should restore for `original`. With the moment and
+/// size Tote recorded at recycle time, only an item deleted within the slack
+/// of that moment counts, the one with the same size first; a row from
+/// before those were recorded takes the newest item with that path.
+pub fn pick_restore(items: &[BinItem], original: &Path, recorded: Option<(i64, u64)>) -> Option<usize> {
+    let same_path: Vec<usize> = (0..items.len()).filter(|&i| is_same_original(&items[i], original)).collect();
+    let newest = |candidates: Vec<usize>| candidates.into_iter().max_by_key(|&i| items[i].time_deleted);
+    let Some((at, size)) = recorded else { return newest(same_path) };
+    let close: Vec<usize> = same_path.into_iter().filter(|&i| (items[i].time_deleted - at).abs() <= RESTORE_TIME_SLACK_SECS).collect();
+    let same_size: Vec<usize> = close.iter().copied().filter(|&i| items[i].size == Some(size)).collect();
+    if same_size.is_empty() {
+        newest(close)
+    } else {
+        newest(same_size)
+    }
+}
+
+/// What the Recycle Bin holds; a listing that fails is logged and returned
+/// as the error, never mistaken for an empty bin.
+#[cfg(any(windows, target_os = "linux"))]
+fn bin_listing() -> Result<Vec<BinItem>> {
+    let items = trash::os_limited::list().map_err(|e| {
+        log::warn!("recycle: the Recycle Bin could not be listed ({e})");
+        ToteError::new(ErrorCode::Io, "The Recycle Bin could not be checked.")
+    })?;
+    Ok(items.iter().map(BinItem::from).collect())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn bin_listing() -> Result<Vec<BinItem>> {
+    Err(ToteError::new(ErrorCode::Unsupported, "The Recycle Bin is not available here."))
+}
+
+/// The moment and size a Recycle Bin row recorded, when it is new enough to have them.
+fn recorded_recycle(conn: &Connection, id: i64) -> Result<Option<(i64, u64)>> {
+    let row: Option<(Option<i64>, Option<i64>)> = conn.query_row("SELECT recycled_at, size FROM ops WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+    Ok(row.and_then(|(at, size)| Some((at?, u64::try_from(size?).ok()?))))
 }
 
 /// Reverses a completed operation. Moves and renames go back to their original
@@ -219,6 +368,9 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
             let current = roots.confine(&current)?;
             if row.kind == "copy" {
                 // A template copy is undone by recycling the copy; the master stays.
+                if let Some(refusal) = recycle_refusal(&current) {
+                    return Err(refusal);
+                }
                 trash::delete(&current).map_err(|e| ToteError::new(ErrorCode::Io, e.to_string()))?;
                 index::remove(conn, &current)?;
             } else {
@@ -235,7 +387,7 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
             std::fs::remove_dir(&folder)?;
         }
         "recycle" => {
-            restore_from_recycle_bin(&src)?;
+            restore_from_recycle_bin(&src, recorded_recycle(conn, id)?)?;
             index::refresh_path(conn, &src)?;
         }
         other => return Err(ToteError::new(ErrorCode::Unsupported, format!("Cannot undo {other}."))),
@@ -244,33 +396,32 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
     Ok(())
 }
 
+fn not_in_recycle_bin() -> ToteError {
+    ToteError::new(ErrorCode::NotInRecycleBin, "That file is not in the Recycle Bin any more. Open the Recycle Bin to check.")
+}
+
+/// Brings the item Tote recycled from `original` back (pick_restore chooses
+/// it; restoring several at once is refused by Windows) and checks that the
+/// file that came back has the recorded size.
 #[cfg(any(windows, target_os = "linux"))]
-fn restore_from_recycle_bin(original: &Path) -> Result<()> {
+fn restore_from_recycle_bin(original: &Path, recorded: Option<(i64, u64)>) -> Result<()> {
     use trash::os_limited;
     let items = os_limited::list().map_err(|e| ToteError::new(ErrorCode::Io, e.to_string()))?;
-    let wanted = original.to_string_lossy().to_lowercase();
-    // The shell reports the item name the way Explorer shows it, which can be
-    // without the extension, so the match accepts the full name or the stem.
-    let wanted_parent = original.parent().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default();
-    let wanted_name = original.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-    let wanted_stem = original.file_stem().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-    let mut matching: Vec<trash::TrashItem> = items
-        .into_iter()
-        .filter(|i| {
-            let parent = i.original_parent.to_string_lossy().to_lowercase();
-            let name = i.name.to_string_lossy().to_lowercase();
-            i.original_path().to_string_lossy().to_lowercase() == wanted
-                || (parent == wanted_parent && (name == wanted_name || name == wanted_stem))
-        })
-        .collect();
-    if matching.is_empty() {
-        log::warn!("restore: nothing in the Recycle Bin has the original path {wanted}");
-        return Err(ToteError::new(ErrorCode::NotFound, "That file is not in the Recycle Bin any more. Open the Recycle Bin to check."));
+    let mut bin: Vec<BinItem> = items.iter().map(BinItem::from).collect();
+    if recorded.is_some() {
+        // Sizes cost one shell call each, so only the items with that path are asked.
+        for (item, raw) in bin.iter_mut().zip(&items) {
+            if is_same_original(item, original) {
+                item.size = os_limited::metadata(raw).ok().and_then(|m| m.size.size());
+            }
+        }
     }
-    // Several recycled copies can share one original path; Undo brings back
-    // the one recycled most recently (restoring all of them is refused by Windows).
-    matching.sort_by_key(|i| i.time_deleted);
-    let latest = matching.pop().ok_or_else(|| ToteError::new(ErrorCode::NotFound, "Nothing to restore."))?;
+    let wanted = paths::display(original);
+    let Some(chosen) = pick_restore(&bin, original, recorded) else {
+        log::warn!("restore: nothing in the Recycle Bin is the file recycled from {wanted}");
+        return Err(not_in_recycle_bin());
+    };
+    let latest = items.into_iter().nth(chosen).ok_or_else(not_in_recycle_bin)?;
     log::info!("restoring {} from the Recycle Bin to {wanted}", latest.id.to_string_lossy());
     let restored_as = latest.original_path();
     os_limited::restore_all(vec![latest]).map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not restore it: {e}")))?;
@@ -280,11 +431,23 @@ fn restore_from_recycle_bin(original: &Path) -> Result<()> {
         std::fs::rename(&restored_as, original)?;
         log::info!("renamed the restored item back to {}", original.display());
     }
+    // The last check: a file of another size is not the one she recycled, so
+    // it goes back to the Recycle Bin where it came from.
+    if let Some((_, size)) = recorded {
+        let back = std::fs::metadata(original).map(|m| m.len()).ok();
+        if back.is_some_and(|b| b != size) {
+            log::warn!("restore: the item brought back to {wanted} has {back:?} bytes, not the recorded {size}; sending it back");
+            if let Err(error) = trash::delete(original) {
+                log::warn!("restore: could not send it back ({error})");
+            }
+            return Err(not_in_recycle_bin());
+        }
+    }
     Ok(())
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-fn restore_from_recycle_bin(_original: &Path) -> Result<()> {
+fn restore_from_recycle_bin(_original: &Path, _recorded: Option<(i64, u64)>) -> Result<()> {
     Err(ToteError::new(ErrorCode::Unsupported, "Restoring from the Recycle Bin is not available here."))
 }
 
@@ -470,5 +633,67 @@ mod tests {
         let second = new_batch("recycle");
         assert_ne!(first, second);
         assert!(first.starts_with("recycle-"));
+    }
+
+    #[test]
+    fn pick_restore_prefers_the_recorded_moment_and_size() {
+        let original = Path::new(r"C:\Users\Her\Desktop\Quiz.docx");
+        let item = |name: &str, time_deleted: i64, size: Option<u64>| BinItem { parent: r"C:\Users\Her\Desktop".into(), name: name.into(), time_deleted, size };
+        let items = vec![
+            // The Tote recycle, shown without its extension because Explorer hides them.
+            item("Quiz", 1_000, Some(100)),
+            // Quiz.pdf, recycled from Explorer moments later.
+            item("Quiz", 1_002, Some(2_000)),
+            // A later file with the same name.
+            item("Quiz.docx", 5_000, Some(100)),
+            item("Other.docx", 1_000, Some(100)),
+        ];
+        assert_eq!(pick_restore(&items, original, Some((1_001, 100))), Some(0), "the same moment and size");
+        assert_eq!(pick_restore(&items, original, Some((1_001, 777))), Some(1), "no size match: the newest within the slack");
+        assert_eq!(pick_restore(&items, original, Some((9_000, 100))), None, "nothing deleted near the recorded moment");
+        assert_eq!(pick_restore(&items, original, None), Some(2), "a row without a record takes the newest with that path");
+        assert_eq!(pick_restore(&items, Path::new(r"C:\Users\Her\Desktop\Missing.docx"), None), None);
+    }
+
+    #[test]
+    fn a_path_too_long_for_the_recycle_bin_is_refused_and_the_file_stays() {
+        let (_dir, roots, conn) = fixture();
+        let deep = roots.documents.clone().unwrap().join("A".repeat(120)).join("B".repeat(120));
+        std::fs::create_dir_all(&deep).unwrap();
+        let file = deep.join("Deep Quiz.docx");
+        std::fs::write(&file, b"deep").unwrap();
+        assert!(path_units(&file) >= RECYCLE_BIN_MAX_PATH);
+        let rows = recycle(&conn, &roots, std::slice::from_ref(&file)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "failed");
+        assert_eq!(rows[0].message.as_deref(), Some("This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first."));
+        assert!(file.is_file(), "a refused file is left where it was");
+        assert_eq!(undo(&conn, &roots, rows[0].id).unwrap_err().code, ErrorCode::Validation, "a refused row has nothing to undo");
+    }
+
+    /// The real Recycle Bin on the system drive: the recycled file is listed
+    /// there with its moment and size recorded, and Undo brings it back.
+    /// Skipped where the temp folder is not on a fixed drive.
+    #[cfg(windows)]
+    #[test]
+    fn a_recycled_file_is_found_in_the_recycle_bin_and_undo_brings_it_back() {
+        let (_dir, roots, conn) = fixture();
+        let file = roots.downloads.clone().unwrap().join("Tote recycle check.txt");
+        std::fs::write(&file, b"recycle check").unwrap();
+        if let Some(refusal) = recycle_refusal(&roots.confine(&file).unwrap()) {
+            eprintln!("skipped: {}", refusal.message);
+            return;
+        }
+        let rows = recycle(&conn, &roots, std::slice::from_ref(&file)).unwrap();
+        assert_eq!(rows[0].status, "done", "{:?}", rows[0].message);
+        assert!(!file.exists());
+        let (at, size) = recorded_recycle(&conn, rows[0].id).unwrap().unwrap();
+        assert_eq!(size, 13);
+        assert!((crate::db::now() - at).abs() < 60);
+        let recycled = PathBuf::from(&rows[0].src);
+        assert!(bin_listing().unwrap().iter().any(|item| is_same_original(item, &recycled)), "the item is in the Recycle Bin");
+        undo(&conn, &roots, rows[0].id).unwrap();
+        assert!(file.is_file(), "Undo brings it back");
+        assert_eq!(get(&conn, rows[0].id).unwrap().unwrap().status, "undone");
     }
 }

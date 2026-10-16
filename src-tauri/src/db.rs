@@ -84,8 +84,22 @@ pub fn open(data_dir: &Path) -> Result<Opened> {
         Ok(connection) => Ok(Opened { connection, recovered: false, rebuilt: None }),
         Err(error) => {
             log::warn!("database at {} is unusable ({error}); rebuilding", file.display());
-            let damaged = set_aside(data_dir, chrono::Utc::now().timestamp())?;
-            let connection = open_at(&file)?;
+            let stamp = chrono::Utc::now().timestamp();
+            let damaged = set_aside(data_dir, stamp)?;
+            let connection = match open_at(&file) {
+                Ok(connection) => connection,
+                Err(error) => {
+                    // SQLite clears a leftover -wal before it uses an empty
+                    // file and cannot while another program holds it. Nothing
+                    // is built on top of that: the damaged copy goes back and
+                    // the next start runs the whole rebuild again.
+                    log::warn!("database rebuild: the fresh file could not be opened ({error}); the damaged copy is put back for the next start");
+                    if let Some(damaged) = &damaged {
+                        put_back(data_dir, damaged, stamp);
+                    }
+                    return Err(error);
+                }
+            };
             // With no file to set aside nothing was lost.
             let kept = damaged.as_deref().is_none_or(|damaged| salvage(&connection, damaged));
             Ok(Opened { connection, recovered: true, rebuilt: Some(Rebuilt { kept }) })
@@ -96,9 +110,11 @@ pub fn open(data_dir: &Path) -> Result<Opened> {
 /// Moves tote.sqlite and its -wal and -shm files aside under one stamp, so
 /// the kept copy carries the changes SQLite had not folded in yet. Returns
 /// the main copy's new path when there was one. A sidecar another program
-/// holds (an antivirus, Windows Search) is logged and left where it is:
-/// once the main file has moved, failing here would end the start, and the
-/// next one would build a fresh index with nothing salvaged and no notice.
+/// holds (an antivirus, Windows Search) cannot be renamed: the -wal, which
+/// carries the changes, is copied beside the kept copy instead (a copy
+/// reads through a shared handle), the -shm is only logged, and both stay
+/// where they are, since failing here once the main file has moved would
+/// end the start.
 fn set_aside(data_dir: &Path, stamp: i64) -> Result<Option<PathBuf>> {
     let mut main = None;
     for suffix in ["", "-wal", "-shm"] {
@@ -111,10 +127,46 @@ fn set_aside(data_dir: &Path, stamp: i64) -> Result<Option<PathBuf>> {
             Ok(()) if suffix.is_empty() => main = Some(to),
             Ok(()) => {}
             Err(error) if suffix.is_empty() => return Err(error.into()),
-            Err(error) => log::warn!("database rebuild: could not set {} aside ({error}); the kept copy misses its last changes", from.display()),
+            Err(error) if suffix == "-wal" => match std::fs::copy(&from, &to) {
+                Ok(_) => log::warn!("database rebuild: could not set {} aside ({error}); a copy went with the kept copy instead", from.display()),
+                Err(copy_error) => log::warn!("database rebuild: could not set {} aside ({error}) or copy it ({copy_error}); the kept copy misses its last changes", from.display()),
+            },
+            Err(error) => log::warn!("database rebuild: could not set {} aside ({error}); left where it is", from.display()),
         }
     }
     Ok(main)
+}
+
+/// Undoes a set-aside whose fresh file could not be opened: the empty file
+/// goes, the damaged copy returns under its own name, a sidecar that moved
+/// comes back with it and one that was only copied loses the copy. Every
+/// step that fails is logged and leaves the rest as it is; the damaged copy
+/// is never removed.
+fn put_back(data_dir: &Path, damaged: &Path, stamp: i64) {
+    let fresh = data_dir.join("tote.sqlite");
+    match std::fs::remove_file(&fresh) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            log::warn!("database rebuild: the fresh file could not be removed ({error}); the damaged copy stays at {}", damaged.display());
+            return;
+        }
+    }
+    if let Err(error) = std::fs::rename(damaged, &fresh) {
+        log::warn!("database rebuild: could not put the damaged copy back ({error}); it stays at {}", damaged.display());
+        return;
+    }
+    for suffix in ["-wal", "-shm"] {
+        let aside = data_dir.join(format!("tote.damaged-{stamp}.sqlite{suffix}"));
+        let home = data_dir.join(format!("tote.sqlite{suffix}"));
+        if !aside.exists() {
+            continue;
+        }
+        let result = if home.exists() { std::fs::remove_file(&aside) } else { std::fs::rename(&aside, &home) };
+        if let Err(error) = result {
+            log::warn!("database rebuild: could not put {} back ({error})", aside.display());
+        }
+    }
 }
 
 /// Copies the kept tables out of the damaged file into the fresh one, one
@@ -445,5 +497,52 @@ mod tests {
         assert!(names.iter().any(|n| n.starts_with("tote.damaged-") && n.ends_with(".sqlite")), "{names:?}");
         assert!(!names.iter().any(|n| n.starts_with("tote.damaged-") && n.ends_with(".sqlite-shm")), "the held sidecar stayed: {names:?}");
         drop(held);
+    }
+
+    /// The -wal is the sidecar that matters: it carries the last changes,
+    /// and SQLite clears a leftover one before it uses an empty file, which
+    /// it cannot while another program holds it. The start cannot go on,
+    /// so the damaged copy goes back under its own name and the next start
+    /// runs the whole rebuild with her things still in it.
+    #[cfg(windows)]
+    #[test]
+    fn a_held_wal_puts_the_damaged_copy_back_for_the_next_start() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        seed_then_damage_an_index_page(dir.path());
+        let wal = dir.path().join("tote.sqlite-wal");
+        std::fs::write(&wal, b"stale").unwrap();
+        let held = std::fs::OpenOptions::new().read(true).share_mode(0x1 | 0x2).open(&wal).unwrap();
+        let outcome = open(dir.path());
+        assert!(outcome.is_err(), "the fresh file cannot be used while the -wal is held");
+        drop(outcome);
+        assert_eq!(names_in(dir.path()), vec!["tote.sqlite".to_string(), "tote.sqlite-wal".to_string()], "the damaged copy is back, with no stamped files left");
+        drop(held);
+        let opened = open(dir.path()).unwrap();
+        assert_eq!(opened.rebuilt, Some(Rebuilt { kept: true }), "the next start keeps her things");
+        assert_eq!(get_setting(&opened.connection, "settings").unwrap().as_deref(), Some("{\"startAtLogin\":false}"));
+        let names = names_in(dir.path());
+        assert_eq!(names.iter().filter(|n| n.starts_with("tote.damaged-") && n.ends_with(".sqlite")).count(), 1, "one damaged copy, from the start that went through: {names:?}");
+    }
+
+    /// A -wal that cannot be renamed is copied beside the kept copy instead,
+    /// so the kept copy still carries the last changes; the held file stays.
+    #[cfg(windows)]
+    #[test]
+    fn a_held_wal_is_copied_beside_the_kept_copy() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tote.sqlite"), b"main").unwrap();
+        let wal = dir.path().join("tote.sqlite-wal");
+        std::fs::write(&wal, b"stale").unwrap();
+        let held = std::fs::OpenOptions::new().read(true).share_mode(0x1 | 0x2).open(&wal).unwrap();
+        let main = set_aside(dir.path(), 7).unwrap();
+        assert_eq!(main, Some(dir.path().join("tote.damaged-7.sqlite")));
+        assert_eq!(std::fs::read(dir.path().join("tote.damaged-7.sqlite-wal")).unwrap(), b"stale", "a copy went with the kept copy");
+        assert_eq!(std::fs::read(&wal).unwrap(), b"stale", "the held file stays where it is");
+        drop(held);
+        put_back(dir.path(), &dir.path().join("tote.damaged-7.sqlite"), 7);
+        assert_eq!(names_in(dir.path()), vec!["tote.sqlite".to_string(), "tote.sqlite-wal".to_string()], "put back leaves the copy out and the damaged file home");
+        assert_eq!(std::fs::read(dir.path().join("tote.sqlite")).unwrap(), b"main");
     }
 }

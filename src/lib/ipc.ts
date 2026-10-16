@@ -5,7 +5,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { AppInfo, BatchUndo, BrowserStatus, Completed, OrganizePlan, OrganizeResult, Repeat, SubjectRule, CleanupReport, Destination, FindResult, Filters, OpRow, Preview, Settings, SortedEvent, Task, Template, UpdateInfo } from "./types";
+import type { AppInfo, BatchUndo, BrowserStatus, Completed, OrganizePlan, OrganizeResult, Repeat, SubjectRule, CleanupReport, Destination, FindResult, Filters, OpRow, Preview, Settings, SortedEvent, Task, Template, TemplateCopy, UpdateInfo } from "./types";
 
 export interface MockBackend {
   invoke(command: string, args: Record<string, unknown>): Promise<unknown>;
@@ -53,7 +53,8 @@ export const ipc = {
   templates: () => invoke<Template[]>("list_templates"),
   addTemplate: (path: string) => invoke<Template>("add_template", { path }),
   removeTemplate: (id: number) => invoke<void>("remove_template", { id }),
-  useTemplate: (id: number) => invoke<string>("use_template", { id }),
+  /** Makes the dated copy; `opened` is false when Windows could not open it, so the toast can say so. */
+  useTemplate: (id: number) => invoke<TemplateCopy>("use_template", { id }),
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
   addFolder: (path: string) => invoke<Settings>("add_folder", { path }),

@@ -4,7 +4,19 @@
 
 import type { MockBackend } from "../lib/ipc";
 import { hasWord, indexedName, words as tokens } from "../lib/search";
-import type { CleanupReport, Destination, FileRow, FindResult, Filters, Group, OpRow, Repeat, Settings, Task, Template } from "../lib/types";
+import type { CleanupReport, Destination, FileRow, FindResult, Filters, Group, OpRow, Repeat, Settings, Task, Template, TemplateCopy, ToteError } from "../lib/types";
+
+declare global {
+  interface Window {
+    /**
+     * Failure injection for the UI drive: the next call of `command` rejects
+     * with `error`, then the entry is cleared. `times` (default 1) makes that
+     * many calls fail: a screen's mount load runs twice under React's
+     * StrictMode in the dev harness, so a load failure needs 2.
+     */
+    __toteMockFail?: { command: string; error: ToteError; times?: number };
+  }
+}
 
 const DOCS = "C:\\Users\\Teacher\\Documents";
 const DESKTOP = "C:\\Users\\Teacher\\Desktop";
@@ -366,13 +378,13 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   remove_template: (a) => {
     templates = templates.filter((t) => t.id !== a.id);
   },
-  use_template: (a) => {
+  use_template: (a): TemplateCopy => {
     const t = templates.find((x) => x.id === a.id);
     if (!t) throw { code: "notFound", message: "That template is no longer on the shelf." };
     const copy = file(`${SCHOOL}\\Word\\2026-10`, `${t.name} 2026-10-12.docx`, { modified: NOW });
     files.unshift(copy);
     ops.unshift({ id: nextOp++, kind: "copy", src: t.path, dst: copy.path, status: "done", message: null, automatic: false, createdAt: NOW, batch: null });
-    return copy.path;
+    return { path: copy.path, opened: true };
   },
   get_settings: () => settings,
   set_settings: (a) => {
@@ -508,6 +520,14 @@ export function installMockBackend(): void {
       const handler = handlers[command];
       if (!handler) throw { code: "unsupported", message: `mock: no handler for ${command}` };
       await new Promise((done) => setTimeout(done, 15));
+      // One planned failure, then the command answers again: the drive sees
+      // what each screen says when the native side cannot do its part.
+      const planned = window.__toteMockFail;
+      if (planned && planned.command === command) {
+        if ((planned.times ?? 1) > 1) planned.times = (planned.times ?? 1) - 1;
+        else delete window.__toteMockFail;
+        throw planned.error;
+      }
       return handler(args);
     },
     listen(event, handler) {

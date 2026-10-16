@@ -6,6 +6,7 @@
 import { BrushCleaning, ChevronLeft, ChevronRight, FolderOpen, History, ListChecks, Search, Settings } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType } from "react";
 import { ToteMark } from "./components/icons";
+import { LoadFailed } from "./components/LoadFailed";
 import { TitleBar } from "./components/TitleBar";
 import { Toasts } from "./components/Toasts";
 import { Tour } from "./components/Tour";
@@ -74,6 +75,7 @@ export default function App() {
   const view = useApp((s) => s.view);
   const setView = useApp((s) => s.setView);
   const info = useApp((s) => s.info);
+  const infoError = useApp((s) => s.infoError);
   const loadInfo = useApp((s) => s.loadInfo);
   const saveSettings = useApp((s) => s.saveSettings);
   const toast = useApp((s) => s.toast);
@@ -227,7 +229,11 @@ export default function App() {
       <main className="main" data-testid="main">
         <UpdateBanner />
         {info === null ? (
-          <p className="status-line">Starting Tote...</p>
+          infoError ? (
+            <LoadFailed text={infoError} onRetry={() => void loadInfo()} testId="app-load-failed" />
+          ) : (
+            <p className="status-line">Starting Tote...</p>
+          )
         ) : view === "find" ? (
           <FindView info={info} />
         ) : view === "todo" ? (

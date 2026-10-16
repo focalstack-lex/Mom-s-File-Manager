@@ -8,7 +8,11 @@ use std::path::Path;
 pub fn copy_files(paths: &[std::path::PathBuf]) -> Result<()> {
     use clipboard_win::{formats, Clipboard, Setter};
     let list: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-    let busy = |e: clipboard_win::ErrorCode| ToteError::new(ErrorCode::Io, format!("Windows did not let Tote use the clipboard: {e}"));
+    // Another program holding the clipboard is the usual cause; the code goes to the log.
+    let busy = |e: clipboard_win::ErrorCode| {
+        log::warn!("clipboard: Windows did not let Tote use it ({e})");
+        ToteError::new(ErrorCode::Io, "Tote could not copy the file right now. Try again in a moment.")
+    };
     let _open = Clipboard::new_attempts(10).map_err(busy)?;
     formats::FileList.write_clipboard(list.as_slice()).map_err(busy)
 }

@@ -32,7 +32,11 @@ export function SettingsView({ info }: { info: AppInfo }) {
   const update = (patch: Partial<Settings>) => {
     const next = { ...draft, ...patch };
     setDraft(next);
-    void save(next);
+    // A save that failed shows the kept value again, so the screen never
+    // claims a change the native side did not keep (the toast says why).
+    void save(next).then((ok) => {
+      if (!ok) setDraft(useApp.getState().info?.settings ?? info.settings);
+    });
   };
 
   const addFolder = async () => {
@@ -105,7 +109,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
         <label className="toggle">
           <span className="toggle-text">
             Check for new versions
-            <span>Once a day Tote asks codewithlex.site if a newer version is out. Your files never leave this laptop.</span>
+            <span>Once a day Tote checks whether a newer version is out. Your files never leave this laptop.</span>
           </span>
           <input type="checkbox" role="switch" className="switch" checked={draft.checkUpdates} onChange={(e) => update({ checkUpdates: e.target.checked })} data-testid="check-updates" />
         </label>
@@ -201,7 +205,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
               {t.name}
               <span title={t.path}>{t.missing ? "The file is missing" : `in ${t.path.split("\\").slice(-2, -1)[0] ?? "its folder"}`}</span>
             </span>
-            <button type="button" className="button button-subtle" onClick={() => void ipc.removeTemplate(t.id).then(loadTemplates)}>
+            <button type="button" className="button button-subtle" onClick={() => void ipc.removeTemplate(t.id).then(loadTemplates).catch(fail)}>
               Remove
             </button>
           </div>

@@ -3,6 +3,7 @@
 
 import { ChevronRight, ListChecks } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { LoadFailed } from "../components/LoadFailed";
 import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
 import { TaskRow } from "../components/TaskRow";
@@ -14,6 +15,7 @@ import { useTodo } from "../store/todo";
 
 export function TodoView({ info }: { info: AppInfo }) {
   const tasks = useTodo((s) => s.tasks);
+  const loadError = useTodo((s) => s.loadError);
   const load = useTodo((s) => s.load);
   const add = useTodo((s) => s.add);
   const saveSettings = useApp((s) => s.saveSettings);
@@ -68,13 +70,15 @@ export function TodoView({ info }: { info: AppInfo }) {
           Add
         </button>
       </form>
+      {loadError && !info.tasksUnavailable && <LoadFailed text={loadError} onRetry={() => void load()} testId="todo-load-failed" />}
       {info.tasksUnavailable ? (
         <div className="card empty" role="alert" data-testid="todo-unavailable">
           <strong>Your to-do list could not be opened.</strong>
           Restart Tote. If this keeps happening, tell Lex.
         </div>
       ) : tasks === null ? (
-        <SkeletonList label="Loading your list" rows={3} />
+        // A load that failed has its sentence above; no skeleton waits under it.
+        !loadError && <SkeletonList label="Loading your list" rows={3} />
       ) : tasks.length === 0 ? (
         <div className="card empty" data-testid="todo-empty">
           <span className="empty-mark" aria-hidden>

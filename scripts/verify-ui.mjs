@@ -99,18 +99,58 @@ async function hidden(page, selector) {
 const capture = (page, name) => page.screenshot({ path: join(EVIDENCE_DIR, `${name}.png`) });
 const errorToasts = (page) => page.locator(".toast-error").count();
 
-/** A fresh page on the app; `path` carries the query string the mock reads for edge states. */
-async function newPage(browser, viewport = VIEWPORT, path = "/") {
+/** Program text that must never reach a toast (T-17): OS error numbers, library prefixes, debug dumps. */
+const PROGRAM_TEXT = /os error|Error during|[{}`]/;
+
+/**
+ * Every toast the page ever showed, caught by an observer installed before
+ * the app starts, so a toast that came and went is still on record.
+ */
+function watchToasts(page) {
+  return page.addInitScript(() => {
+    window.__toteToasts = [];
+    // An init script runs before <html> exists; the document itself is a node already.
+    new MutationObserver(() => {
+      for (const el of document.querySelectorAll(".toast-text")) {
+        if (el.dataset.logged) continue;
+        el.dataset.logged = "1";
+        window.__toteToasts.push(el.textContent ?? "");
+      }
+    }).observe(document, { childList: true, subtree: true });
+  });
+}
+
+/** How many toasts the page showed, and the ones that carried program text; a page that showed none proves nothing. */
+const toastAudit = (page) => page.evaluate((pattern) => ({ seen: window.__toteToasts.length, raw: window.__toteToasts.filter((text) => new RegExp(pattern).test(text)) }), PROGRAM_TEXT.source);
+
+/** A bare page with the error hooks and the toast watcher, before any navigation. */
+async function openPage(browser, viewport = VIEWPORT) {
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
   page.on("crash", () => pageErrors.push("renderer crashed"));
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  await watchToasts(page);
+  return { context, page };
+}
+
+/** A fresh page on the app; `path` carries the query string the mock reads for edge states. */
+async function newPage(browser, viewport = VIEWPORT, path = "/") {
+  const { context, page } = await openPage(browser, viewport);
   await page.goto(`${BASE_URL}${path}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector('[data-testid="app"]', { timeout: READY_TIMEOUT_MS });
   await page.waitForSelector('[data-testid="find-view"]', { timeout: STEP_TIMEOUT_MS });
   return { context, page };
 }
+
+/**
+ * The mock rejects the next `times` calls of `command` with `error`
+ * (src/dev/mockBackend.ts). A screen's mount load runs twice under React's
+ * StrictMode in the dev harness, so a load failure is planned twice; the
+ * drive clears what is left before it clicks Try again.
+ */
+const planFail = (page, command, error, times = 1) => page.evaluate(([c, e, n]) => { window.__toteMockFail = { command: c, error: e, times: n }; }, [command, error, times]);
+const clearFail = (page) => page.evaluate(() => { delete window.__toteMockFail; });
 
 /** No region may scroll sideways and nothing may stick out of the window. */
 async function layoutReport(page) {
@@ -588,6 +628,8 @@ async function drive(browser) {
   await page.locator('[data-testid="nav-find"]').click();
 
   record("No error toasts during the drive", (await errorToasts(page)) === 0);
+  const driveToasts = await toastAudit(page);
+  record("No toast in the drive carried program text (os error, Error during, a debug dump)", driveToasts.seen > 0 && driveToasts.raw.length === 0, JSON.stringify(driveToasts));
   await context.close();
 
   // 15. Narrow windows: the sidebar becomes a rail at 800 px and nothing overflows at 640 px.
@@ -640,6 +682,167 @@ async function drive(browser) {
   record("A To do store that could not be opened shows the plain sentence instead of the skeleton, with the add row off and no list request",
     unavailableNotice && Boolean(unavailableText?.includes("Restart Tote. If this keeps happening, tell Lex.")) && addOff && inputOff && noSkeleton && noListCall,
     JSON.stringify({ unavailableNotice, unavailableText, addOff, inputOff, noSkeleton, noListCall }));
+
+  await driveFailures(browser);
+}
+
+/**
+ * 19. Failure injection (T-17, T-18, T-20, T-37): the mock rejects the next
+ * call of one command, and each screen must show one plain sentence with a
+ * way on: never program text, never a loading state for good, never a toast
+ * that claims more than happened.
+ */
+async function driveFailures(browser) {
+  const DB_READ = { code: "db", message: "Tote could not read its list right now. Try again in a moment." };
+  const DB_WRITE = { code: "db", message: "Tote could not save that. Try again in a moment." };
+  const IN_USE = { code: "inUse", message: "That file is open in another program. Close it there, then try again." };
+  const RAW = { code: "io", message: "The process cannot access the file because it is being used by another process. (os error 32)" };
+  const lineText = (page, testId) => page.locator(`[data-testid="${testId}"] span`).textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+
+  // 19a. The app shell: get_app_info fails before the first screen; Try again loads it.
+  const shell = await openPage(browser);
+  await shell.page.addInitScript((error) => { window.__toteMockFail = { command: "get_app_info", error, times: 2 }; }, DB_READ);
+  await shell.page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+  const shellLine = await visible(shell.page, '[data-testid="app-load-failed"]');
+  const shellText = await lineText(shell.page, "app-load-failed");
+  const noStarting = (await shell.page.getByText("Starting Tote...").count()) === 0;
+  await capture(shell.page, "19a-shell-load-failed");
+  await clearFail(shell.page);
+  await shell.page.locator('[data-testid="app-load-failed-retry"]').click();
+  const shellRecovered = await visible(shell.page, '[data-testid="find-view"]');
+  record("App shell: a failed first load shows one plain sentence with Try again instead of Starting Tote for good, and Try again brings the Find screen",
+    shellLine && shellText === DB_READ.message && noStarting && shellRecovered, JSON.stringify({ shellLine, shellText, noStarting, shellRecovered }));
+  await shell.context.close();
+
+  const { context, page } = await newPage(browser);
+  await page.keyboard.press("Escape");
+  await hidden(page, '[data-testid="tour"]');
+
+  // 19b. Find: a failed search keeps the last results and says search is not available, with Try again.
+  await page.locator('[data-testid="search-input"]').fill("grade");
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="results"] [data-testid="file-row"]').length > 0, null, { timeout: STEP_TIMEOUT_MS });
+  const rowsBefore = await page.locator('[data-testid="results"] [data-testid="file-row"]').count();
+  await planFail(page, "find", DB_READ);
+  await page.locator('[data-testid="search-input"]').fill("grade 7");
+  const searchLine = await visible(page, '[data-testid="search-failed"]');
+  const searchText = await lineText(page, "search-failed");
+  const rowsKept = await page.locator('[data-testid="results"] [data-testid="file-row"]').count();
+  const noNothingMatched = (await page.getByText("Nothing matched yet").count()) === 0;
+  const noSearchToast = (await errorToasts(page)) === 0;
+  await capture(page, "19b-search-failed");
+  await page.locator('[data-testid="search-failed-retry"]').click();
+  const searchBack = await hidden(page, '[data-testid="search-failed"]');
+  const rowsAfter = await page.locator('[data-testid="results"] [data-testid="file-row"]').count();
+  record("Find: a failed search keeps the last results and shows one quiet line with Try again instead of Nothing matched; Try again searches again",
+    searchLine && searchText === "Search is not available right now. Try again in a moment." && rowsKept === rowsBefore && rowsBefore > 0 && noNothingMatched && noSearchToast && searchBack && rowsAfter > 0,
+    JSON.stringify({ searchLine, searchText, rowsBefore, rowsKept, noNothingMatched, noSearchToast, searchBack, rowsAfter }));
+  await page.locator('[data-testid="search-input"]').fill("");
+  await hidden(page, '[data-testid="results"]');
+  await visible(page, '[data-testid="recent"] [data-testid="file-row"]');
+
+  // 19c. Rename: a file open in another program is refused under the field in plain words.
+  await page.locator('[data-testid="recent"] [data-testid="file-row"] input[type=checkbox]').first().check();
+  await page.getByRole("button", { name: "Rename" }).click();
+  await visible(page, '[data-testid="rename-input"]');
+  await planFail(page, "rename_file", IN_USE);
+  await page.locator('[data-testid="rename-input"]').fill("Quiz 2 for printing");
+  await page.keyboard.press("Enter");
+  const renameLine = await visible(page, ".rename-inline .field-error");
+  const renameText = await page.locator(".rename-inline .field-error").textContent().catch(() => null);
+  await capture(page, "19c-rename-in-use");
+  record("Rename: a file open in another program is refused under the field with the plain sentence and its next step", renameLine && renameText === IN_USE.message, JSON.stringify({ renameLine, renameText }));
+  await page.locator('[aria-label="Cancel rename"]').click();
+  await hidden(page, '[data-testid="rename-input"]');
+
+  // 19d. Move: program text from the native side never reaches the toast; the code's fixed sentence shows instead.
+  await page.getByRole("button", { name: "Move to..." }).click();
+  await visible(page, '[data-testid="folder-picker"]');
+  await page.locator(".folder-option", { hasText: "Documents > Forms" }).click();
+  await planFail(page, "move_files", RAW);
+  await page.locator('[data-testid="move-confirm"]').click();
+  const moveToast = await page.locator(".toast-error .toast-text").last().textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  record("Move: an os error from the native side shows as the fixed plain sentence for the code, never the program text",
+    moveToast === "Windows could not finish that. Try again in a moment." && !PROGRAM_TEXT.test(moveToast ?? ""), JSON.stringify({ moveToast }));
+  await page.locator('[aria-label="Clear selection"]').click().catch(() => undefined);
+
+  // 19e. Toast Undo: one of two moves cannot go back; the toast says what went back and names the file with its reason.
+  const checks = page.locator('[data-testid="recent"] [data-testid="file-row"] input[type=checkbox]');
+  await checks.nth(0).check();
+  await checks.nth(1).check();
+  await page.getByRole("button", { name: "Move to..." }).click();
+  await visible(page, '[data-testid="folder-picker"]');
+  await page.locator(".folder-option", { hasText: "Documents > Forms" }).click();
+  await page.locator('[data-testid="move-confirm"]').click();
+  const movedToast = page.locator(".toast", { hasText: "Moved 2 files to" });
+  const movedText = await movedToast.locator(".toast-text").textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  await planFail(page, "undo", IN_USE);
+  await movedToast.locator('[data-testid="toast-undo"]').click();
+  const partialText = await page.locator(".toast-error .toast-text", { hasText: "Put back 1 of 2" }).textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  await capture(page, "19e-undo-partial");
+  record("Toast Undo: when one of two moves cannot go back, the toast says Put back 1 of 2 and names the file with the reason; the move toast names the folder",
+    movedText === "Moved 2 files to Documents > Forms." && /^Put back 1 of 2\. [^:]+\.(docx|pdf|xlsx): That file is open in another program\. Close it there, then try again\.$/.test(partialText ?? ""),
+    JSON.stringify({ movedText, partialText }));
+
+  // 19f. To do: a failed load shows the sentence with Try again instead of a skeleton for good.
+  await planFail(page, "list_tasks", DB_READ, 2);
+  await page.locator('[data-testid="nav-todo"]').click();
+  const todoLine = await visible(page, '[data-testid="todo-load-failed"]');
+  const todoText = await lineText(page, "todo-load-failed");
+  const todoNoSkeleton = (await page.locator('[data-testid="todo-view"] .skeleton-row').count()) === 0;
+  await capture(page, "19f-todo-load-failed");
+  await clearFail(page);
+  await page.locator('[data-testid="todo-load-failed-retry"]').click();
+  const todoBack = (await hidden(page, '[data-testid="todo-load-failed"]')) && (await visible(page, '[data-testid="todo-empty"]'));
+  record("To do: a failed load shows one plain sentence with Try again instead of the skeleton, and Try again loads the list",
+    todoLine && todoText === DB_READ.message && todoNoSkeleton && todoBack, JSON.stringify({ todoLine, todoText, todoNoSkeleton, todoBack }));
+
+  // 19g. Clean up: the same for its report.
+  await planFail(page, "cleanup_report", DB_READ, 2);
+  await page.locator('[data-testid="nav-cleanup"]').click();
+  const cleanupLine = await visible(page, '[data-testid="cleanup-load-failed"]');
+  const cleanupText = await lineText(page, "cleanup-load-failed");
+  const cleanupNoSkeleton = (await page.locator('[data-testid="cleanup-view"] .skeleton-row').count()) === 0;
+  await capture(page, "19g-cleanup-load-failed");
+  await clearFail(page);
+  await page.locator('[data-testid="cleanup-load-failed-retry"]').click();
+  const cleanupBack = (await hidden(page, '[data-testid="cleanup-load-failed"]')) && (await visible(page, '[data-testid="tidy-card"]'));
+  record("Clean up: a failed load shows one plain sentence with Try again instead of the skeleton, and Try again loads the cards",
+    cleanupLine && cleanupText === DB_READ.message && cleanupNoSkeleton && cleanupBack, JSON.stringify({ cleanupLine, cleanupText, cleanupNoSkeleton, cleanupBack }));
+
+  // 19h. Activity: a failed load, then an Undo the native side refuses.
+  await planFail(page, "list_activity", DB_READ, 2);
+  await page.locator('[data-testid="nav-activity"]').click();
+  const activityLine = await visible(page, '[data-testid="activity-load-failed"]');
+  const activityText = await lineText(page, "activity-load-failed");
+  await clearFail(page);
+  await page.locator('[data-testid="activity-load-failed-retry"]').click();
+  const activityBack = (await hidden(page, '[data-testid="activity-load-failed"]')) && (await visible(page, '[data-testid="undo"]'));
+  const undoneBefore = await page.locator(".activity-state", { hasText: "Undone" }).count();
+  await planFail(page, "undo", IN_USE);
+  await page.locator('[data-testid="undo"]').first().click();
+  // The exact sentence, on its own: the partial Undo toast from 19e may still be up and contains it too.
+  const undoToast = await page.waitForFunction((want) => [...document.querySelectorAll(".toast-error .toast-text")].some((el) => el.textContent === want), IN_USE.message, { timeout: STEP_TIMEOUT_MS }).then(() => IN_USE.message, () => null);
+  const undoneAfter = await page.locator(".activity-state", { hasText: "Undone" }).count();
+  await capture(page, "19h-activity-undo-failed");
+  record("Activity: a failed load shows the sentence with Try again, and an Undo the native side refuses says why in one sentence and leaves the row as it was",
+    activityLine && activityText === DB_READ.message && activityBack && undoToast === IN_USE.message && undoneAfter === undoneBefore,
+    JSON.stringify({ activityLine, activityText, activityBack, undoToast, undoneBefore, undoneAfter }));
+
+  // 19i. Settings: a save that failed says so and the switch goes back to the kept value.
+  await page.locator('[data-testid="nav-settings"]').click();
+  await visible(page, '[data-testid="settings-view"]');
+  const switchBefore = await page.locator('[data-testid="check-updates"]').isChecked();
+  await planFail(page, "set_settings", DB_WRITE);
+  await page.locator('[data-testid="check-updates"]').click();
+  const saveToast = await page.locator(".toast-error .toast-text", { hasText: "could not save" }).textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  const switchReverted = await page.waitForFunction((want) => document.querySelector('[data-testid="check-updates"]').checked === want, switchBefore, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  await capture(page, "19i-settings-save-failed");
+  record("Settings: a save that failed shows the save sentence and the switch goes back to the kept value",
+    switchBefore && saveToast === DB_WRITE.message && switchReverted, JSON.stringify({ switchBefore, saveToast, switchReverted }));
+
+  const failureToasts = await toastAudit(page);
+  record("No toast in the failure drive carried program text", failureToasts.seen > 0 && failureToasts.raw.length === 0, JSON.stringify(failureToasts));
+  await context.close();
 }
 
 async function main() {

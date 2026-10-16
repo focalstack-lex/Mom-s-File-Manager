@@ -22,6 +22,8 @@ export interface Toast {
 interface AppStore {
   view: View;
   info: AppInfo | null;
+  /** The first load of app info failed; the shell shows this sentence with Try again. */
+  infoError: string | null;
   toasts: Toast[];
   /** Folder choices changed; the watchers pick them up after a restart. */
   foldersChanged: boolean;
@@ -39,7 +41,8 @@ interface AppStore {
   installUpdate(): Promise<void>;
   dismissUpdate(): void;
   loadInfo(): Promise<void>;
-  saveSettings(settings: Settings): Promise<void>;
+  /** False when the native side could not save; the caller shows the old value again. */
+  saveSettings(settings: Settings): Promise<boolean>;
   toast(text: string, kind?: Toast["kind"], undoIds?: number[], undoBatch?: string, undoTask?: Toast["undoTask"]): void;
   fail(error: unknown): void;
   dismissToast(id: number): void;
@@ -50,6 +53,7 @@ let nextToast = 1;
 export const useApp = create<AppStore>((set, get) => ({
   view: "find",
   info: null,
+  infoError: null,
   toasts: [],
   foldersChanged: false,
   browsers: null,
@@ -92,9 +96,14 @@ export const useApp = create<AppStore>((set, get) => ({
   loadInfo: async () => {
     try {
       const info = await ipc.appInfo();
-      set({ info });
+      set({ info, infoError: null });
     } catch (error) {
-      get().fail(error);
+      // Before the first answer there is no screen to put a toast on: the
+      // shell shows the sentence in place with Try again. Later refreshes toast.
+      if (get().info === null) {
+        console.warn("Tote:", error);
+        set({ infoError: describeError(error) });
+      } else get().fail(error);
     }
   },
   saveSettings: async (settings) => {
@@ -102,8 +111,10 @@ export const useApp = create<AppStore>((set, get) => ({
       const saved = await ipc.setSettings(settings);
       const info = get().info;
       if (info) set({ info: { ...info, settings: saved } });
+      return true;
     } catch (error) {
       get().fail(error);
+      return false;
     }
   },
   toast: (text, kind = "info", undoIds, undoBatch, undoTask) => {

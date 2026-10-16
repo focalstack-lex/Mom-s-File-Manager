@@ -68,7 +68,10 @@ pub fn start(core: Arc<Core>, app: AppHandle) -> Result<()> {
             }
             Err(error) => log::warn!("downloads watcher: {error}"),
         })
-        .map_err(|e| crate::error::ToteError::new(crate::error::ErrorCode::Io, e.to_string()))?;
+        .map_err(|e| {
+            log::warn!("downloads watcher could not be created: {e}");
+            crate::error::ToteError::new(crate::error::ErrorCode::Io, "Tote could not start watching Downloads. Restart Tote to try again.")
+        })?;
         match debouncer.watcher().watch(&downloads, RecursiveMode::NonRecursive) {
             Ok(()) => log::info!("watching downloads at {}", downloads.display()),
             Err(error) => log::warn!("cannot watch {}: {error}", downloads.display()),
@@ -85,7 +88,10 @@ pub fn start(core: Arc<Core>, app: AppHandle) -> Result<()> {
             }
             Err(error) => log::warn!("index watcher: {error}"),
         })
-        .map_err(|e| crate::error::ToteError::new(crate::error::ErrorCode::Io, e.to_string()))?;
+        .map_err(|e| {
+            log::warn!("index watcher for {} could not be created: {e}", root.display());
+            crate::error::ToteError::new(crate::error::ErrorCode::Io, "Tote could not start watching your folders. Restart Tote to try again.")
+        })?;
         match debouncer.watcher().watch(&root, RecursiveMode::Recursive) {
             Ok(()) => log::info!("watching {}", root.display()),
             Err(error) => log::warn!("cannot watch {}: {error}", root.display()),

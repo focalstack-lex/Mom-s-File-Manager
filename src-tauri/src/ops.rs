@@ -2,7 +2,7 @@
 //! confined to the indexed roots, never overwriting, never deleting for good,
 //! and undoable afterwards.
 
-use crate::error::{ToteError, ErrorCode, Result};
+use crate::error::{ToteError, ErrorCode, Result, IN_USE};
 use crate::index;
 use crate::paths::{self, Roots};
 use crate::sorter;
@@ -58,13 +58,19 @@ pub fn new_batch(prefix: &str) -> String {
     format!("{prefix}-{}-{}", chrono::Utc::now().timestamp_millis(), SEQ.fetch_add(1, Ordering::Relaxed))
 }
 
+/// A change to the ops table; a failure reads as not saved, not as a failed read.
+fn write(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<usize> {
+    conn.execute(sql, params).map_err(ToteError::db_write)
+}
+
 fn record(conn: &Connection, kind: OpKind, src: &Path, dst: Option<&Path>, automatic: bool) -> Result<i64> {
     record_in(conn, kind, src, dst, automatic, None)
 }
 
 /// `batch` ties the changes of one action together so one Undo reverses them all.
 fn record_in(conn: &Connection, kind: OpKind, src: &Path, dst: Option<&Path>, automatic: bool, batch: Option<&str>) -> Result<i64> {
-    conn.execute(
+    write(
+        conn,
         "INSERT INTO ops(kind, src, dst, status, automatic, created_at, batch) VALUES(?1, ?2, ?3, 'pending', ?4, ?5, ?6)",
         params![
             kind.as_str(),
@@ -81,10 +87,10 @@ fn record_in(conn: &Connection, kind: OpKind, src: &Path, dst: Option<&Path>, au
 fn finish(conn: &Connection, id: i64, result: &Result<PathBuf>) -> Result<()> {
     match result {
         Ok(dst) => {
-            conn.execute("UPDATE ops SET status = 'done', dst = ?2 WHERE id = ?1", params![id, dst.to_string_lossy().into_owned()])?;
+            write(conn, "UPDATE ops SET status = 'done', dst = ?2 WHERE id = ?1", params![id, dst.to_string_lossy().into_owned()])?;
         }
         Err(error) => {
-            conn.execute("UPDATE ops SET status = 'failed', message = ?2 WHERE id = ?1", params![id, error.message])?;
+            write(conn, "UPDATE ops SET status = 'failed', message = ?2 WHERE id = ?1", params![id, error.message])?;
         }
     }
     Ok(())
@@ -242,6 +248,21 @@ fn recycle_refusal(path: &Path) -> Option<ToteError> {
 /// Bin does not list it (the renderer leaves Show the file out for it).
 const REMOVED_BY_WINDOWS: &str = "Windows removed it without putting it in the Recycle Bin, so it cannot be brought back.";
 
+/// The sentence for a Recycle Bin call that failed; the library's text goes
+/// to the log. The shell reports a file another program holds open as an
+/// aborted operation rather than a sharing violation, so the file is also
+/// tried for exclusive access to word that case as `inUse`.
+fn recycle_failed(path: &Path, error: trash::Error) -> ToteError {
+    log::warn!("recycle: {} could not be sent to the Recycle Bin ({error})", path.display());
+    let held_open = matches!(error, trash::Error::Os { code: 32 | 33, .. }) || (path.is_file() && !crate::stability::can_open_exclusively(path));
+    let error = if held_open {
+        ToteError::new(ErrorCode::InUse, IN_USE)
+    } else {
+        ToteError::new(ErrorCode::Io, "Windows could not send that file to the Recycle Bin. Try again in a moment.")
+    };
+    error.with_path(paths::display(path))
+}
+
 /// Sends files to the Recycle Bin, one logged operation per file. Several
 /// files sent together share a batch, so Activity shows them as one row. A
 /// file the Recycle Bin cannot take is refused and stays, its row failed
@@ -264,13 +285,11 @@ pub fn recycle(conn: &Connection, roots: &Roots, targets: &[PathBuf]) -> Result<
         let recycled_at = crate::db::now();
         let result = match recycle_refusal(&src) {
             Some(refusal) => Err(refusal),
-            None => trash::delete(&src)
-                .map(|_| src.clone())
-                .map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not move it to the Recycle Bin: {e}")).with_path(paths::display(&src))),
+            None => trash::delete(&src).map(|_| src.clone()).map_err(|e| recycle_failed(&src, e)),
         };
         finish(conn, id, &result)?;
         if result.is_ok() {
-            conn.execute("UPDATE ops SET size = ?2, recycled_at = ?3 WHERE id = ?1", params![id, size.and_then(|s| i64::try_from(s).ok()), recycled_at])?;
+            write(conn, "UPDATE ops SET size = ?2, recycled_at = ?3 WHERE id = ?1", params![id, size.and_then(|s| i64::try_from(s).ok()), recycled_at])?;
             taken.push((id, src.clone(), recycled_at));
         }
         if !src.exists() {
@@ -284,7 +303,7 @@ pub fn recycle(conn: &Connection, roots: &Roots, targets: &[PathBuf]) -> Result<
             let listed = items.iter().any(|item| is_same_original(item, src) && (item.time_deleted - *recycled_at).abs() <= RESTORE_TIME_SLACK_SECS);
             if !listed {
                 log::warn!("recycle: Windows removed {} without putting it in the Recycle Bin", src.display());
-                conn.execute("UPDATE ops SET status = 'failed', message = ?2, size = NULL, recycled_at = NULL WHERE id = ?1", params![id, REMOVED_BY_WINDOWS])?;
+                write(conn, "UPDATE ops SET status = 'failed', message = ?2, size = NULL, recycled_at = NULL WHERE id = ?1", params![id, REMOVED_BY_WINDOWS])?;
             }
         }
     }
@@ -381,7 +400,7 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
                 if let Some(refusal) = recycle_refusal(&current) {
                     return Err(refusal);
                 }
-                trash::delete(&current).map_err(|e| ToteError::new(ErrorCode::Io, e.to_string()))?;
+                trash::delete(&current).map_err(|e| recycle_failed(&current, e))?;
                 index::remove(conn, &current)?;
             } else {
                 let back = sorter::unique_path(&roots.confine(&src)?);
@@ -400,9 +419,12 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
             let back = restore_from_recycle_bin(&src, recorded_recycle(conn, id)?)?;
             index::refresh_path(conn, &back)?;
         }
-        other => return Err(ToteError::new(ErrorCode::Unsupported, format!("Cannot undo {other}."))),
+        other => {
+            log::warn!("undo: change {id} is a {other}, which cannot be undone");
+            return Err(ToteError::new(ErrorCode::Unsupported, "That change cannot be undone."));
+        }
     }
-    conn.execute("UPDATE ops SET status = 'undone' WHERE id = ?1", [id])?;
+    write(conn, "UPDATE ops SET status = 'undone' WHERE id = ?1", [id])?;
     Ok(())
 }
 
@@ -445,7 +467,10 @@ fn check_restored(landing: &Path, recorded: Option<(i64, u64)>, send_back: impl 
 #[cfg(any(windows, target_os = "linux"))]
 fn restore_from_recycle_bin(original: &Path, recorded: Option<(i64, u64)>) -> Result<PathBuf> {
     use trash::os_limited;
-    let items = os_limited::list().map_err(|e| ToteError::new(ErrorCode::Io, e.to_string()))?;
+    let items = os_limited::list().map_err(|error| {
+        log::warn!("restore: the Recycle Bin could not be listed ({error})");
+        ToteError::new(ErrorCode::Io, "Tote could not read the Recycle Bin. Open the Recycle Bin to bring the file back.")
+    })?;
     let mut bin: Vec<BinItem> = items.iter().map(BinItem::from).collect();
     if recorded.is_some() {
         // Sizes cost one shell call each, so only the items with that path are asked.
@@ -468,7 +493,10 @@ fn restore_from_recycle_bin(original: &Path, recorded: Option<(i64, u64)>) -> Re
     }
     log::info!("restoring {} from the Recycle Bin to {}", latest.id.to_string_lossy(), landing.display());
     latest.name = name.to_os_string();
-    os_limited::restore_all(vec![latest]).map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not restore it: {e}")))?;
+    os_limited::restore_all(vec![latest]).map_err(|error| {
+        log::warn!("restore: Windows could not bring back the file recycled from {wanted} ({error})");
+        ToteError::new(ErrorCode::Io, "Windows could not bring that file back. Open the Recycle Bin to restore it.")
+    })?;
     check_restored(&landing, recorded, |path| {
         if let Err(error) = trash::delete(path) {
             log::warn!("restore: could not send it back ({error})");
@@ -553,7 +581,7 @@ pub fn list(conn: &Connection, limit: usize) -> Result<Vec<OpRow>> {
 /// Writes a failure the sorter hit so Activity can show it.
 pub fn note_failure(conn: &Connection, src: &Path, message: &str) -> Result<()> {
     let id = record(conn, OpKind::AutoSort, src, None, true)?;
-    conn.execute("UPDATE ops SET status = 'failed', message = ?2 WHERE id = ?1", params![id, message])?;
+    write(conn, "UPDATE ops SET status = 'failed', message = ?2 WHERE id = ?1", params![id, message])?;
     Ok(())
 }
 
@@ -656,6 +684,73 @@ mod tests {
         assert_eq!(undone.undone, 2);
         assert!(a.is_file() && b.is_file());
         assert!(dest.is_dir(), "a manual batch must never remove the folder it moved into");
+    }
+
+    /// A file another program holds open (here with no sharing, the way
+    /// Word holds a document) cannot be renamed or moved; she reads that it
+    /// is open elsewhere, never the OS text, and Activity carries the same
+    /// sentence (audit T-17).
+    #[cfg(windows)]
+    #[test]
+    fn a_file_open_in_another_program_is_reported_as_in_use() {
+        let (_dir, roots, conn) = fixture();
+        let src = roots.desktop.clone().unwrap().join("Open.docx");
+        std::fs::write(&src, b"open").unwrap();
+        let _held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().read(true).share_mode(0).open(&src).unwrap()
+        };
+        let error = rename_file(&conn, &roots, &src, "Renamed").unwrap_err();
+        assert_eq!(error.code, ErrorCode::InUse, "{}", error.message);
+        assert_eq!(error.message, IN_USE);
+        let row = list(&conn, 1).unwrap().remove(0);
+        assert_eq!(row.status, "failed");
+        assert_eq!(row.message.as_deref(), Some(IN_USE), "Activity carries the same sentence");
+        let error = move_file(&conn, &roots, &src, &roots.documents.clone().unwrap(), OpKind::Move).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InUse, "{}", error.message);
+        assert!(src.is_file(), "the file stays where it was");
+    }
+
+    /// The Recycle Bin crate's own text never reaches her: a failed delete
+    /// is one plain sentence, and a file held open reads as open elsewhere.
+    #[test]
+    fn a_failed_recycle_bin_call_is_worded_plainly() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Quiz.docx");
+        std::fs::write(&file, b"q").unwrap();
+        let aborted = || trash::Error::Unknown { description: "Some operations were aborted".into() };
+        let error = recycle_failed(&file, aborted());
+        assert_eq!(error.code, ErrorCode::Io);
+        assert_eq!(error.message, "Windows could not send that file to the Recycle Bin. Try again in a moment.");
+        assert_eq!(error.path.as_deref(), Some(paths::display(&file).as_str()));
+        let sharing = recycle_failed(&file, trash::Error::Os { code: 32, description: "The process cannot access the file".into() });
+        assert_eq!((sharing.code, sharing.message.as_str()), (ErrorCode::InUse, IN_USE));
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let _held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&file).unwrap();
+            let error = recycle_failed(&file, aborted());
+            assert_eq!((error.code, error.message.as_str()), (ErrorCode::InUse, IN_USE), "an aborted delete of a file held open");
+        }
+        for error in [recycle_failed(&file, aborted()), sharing] {
+            assert!(!error.message.contains("Error during") && !error.message.contains("aborted"), "{}", error.message);
+        }
+    }
+
+    /// A write that fails says not saved; a read that fails says not read.
+    #[test]
+    fn a_failed_write_says_not_saved_and_a_failed_read_says_not_read() {
+        let (_dir, roots, conn) = fixture();
+        let file = roots.downloads.clone().unwrap().join("Quiz.docx");
+        std::fs::write(&file, b"q").unwrap();
+        conn.pragma_update(None, "query_only", "ON").unwrap();
+        let error = note_failure(&conn, &file, "x").unwrap_err();
+        assert_eq!((error.code, error.message.as_str()), (ErrorCode::Db, crate::error::DB_WRITE));
+        assert!(list(&conn, 1).unwrap().is_empty(), "reads still work");
+        conn.pragma_update(None, "query_only", "OFF").unwrap();
+        conn.execute_batch("DROP TABLE ops").unwrap();
+        let error = list(&conn, 1).unwrap_err();
+        assert_eq!((error.code, error.message.as_str()), (ErrorCode::Db, crate::error::DB_READ));
     }
 
     #[test]

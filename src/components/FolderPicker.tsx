@@ -43,7 +43,7 @@ export function FolderPicker({ count, warnOld, onPick, onClose }: Props) {
 
   return (
     <Dialog title={count === 1 ? "Move this file to" : `Move ${count} files to`} onClose={onClose} testId="folder-picker">
-      {warnOld && <p>Word's Recent list will lose this file. Search here will still find it.</p>}
+      {warnOld && <p>{count === 1 ? "Word's Recent list will lose this file. Find will still show it." : "Word's Recent list will lose these files. Find will still show them."}</p>}
       <ul className="folder-list">
         {folders.map((folder) => (
           <li key={folder.path}>

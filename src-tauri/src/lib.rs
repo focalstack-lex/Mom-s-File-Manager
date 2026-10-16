@@ -46,6 +46,26 @@ fn install_panic_logger() {
 use std::sync::Arc;
 use tauri::Manager;
 
+/// What she reads when the database cannot be opened at start: Tote cannot
+/// run without it, so the sentence is logged and shown before the exit.
+const DATABASE_START_FAILURE: &str = "Tote could not open its list of files, so it cannot start. Restart your laptop and open Tote again. If this keeps happening, tell Lex.";
+
+/// A message box for a failure before the window exists. The dialog plugin
+/// shows it on its own thread and answers through the callback once she
+/// closes it, so this waits for that answer. A dry run (TOTE_ROOTS) has
+/// nobody to click, so it only logs.
+fn show_start_failure(app: &tauri::AppHandle, sentence: &str) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    if paths::Roots::test_mode() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog().message(sentence).title("Tote").kind(MessageDialogKind::Error).show(move |_| {
+        let _ = tx.send(());
+    });
+    let _ = rx.recv();
+}
+
 /// Builds and runs the application. A startup failure is logged and the
 /// process exits with status 1 instead of panicking; a panic anywhere is
 /// logged (install_panic_logger) and file-reader panics are caught.
@@ -102,6 +122,8 @@ pub fn run() {
                 Ok(opened) => opened,
                 Err(error) => {
                     log::error!("Tote could not open its database in {}: {error}", data_dir.display());
+                    log::error!("{DATABASE_START_FAILURE}");
+                    show_start_failure(app.handle(), DATABASE_START_FAILURE);
                     std::process::exit(1);
                 }
             };

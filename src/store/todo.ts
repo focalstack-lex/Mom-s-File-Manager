@@ -2,6 +2,7 @@
 // open, and actions that offer Undo in a toast instead of asking first.
 
 import { create } from "zustand";
+import { describeError } from "../lib/errors";
 import { ipc } from "../lib/ipc";
 import { dayWords } from "../lib/todo";
 import type { Repeat, Task } from "../lib/types";
@@ -9,6 +10,8 @@ import { useApp } from "./app";
 
 interface TodoStore {
   tasks: Task[] | null;
+  /** The last load failed; the screen shows this sentence with Try again. */
+  loadError: string | null;
   /** The task whose details are open, one at a time. */
   openId: number | null;
   load(): Promise<void>;
@@ -16,9 +19,11 @@ interface TodoStore {
   add(title: string, due: string | null): Promise<boolean>;
   update(task: Task, patch: { title?: string; due?: string | null; repeat?: Repeat }): Promise<void>;
   complete(task: Task): Promise<void>;
-  reopen(id: number): Promise<void>;
+  /** True when the task is back on the list; a toast may say so only then. */
+  reopen(id: number): Promise<boolean>;
   remove(task: Task): Promise<void>;
-  restore(id: number): Promise<void>;
+  /** True when the task is back on the list; a toast may say so only then. */
+  restore(id: number): Promise<boolean>;
   attach(id: number, path: string): Promise<boolean>;
   detach(id: number, path: string): Promise<void>;
 }
@@ -27,12 +32,16 @@ const fail = (error: unknown) => useApp.getState().fail(error);
 
 export const useTodo = create<TodoStore>((set, get) => ({
   tasks: null,
+  loadError: null,
   openId: null,
   load: async () => {
     try {
-      set({ tasks: await ipc.tasks() });
+      set({ tasks: await ipc.tasks(), loadError: null });
     } catch (error) {
-      fail(error);
+      // The screen shows the sentence in place with Try again, not a toast
+      // over a skeleton that never ends.
+      console.warn("Tote:", error);
+      set({ loadError: describeError(error) });
     }
   },
   setOpen: (openId) => set({ openId }),
@@ -68,12 +77,15 @@ export const useTodo = create<TodoStore>((set, get) => ({
     }
   },
   reopen: async (id) => {
+    let ok = true;
     try {
       await ipc.reopenTask(id);
     } catch (error) {
+      ok = false;
       fail(error);
     }
     await get().load();
+    return ok;
   },
   remove: async (task) => {
     try {
@@ -86,12 +98,15 @@ export const useTodo = create<TodoStore>((set, get) => ({
     }
   },
   restore: async (id) => {
+    let ok = true;
     try {
       await ipc.restoreTask(id);
     } catch (error) {
+      ok = false;
       fail(error);
     }
     await get().load();
+    return ok;
   },
   attach: async (id, path) => {
     try {

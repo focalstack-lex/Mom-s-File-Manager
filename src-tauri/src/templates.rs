@@ -36,13 +36,14 @@ pub fn add(conn: &Connection, roots: &Roots, path: &Path) -> Result<Template> {
     conn.execute(
         "INSERT OR IGNORE INTO templates(path, name, created_at) VALUES(?1, ?2, ?3)",
         params![path.to_string_lossy().into_owned(), name, crate::db::now()],
-    )?;
+    )
+    .map_err(ToteError::db_write)?;
     let id: i64 = conn.query_row("SELECT id FROM templates WHERE path = ?1", [path.to_string_lossy().into_owned()], |r| r.get(0))?;
     Ok(Template { id, path: path.to_string_lossy().into_owned(), name, missing: false })
 }
 
 pub fn remove(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("DELETE FROM templates WHERE id = ?1", [id])?;
+    conn.execute("DELETE FROM templates WHERE id = ?1", [id]).map_err(ToteError::db_write)?;
     Ok(())
 }
 
@@ -74,15 +75,17 @@ fn ops_record_copy(conn: &Connection, src: &Path, dst: &Path) -> Result<i64> {
     conn.execute(
         "INSERT INTO ops(kind, src, dst, status, automatic, created_at) VALUES('copy', ?1, ?2, 'pending', 0, ?3)",
         params![src.to_string_lossy().into_owned(), dst.to_string_lossy().into_owned(), crate::db::now()],
-    )?;
+    )
+    .map_err(ToteError::db_write)?;
     Ok(conn.last_insert_rowid())
 }
 
 fn ops_finish(conn: &Connection, id: i64, result: &Result<PathBuf>) -> Result<()> {
     match result {
-        Ok(_) => conn.execute("UPDATE ops SET status = 'done' WHERE id = ?1", [id])?,
-        Err(e) => conn.execute("UPDATE ops SET status = 'failed', message = ?2 WHERE id = ?1", params![id, e.message])?,
-    };
+        Ok(_) => conn.execute("UPDATE ops SET status = 'done' WHERE id = ?1", [id]),
+        Err(e) => conn.execute("UPDATE ops SET status = 'failed', message = ?2 WHERE id = ?1", params![id, e.message]),
+    }
+    .map_err(ToteError::db_write)?;
     Ok(())
 }
 

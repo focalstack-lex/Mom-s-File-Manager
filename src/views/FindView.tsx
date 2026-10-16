@@ -6,6 +6,7 @@ import { browserNotice } from "../lib/browsers";
 import { useEffect, useRef, useState } from "react";
 import { ActionBar } from "../components/ActionBar";
 import { Chips } from "../components/Chips";
+import { LoadFailed } from "../components/LoadFailed";
 import { PreviewPanel } from "../components/PreviewPanel";
 import { ResultRow } from "../components/ResultRow";
 import { ShowMore } from "../components/ShowMore";
@@ -61,6 +62,7 @@ export function FindView({ info }: { info: AppInfo }) {
   const searching = useFind((s) => s.isSearching());
   const clearFilters = useFind((s) => s.clearFilters);
   const loading = useFind((s) => s.loading);
+  const failed = useFind((s) => s.failed);
   const tourActive = useTour((s) => s.active);
   const toast = useApp((s) => s.toast);
   const fail = useApp((s) => s.fail);
@@ -77,18 +79,21 @@ export function FindView({ info }: { info: AppInfo }) {
 
   const roots = info.roots;
   const index = result?.index ?? info.index;
+  // A week with nothing filed has nothing to report, so the line stays away.
   const status = index.scanning
     ? index.total === 0
       ? "Getting to know your files..."
       : `Getting to know your files: ${index.scanned.toLocaleString()} of ${index.total.toLocaleString()} so far.`
-    : info.sortedThisWeek === 1
-      ? "1 download filed for you this week."
-      : `${info.sortedThisWeek} downloads filed for you this week.`;
+    : info.sortedThisWeek === 0
+      ? null
+      : info.sortedThisWeek === 1
+        ? "1 download filed for you this week."
+        : `${info.sortedThisWeek} downloads filed for you this week.`;
 
   const makeFromTemplate = async (id: number, name: string) => {
     try {
-      await ipc.useTemplate(id);
-      toast(`A fresh copy of ${name} is open. The original stays untouched.`);
+      const copy = await ipc.useTemplate(id);
+      toast(`A fresh copy of ${name} is in School Files.${copy.opened ? "" : " Tote could not open it; open it from Find."}`);
       await refresh();
     } catch (error) {
       fail(error);
@@ -116,9 +121,11 @@ export function FindView({ info }: { info: AppInfo }) {
     <div className="main-inner" data-testid="find-view">
       <div className="view-head">
         <h1 className="view-title">Find a file</h1>
-        <p className="status-line" data-testid="status-line">
-          {status}
-        </p>
+        {status && (
+          <p className="status-line" data-testid="status-line">
+            {status}
+          </p>
+        )}
         {notice && (
           <p className="notice" data-testid="browser-notice">
             <Info size={18} aria-hidden />
@@ -170,9 +177,12 @@ export function FindView({ info }: { info: AppInfo }) {
                   {result && !(loading && totalGroups === 0) ? countLabel : ""}
                 </span>
               </div>
-              {loading && totalGroups === 0 ? (
+              {failed && <LoadFailed quiet text="Search is not available right now. Try again in a moment." onRetry={() => void refresh()} testId="search-failed" />}
+              {loading && totalGroups === 0 && !failed ? (
                 <SkeletonList label="Searching" />
               ) : totalGroups === 0 ? (
+                // A broken search keeps the last answer and the quiet line; it never reads as no match.
+                !failed && (
                 <div className="card empty">
                   <span className="empty-mark" aria-hidden>
                     <SearchX size={26} />
@@ -185,6 +195,7 @@ export function FindView({ info }: { info: AppInfo }) {
                     </button>
                   )}
                 </div>
+                )
               ) : (
                 <>
                   <div className="rows">
@@ -228,7 +239,7 @@ export function FindView({ info }: { info: AppInfo }) {
                       <button type="button" className="button" onClick={() => setQuery((path.split("\\").pop() ?? "").replace(/\.[^.]+$/, ""))}>
                         Search for it
                       </button>
-                      <button type="button" className="button button-quiet" onClick={() => void ipc.forgetPin(path).then(() => refresh())}>
+                      <button type="button" className="button button-quiet" onClick={() => void ipc.forgetPin(path).then(() => refresh()).catch(fail)}>
                         Forget
                       </button>
                     </div>
@@ -251,13 +262,17 @@ export function FindView({ info }: { info: AppInfo }) {
               <section className="section" aria-label="Recent downloads" data-testid="recent" data-tour="recent">
                 <h2 className="card-title">Recent downloads</h2>
                 {recent.length === 0 && !showSamples ? (
-                  <div className="card empty">
-                    <span className="empty-mark" aria-hidden>
-                      <Inbox size={26} />
-                    </span>
-                    <strong>Nothing downloaded yet</strong>
-                    New downloads appear here, newest first, already filed in School Files.
-                  </div>
+                  result === null && failed ? (
+                    <LoadFailed text="Tote could not read its list right now. Try again in a moment." onRetry={() => void refresh()} testId="find-load-failed" />
+                  ) : (
+                    <div className="card empty">
+                      <span className="empty-mark" aria-hidden>
+                        <Inbox size={26} />
+                      </span>
+                      <strong>Nothing downloaded yet</strong>
+                      New downloads appear here, newest first, already filed in School Files.
+                    </div>
+                  )
                 ) : (
                   <>
                     <div className="day-groups">

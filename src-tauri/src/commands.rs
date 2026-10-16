@@ -17,6 +17,7 @@ use crate::sorter;
 use crate::state::{AppState, Core};
 use crate::tasks::{self, Completed, Repeat, Task};
 use crate::templates::{self, Template};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -73,10 +74,42 @@ fn rules_of(core: &Core) -> Vec<crate::organize::SubjectRule> {
     crate::organize::effective_rules(&settings_of(core).subject_rules)
 }
 
+/// The stored settings, or the defaults when nothing is stored. Settings
+/// text that cannot be read is logged and kept aside under
+/// `settings.unreadable-<time>` (once per text) before the defaults are
+/// used, so the next save never loses what she had (audit T-47). The live
+/// row is left as it is for a newer Tote to read.
 pub fn settings_from(conn: &rusqlite::Connection) -> Settings {
     match db::get_setting(conn, "settings") {
-        Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_default(),
-        _ => Settings::default(),
+        Ok(Some(json)) => match serde_json::from_str(&json) {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::warn!("settings could not be read ({error}); using the defaults");
+                keep_unreadable(conn, &json);
+                Settings::default()
+            }
+        },
+        Ok(None) => Settings::default(),
+        Err(error) => {
+            log::warn!("settings could not be loaded: {}", error.message);
+            Settings::default()
+        }
+    }
+}
+
+/// Stores unreadable settings text beside the live row, once per text.
+fn keep_unreadable(conn: &rusqlite::Connection, json: &str) {
+    let kept = conn.query_row("SELECT 1 FROM settings WHERE key LIKE 'settings.unreadable-%' AND value = ?1", [json], |_| Ok(())).optional();
+    match kept {
+        Ok(Some(())) => {}
+        Ok(None) => {
+            let key = format!("settings.unreadable-{}", db::now());
+            match db::set_setting(conn, &key, json) {
+                Ok(()) => log::warn!("the unreadable settings text is kept as {key}"),
+                Err(error) => log::warn!("the unreadable settings text could not be kept: {}", error.message),
+            }
+        }
+        Err(error) => log::warn!("could not look for kept settings text: {error}"),
     }
 }
 
@@ -97,9 +130,9 @@ pub fn root_choices(conn: &rusqlite::Connection) -> paths::RootChoices {
 }
 
 fn save_settings(core: &Core, settings: &Settings) -> Result<()> {
-    let json = serde_json::to_string(settings).map_err(|e| ToteError::validation(e.to_string()))?;
+    let json = serde_json::to_string(settings).map_err(ToteError::db_write)?;
     let conn = core.db()?;
-    db::set_setting(&conn, "settings", &json)
+    db::set_setting(&conn, "settings", &json).map_err(ToteError::as_write)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -157,14 +190,28 @@ pub struct Destination {
 /// Runs `work` on the blocking pool and logs any failure, so a problem she
 /// sees as a toast is also in the log file.
 async fn blocking<T: Send + 'static>(name: &'static str, work: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
-    let joined = tauri::async_runtime::spawn_blocking(work)
-        .await
-        .map_err(|e| ToteError::new(ErrorCode::Io, format!("The task did not finish: {e}")));
-    let result = joined.and_then(|r| r);
+    let joined = tauri::async_runtime::spawn_blocking(work).await.map_err(|error| {
+        log::warn!("{name}: the task did not finish ({error})");
+        ToteError::new(ErrorCode::Io, "Tote could not finish that. Try again in a moment.")
+    });
+    log_failure(name, joined.and_then(|r| r))
+}
+
+/// Logs a failed command under its name; the commands that stay on the
+/// async runtime (the update check and install) use it directly.
+fn log_failure<T>(name: &str, result: Result<T>) -> Result<T> {
     if let Err(error) = &result {
         log::warn!("{name}: {} ({:?}){}", error.message, error.code, error.path.as_ref().map(|p| format!(" at {p}")).unwrap_or_default());
     }
     result
+}
+
+/// An opener plugin call that failed: the raw error is logged, she reads `sentence`.
+fn opener_failed(what: &'static str, sentence: &'static str) -> impl FnOnce(tauri_plugin_opener::Error) -> ToteError {
+    move |error| {
+        log::warn!("{what}: {error}");
+        ToteError::new(ErrorCode::Io, sentence)
+    }
 }
 
 fn core_of(state: &State<'_, AppState>) -> Arc<Core> {
@@ -250,7 +297,7 @@ pub async fn open_path(state: State<'_, AppState>, app: tauri::AppHandle, path: 
         }
         app.opener()
             .open_path(paths::display(&confined), None::<&str>)
-            .map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not open it: {e}")))
+            .map_err(opener_failed("open_path", "Windows could not open that file. Open it from File Explorer instead."))
     })
     .await
 }
@@ -266,7 +313,7 @@ pub async fn reveal_path(state: State<'_, AppState>, app: tauri::AppHandle, path
         }
         app.opener()
             .reveal_item_in_dir(&confined)
-            .map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not show it: {e}")))
+            .map_err(opener_failed("reveal_path", "Windows could not show that file in its folder. Open the folder from File Explorer instead."))
     })
     .await
 }
@@ -280,7 +327,7 @@ pub async fn open_school_files(state: State<'_, AppState>, app: tauri::AppHandle
         std::fs::create_dir_all(&school)?;
         app.opener()
             .open_path(paths::display(&school), None::<&str>)
-            .map_err(|e| ToteError::new(ErrorCode::Io, format!("Windows could not open the folder: {e}")))
+            .map_err(opener_failed("open_school_files", "Windows could not open School Files. Open it from File Explorer instead."))
     })
     .await
 }
@@ -502,8 +549,17 @@ pub async fn remove_template(state: State<'_, AppState>, id: i64) -> Result<()> 
     .await
 }
 
+/// A fresh copy of a template: where it is, and whether Windows opened it,
+/// so the renderer can word its toast (audit T-19).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateCopy {
+    pub path: String,
+    pub opened: bool,
+}
+
 #[tauri::command]
-pub async fn use_template(state: State<'_, AppState>, app: tauri::AppHandle, id: i64) -> Result<String> {
+pub async fn use_template(state: State<'_, AppState>, app: tauri::AppHandle, id: i64) -> Result<TemplateCopy> {
     use tauri_plugin_opener::OpenerExt;
     let core = core_of(&state);
     blocking("use_template", move || {
@@ -511,11 +567,15 @@ pub async fn use_template(state: State<'_, AppState>, app: tauri::AppHandle, id:
             let conn = core.db()?;
             templates::use_template(&conn, &core.roots, id)?
         };
-        let text = paths::display(&copy);
-        if let Err(error) = app.opener().open_path(&text, None::<&str>) {
-            log::warn!("open template copy: {error}");
-        }
-        Ok(text)
+        let path = paths::display(&copy);
+        let opened = match app.opener().open_path(&path, None::<&str>) {
+            Ok(()) => true,
+            Err(error) => {
+                log::warn!("use_template: the copy could not be opened ({error})");
+                false
+            }
+        };
+        Ok(TemplateCopy { path, opened })
     })
     .await
 }
@@ -639,14 +699,14 @@ pub fn apply_autostart(app: &tauri::AppHandle, enabled: bool) {
 pub async fn check_update(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<Option<crate::update::UpdateInfo>> {
     let core = state.0.clone();
     let enabled = settings_of(&core).check_updates;
-    crate::update::check(&app, &core, enabled).await
+    log_failure("check_update", crate::update::check(&app, &core, enabled).await)
 }
 
 /// Downloads, verifies and installs the newest version. On Windows the
 /// installer closes Tote and opens the new version.
 #[tauri::command]
 pub async fn install_update(app: tauri::AppHandle) -> Result<()> {
-    crate::update::install(&app).await
+    log_failure("install_update", crate::update::install(&app).await)
 }
 
 /// Which browsers would save downloads outside Downloads (spec 5.1.2).
@@ -836,6 +896,38 @@ mod tests {
         let with_inside = covered_folders(roots.clone(), &pending(&inside_other));
         assert_eq!(check_folder_choice(&other, &with_inside, Some(&home)).unwrap_err().message, too_wide, "above a folder added this session");
         assert!(check_folder_choice(&base.join("Elsewhere"), &with_inside, Some(&home)).is_ok());
+    }
+
+    /// Settings text a newer or older Tote cannot read is kept aside once,
+    /// the live row stays, and the defaults are used (audit T-47).
+    #[test]
+    fn unreadable_settings_are_kept_aside_once_before_the_defaults_are_used() {
+        let conn = db::open_memory().unwrap();
+        let bad = r#"{"startAtLogin":"yes","quarters":7}"#;
+        db::set_setting(&conn, "settings", bad).unwrap();
+        let settings = settings_from(&conn);
+        assert_eq!(settings.start_at_login, Settings::default().start_at_login);
+        assert!(settings.quarters.is_empty());
+        settings_from(&conn);
+        let kept: Vec<(String, String)> = {
+            let mut stmt = conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'settings.unreadable-%'").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(kept.len(), 1, "kept once, not on every read: {kept:?}");
+        assert_eq!(kept[0].1, bad);
+        assert_eq!(db::get_setting(&conn, "settings").unwrap().as_deref(), Some(bad), "the live row is left for a newer Tote to read");
+        let good = serde_json::to_string(&Settings { tour_done: true, ..Settings::default() }).unwrap();
+        db::set_setting(&conn, "settings", &good).unwrap();
+        assert!(settings_from(&conn).tour_done, "readable settings are read as before");
+        assert!(settings_from(&db::open_memory().unwrap()).start_at_login, "nothing stored means the defaults");
+    }
+
+    /// The renderer words the template toast from `opened`.
+    #[test]
+    fn a_template_copy_says_whether_it_opened() {
+        let json = serde_json::to_value(TemplateCopy { path: "C:\\Her\\Documents\\School Files\\Word\\2026-10\\Plan 2026-10-16.docx".into(), opened: false }).unwrap();
+        assert_eq!(json["opened"], serde_json::json!(false));
+        assert!(json["path"].as_str().unwrap().ends_with("Plan 2026-10-16.docx"));
     }
 
     #[test]

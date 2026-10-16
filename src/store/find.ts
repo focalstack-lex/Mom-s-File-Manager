@@ -20,6 +20,8 @@ interface FindStore {
   selected: string[];
   previewPath: string | null;
   loading: boolean;
+  /** The last request failed; the screen keeps the previous answer and says search is not available. */
+  failed: boolean;
   setQuery(query: string): void;
   setDateChip(chip: DateChip): void;
   toggleKind(kind: Kind): void;
@@ -66,6 +68,7 @@ export const useFind = create<FindStore>((set, get) => ({
   selected: [],
   previewPath: null,
   loading: false,
+  failed: false,
   setQuery: (query) => {
     set({ query });
     window.clearTimeout(debounce);
@@ -99,14 +102,15 @@ export const useFind = create<FindStore>((set, get) => ({
       const result = await ipc.find(query, { from: span.from, to: span.to, kinds, sources });
       if (id !== requestId) return;
       const live = new Set(allRows(result).map((r) => r.path));
-      set({ result, loading: false, selected: get().selected.filter((p) => live.has(p)) });
+      set({ result, loading: false, failed: false, selected: get().selected.filter((p) => live.has(p)) });
       const preview = get().previewPath;
       if (preview && !live.has(preview)) set({ previewPath: null });
     } catch (error) {
       if (id !== requestId) return;
-      set({ loading: false });
-      if (!quiet) useApp.getState().fail(error);
-      else console.warn("Tote: background refresh failed", error);
+      // The last answer stays on screen; the Find screen shows one quiet line
+      // instead of a toast, so a broken search never looks like no match.
+      console.warn("Tote: search failed", error);
+      set({ loading: false, failed: true });
     }
   },
   loadTemplates: async () => {

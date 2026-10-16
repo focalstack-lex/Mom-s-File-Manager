@@ -5,8 +5,10 @@
 
 import { CircleAlert, Copy, FolderInput, FolderOpen, FolderPlus, History, Pencil, RotateCcw, Trash, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { describeError, plainMessage, undoText } from "../lib/errors";
 import { locationLine, relativeTime } from "../lib/format";
 import { ipc } from "../lib/ipc";
+import { LoadFailed } from "../components/LoadFailed";
 import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
 import { activityFirstPage, groupByDay, PAGE, takeRows, useShown } from "../lib/paging";
@@ -45,25 +47,42 @@ export function fileStillThere(op: OpRow): boolean {
   return !(op.kind === "recycle" && op.message === REMOVED_BY_WINDOWS);
 }
 
+/** The next step when a failed row carries no reason: the file never moved. */
+const STAYED = "It is still where it was. Try again from Find.";
+
+/**
+ * A failed change says "Could not ..." with the reason the native side gave
+ * and what to do next; a success says what happened. Program text never
+ * passes through: a reason that is not plain words is replaced.
+ */
 export function describeOp(op: OpRow, roots: string[]): { title: string; detail: string } {
   const name = nameOf(op.kind === "newFolder" ? op.src : op.dst ?? op.src);
+  const failed = op.status === "failed";
   switch (op.kind) {
     case "autoSort":
-      return op.status === "failed"
-        ? { title: `${nameOf(op.src)} was left in Downloads`, detail: op.message ?? "" }
+      return failed
+        ? { title: `${nameOf(op.src)} was left in Downloads`, detail: plainMessage(op.message, "It is still in Downloads.") }
         : { title: `Filed ${name}`, detail: `${folderOf(op.dst, roots)}, automatically` };
     case "move":
-      return { title: `Moved ${name}`, detail: `${folderOf(op.src, roots)} to ${folderOf(op.dst, roots).replace(/^in /, "")}` };
+      return failed
+        ? { title: `Could not move ${nameOf(op.src)}`, detail: plainMessage(op.message, STAYED) }
+        : { title: `Moved ${name}`, detail: `${folderOf(op.src, roots)} to ${folderOf(op.dst, roots).replace(/^in /, "")}` };
     case "rename":
-      return { title: `Renamed ${nameOf(op.src)}`, detail: `now ${name}` };
+      return failed
+        ? { title: `Could not rename ${nameOf(op.src)}`, detail: plainMessage(op.message, STAYED) }
+        : { title: `Renamed ${nameOf(op.src)}`, detail: `now ${name}` };
     case "newFolder":
-      return { title: `New folder ${name}`, detail: folderOf(op.src, roots) };
+      return failed
+        ? { title: `Could not make the folder ${name}`, detail: plainMessage(op.message, "Try again from Move to.") }
+        : { title: `New folder ${name}`, detail: folderOf(op.src, roots) };
     case "recycle":
-      return op.status === "failed"
-        ? { title: `Could not send ${nameOf(op.src)} to the Recycle Bin`, detail: op.message ?? "" }
+      return failed
+        ? { title: `Could not send ${nameOf(op.src)} to the Recycle Bin`, detail: plainMessage(op.message, "Windows could not move it to the Recycle Bin. Try again, or delete it in File Explorer if you are sure.") }
         : { title: `Moved ${nameOf(op.src)} to the Recycle Bin`, detail: folderOf(op.src, roots) };
     case "copy":
-      return { title: `New copy ${name}`, detail: `from template ${nameOf(op.src)}` };
+      return failed
+        ? { title: `Could not make a copy of ${nameOf(op.src)}`, detail: plainMessage(op.message, "The template was not touched. Try again from Find.") }
+        : { title: `New copy ${name}`, detail: `from template ${nameOf(op.src)}` };
   }
 }
 
@@ -97,6 +116,7 @@ function OpIcon({ op }: { op: OpRow }) {
 
 export function ActivityView({ info }: { info: AppInfo }) {
   const [ops, setOps] = useState<OpRow[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const toast = useApp((s) => s.toast);
   const fail = useApp((s) => s.fail);
   const refreshFind = useFind((s) => s.refresh);
@@ -104,14 +124,16 @@ export function ActivityView({ info }: { info: AppInfo }) {
   const load = async () => {
     try {
       setOps(await ipc.activity());
+      setLoadError(null);
     } catch (error) {
-      fail(error);
+      // The sentence sits where the list would be, with Try again; never a skeleton for good.
+      console.warn("Tote:", error);
+      setLoadError(describeError(error));
     }
   };
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Today and Yesterday first (10 to 30 rows), then older on request.
@@ -125,7 +147,8 @@ export function ActivityView({ info }: { info: AppInfo }) {
   const undoAll = async (batch: string) => {
     try {
       const result = await ipc.undoBatch(batch);
-      toast(result.failed.length === 0 ? "Everything is back where it was." : `Put back ${result.undone}; ${result.failed.length} could not be moved back.`, result.failed.length === 0 ? "info" : "error");
+      // The same words as the toast Undo: what went back, and the first file that did not.
+      toast(undoText(result.undone, result.failed.map((name) => ({ name, reason: null }))), result.failed.length === 0 ? "info" : "error");
       await load();
       await refreshFind();
     } catch (error) {
@@ -136,7 +159,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
   const undo = async (op: OpRow) => {
     try {
       await ipc.undo(op.id);
-      toast("Put back where it was.");
+      toast(undoText(1, []));
       await load();
       await refreshFind();
     } catch (error) {
@@ -150,8 +173,9 @@ export function ActivityView({ info }: { info: AppInfo }) {
         <h1 className="view-title">Activity</h1>
         <p className="view-lead">Everything Tote changed, and everything you changed through it. Undo puts it back.</p>
       </div>
+      {loadError && <LoadFailed text={loadError} onRetry={() => void load()} testId="activity-load-failed" />}
       {ops === null ? (
-        <SkeletonList label="Loading activity" rows={4} />
+        !loadError && <SkeletonList label="Loading activity" rows={4} />
       ) : ops.length === 0 ? (
         <div className="card empty">
           <span className="empty-mark" aria-hidden>

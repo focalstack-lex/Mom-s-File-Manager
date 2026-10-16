@@ -6,9 +6,9 @@ Where things live. Read this before changing anything; update it in the same cha
 
 | File | Job |
 | --- | --- |
-| `lib.rs` | Builds the Tauri app: plugins, database, roots, tray, watchers, scan, command list. Close hides the window. Start at login is applied only when settings survived a database rebuild. |
+| `lib.rs` | Builds the Tauri app: plugins, database, roots, tray, watchers, scan, command list. Close hides the window. Start at login is applied only when settings survived a database rebuild. A database that cannot be opened at start is one plain sentence in a Windows message box (`show_start_failure`; log only in a dry run) before the exit. |
 | `main.rs` | Entry point; no console window in release. |
-| `error.rs` | `ToteError { code, message, path? }`, the one error type every command returns; the codes include `inUse`, `notInRecycleBin`, `noRecycleBin`, `updateSignature` and `updateInstall` (2026-10-16). |
+| `error.rs` | `ToteError { code, message, path? }`, the one error type every command returns; `message` is always one plain sentence with a next step and raw OS or library text goes to the log (`From<std::io::Error>` maps the kind through `io_words`, sharing violations 32 and 33 to `inUse`; `From<rusqlite::Error>` says a read failed, `db_write` and `as_write` say a save failed); the codes include `inUse`, `notInRecycleBin`, `noRecycleBin`, `updateSignature` and `updateInstall` (2026-10-16). |
 | `paths.rs` | Known folders (`Roots`), `confine` (the boundary check), `validate_name`. |
 | `sorter.rs` | `Kind`, `classify`, `stays_in_downloads`, `destination`, `unique_path`. |
 | `origin.rs` | `Zone.Identifier` reading and the host-to-label table. |
@@ -17,7 +17,7 @@ Where things live. Read this before changing anything; update it in the same cha
 | `dupes.rs` | `group_key` for near-duplicate names. |
 | `db.rs` | Schema, open with damage recovery (`set_aside` moves the main file with its -wal and -shm under one stamp; a -wal another program holds is copied beside the kept copy and left, a held -shm is logged and left; when the fresh file then cannot be opened, `put_back` returns the damaged copy under its own name so the next start reruns the rebuild with nothing lost; `salvage` copies settings, pins, templates and ops out of the damaged copy one table per statement, `Rebuilt { kept }` reports it), settings table, `migrate` (columns added later: `ops.batch`, `ops.size`, `ops.recycled_at`; a one-time rewrite of apostrophe names in `files_fts` under the `fts_name_forms` marker). |
 | `index.rs` | `walk`, `upsert`, `relocate`, `remove`, `search` (`words` and `fts_query` cut typed text like the tokenizer; `indexed_name` stores a name with an apostrophe with and without it; names rank before contents; a wordless box browses with the chips; `MARK_START` and `MARK_END` wrap snippet matches), `recent_downloads`, pins, `group`. |
-| `ops.rs` | Logged operations: move, rename, new folder, recycle (`recycle_refusal`: no Recycle Bin on a drive that is not fixed, through winsafe `GetDriveType`, or for a path of 260 or more UTF-16 units; each row is finished right after its delete, so a later target that fails leaves the earlier rows recorded; the Recycle Bin is listed once after the deletes and only a row it contradicts is marked failed; the row records the size and the moment), undo (`pick_restore` matches a Recycle Bin item by path, recorded moment and size; the shell is given the full name at `landing_for`, the recorded path or "Name (2).docx" when another file has taken it, and `check_restored` judges that landing only, so a file already at the path is never checked or sent back), `transfer`. |
+| `ops.rs` | Logged operations: move, rename, new folder, recycle (`recycle_refusal`: no Recycle Bin on a drive that is not fixed, through winsafe `GetDriveType`, or for a path of 260 or more UTF-16 units; each row is finished right after its delete, so a later target that fails leaves the earlier rows recorded; the Recycle Bin is listed once after the deletes and only a row it contradicts is marked failed; the row records the size and the moment), undo (`pick_restore` matches a Recycle Bin item by path, recorded moment and size; the shell is given the full name at `landing_for`, the recorded path or "Name (2).docx" when another file has taken it, and `check_restored` judges that landing only, so a file already at the path is never checked or sent back), `transfer`. A failed Recycle Bin call is worded by `recycle_failed` (a file held open reads as `inUse`); every ops write goes through `write`, so a failure says not saved. |
 | `cleanup.rs` | The three Clean up lists. |
 | `organize.rs` | Organize now: grade and subject rules, `destination_for`, `plan` (read from disk), `run` (one batch, lock per file). |
 | `browsers.rs` | Reads Chrome, Edge, Brave and Firefox download settings (read only) and says which need a change. |
@@ -27,9 +27,9 @@ Where things live. Read this before changing anything; update it in the same cha
 | `worker.rs` | Downloads watcher and sorting loop, index watchers, initial scan, notification, the 15-minute To do check (`tasks_check`: purge, snapshot, reminder). |
 | `tray.rs` | Tray icon and menu, `show`. |
 | `update.rs` | Daily update check against codewithlex.site and the signed one-click install. |
-| `commands.rs` | Every `#[tauri::command]`, `Settings`, `AppInfo` (`rebuilt`, `tasks_unavailable`); `check_folder_choice` (against `covered_folders`: the roots Tote started with plus the folders added this session) and `choose_folder` behind `add_folder`. |
+| `commands.rs` | Every `#[tauri::command]`, `Settings`, `AppInfo` (`rebuilt`, `tasks_unavailable`); `check_folder_choice` (against `covered_folders`: the roots Tote started with plus the folders added this session) and `choose_folder` behind `add_folder`; `settings_from` keeps settings text it cannot read aside under `settings.unreadable-<time>` before using the defaults; `use_template` returns `TemplateCopy { path, opened }`; `blocking` and `log_failure` put every failed command in the log, and `opener_failed` words a failed Open or Show in folder. |
 | `state.rs` | `Core` (db mutex, roots, status, `rebuilt`, `tasks_unavailable`) and `AppState`. |
-| `update.rs` | Once-a-day update check against codewithlex.site/tote/latest.json, signed download and install; never online in a dry run unless TOTE_UPDATE_VERIFY. |
+| `update.rs` | Once-a-day update check against codewithlex.site/tote/latest.json, signed download and install; never online in a dry run unless TOTE_UPDATE_VERIFY. A failure is logged with the library's text and worded by its `Stage` (`words_for`): a failed check or download is `network`, a signature that does not check out `updateSignature`, a failed install `updateInstall`. |
 
 ## Renderer (`src`)
 
@@ -38,21 +38,21 @@ Where things live. Read this before changing anything; update it in the same cha
 | `main.tsx` | Boot; installs the mock backend in a plain browser during dev. |
 | `App.tsx` | Sidebar, view switch, events, walkthrough trigger, the start-up notices (to-do restore, index rebuild). |
 | `styles.css` | Tokens (contrast-gated), layout, components, responsive rules. |
-| `lib/ipc.ts` | Typed command calls and event listening; routes to the mock when present. |
+| `lib/ipc.ts` | Typed command calls and event listening; routes to the mock when present. `useTemplate` answers `{ path, opened }` (2026-10-16). |
 | `lib/types.ts` | Shapes shared with the Rust structs. |
 | `lib/format.ts` | Relative times, location words, sizes, stems. |
 | `lib/dates.ts` | Date chips and spans, quarter and school year. |
-| `lib/errors.ts` | Error code to plain sentence; `recycleFailureText` words a Recycle Bin action that did not fully succeed. |
+| `lib/errors.ts` | `describeError`: the native sentence when it is plain, else `CODE_SENTENCES[code]`; `isPlain` and `plainMessage` keep program text (os error, Error during, debug dumps) off the screen; `recycleFailureText` words a Recycle Bin action that did not fully succeed; `undoText` words an Undo that only partly worked ("Put back 5 of 6. X: reason"), shared by the toast Undo and Activity. |
 | `lib/browsers.ts` | Browser check labels and the Find notice text. |
 | `lib/organize.ts` | Folder labels, plan summary, word lists, folding a run into one Activity entry. |
 | `lib/todo.ts` | To do groups (Overdue to No date), due dates in words, repeat words, `hasQuarters`. |
 | `lib/paging.ts` | Page sizes, day grouping, `takeRows`, `useShown` (grow on request, reset on a new search). |
 | `lib/focus.ts` | Tab trapping for the dialog and walkthrough; arrow-key movement between file rows. |
 | `lib/search.ts` | `words` and `hasWord`: typed text cut the way `index::words` cuts names; the Find store and the mock decide with it whether typed text is a search. |
-| `store/app.ts` | View, app info, settings save, toasts. |
-| `store/find.ts` | Query, chips, results, selection, preview. |
+| `store/app.ts` | View, app info (`infoError` when the first load failed: the shell shows it with Try again), settings save (returns whether it was kept), toasts. |
+| `store/find.ts` | Query, chips, results, selection, preview; `failed` keeps the last answer on screen when a search fails. |
 | `store/tour.ts` | Walkthrough steps and state, `placeCard`. |
-| `store/todo.ts` | Tasks, the open task, actions with toast Undo (reopen, restore). |
+| `store/todo.ts` | Tasks (`loadError` when a load failed), the open task, actions with toast Undo (`reopen` and `restore` return whether the task is back). |
 | `components/ResultRow.tsx` | One file row with actions, inline rename, copies; `snippetHtml` turns the snippet marks into `<mark>`. |
 | `components/Chips.tsx` | Date chips and More filters. |
 | `components/ActionBar.tsx` | Bottom bar for selected files. |
@@ -64,9 +64,9 @@ Where things live. Read this before changing anything; update it in the same cha
 | `components/PreviewPanel.tsx` | Quick preview. |
 | `components/Tour.tsx` | Walkthrough overlay with mask, ring and arrow. |
 | `components/TitleBar.tsx` | The window's own title bar on the green shell: drag region and Windows-style window buttons; no controls in the browser harness. |
-| `components/Dialog.tsx`, `Toasts.tsx`, `icons.tsx`, `Skeleton.tsx`, `ShowMore.tsx` | Shared pieces: modal with focus trap, toasts with Undo, kind tiles and the Tote mark, loading rows, the "Showing 10 of 84" foot with Show more. |
+| `components/Dialog.tsx`, `Toasts.tsx`, `icons.tsx`, `Skeleton.tsx`, `ShowMore.tsx`, `LoadFailed.tsx` | Shared pieces: modal with focus trap, toasts with Undo (the Undo tries every part, names what stayed through `undoText`, and says "Back on your list." only when the task is back), kind tiles and the Tote mark, loading rows, the "Showing 10 of 84" foot with Show more, the one-line "could not load" notice with Try again. |
 | `views/FindView.tsx`, `TodoView.tsx`, `CleanupView.tsx`, `ActivityView.tsx`, `SettingsView.tsx` | The five screens. |
-| `dev/mockBackend.ts` | Fake native side for the browser harness and the UI drive; its search matches by word start and marks snippets the way `index.rs` does; edge states come from the query string (`?rebuilt=kept`, `?rebuilt=lost`, `?tasks=unavailable`). |
+| `dev/mockBackend.ts` | Fake native side for the browser harness and the UI drive; its search matches by word start and marks snippets the way `index.rs` does; edge states come from the query string (`?rebuilt=kept`, `?rebuilt=lost`, `?tasks=unavailable`); `window.__toteMockFail = { command, error, times? }` makes the next call of that command reject (`times` calls, default 1; a mount load runs twice under StrictMode in the harness, so the drive plans 2 and clears the rest before Try again). |
 | `tests/*.test.ts` | vitest for helpers, stores and the text gate. |
 
 ## Brand (`brand`)
@@ -83,3 +83,4 @@ Where things live. Read this before changing anything; update it in the same cha
 - `unsafe_code` is denied, and every `windows-sys` function is `unsafe`: a Win32 call goes through a safe wrapper crate with a documented reason (winsafe for `GetDriveType`), never through `windows-sys` directly.
 - SQLite folds a WAL it can checkpoint into the file and deletes it when the last connection closes, so a damaged database's -wal has usually gone before `db::open` sets the file aside; `set_aside` still moves -wal and -shm for the case where the checkpoint failed (the test marks them read-only to get there).
 - The Recycle Bin crate reports success where Windows deleted for good (a non-fixed drive, a path of 260 or more units), so `ops::recycle` refuses those first and reads the bin afterwards instead of trusting the call.
+- `ToteError.message` is what she reads: one plain sentence with a next step, never OS or library text. The `From` impls in `error.rs` do that for io and SQLite errors; a `map_err` on a plugin or crate error writes its own `log::warn!` line with the raw text first, then builds the sentence. A `format!("...: {e}")` in a message is the bug the 2026-10-16 audit found (T-17).

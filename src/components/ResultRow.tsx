@@ -6,6 +6,7 @@
 
 import { Check, Copy, FolderOpen, Pin, X } from "lucide-react";
 import { useId, useState, type KeyboardEvent } from "react";
+import { describeError } from "../lib/errors";
 import { focusSiblingRow } from "../lib/focus";
 import { ipc } from "../lib/ipc";
 import { copiesLabel, extOf, locationLine, originLine, stemOf } from "../lib/format";
@@ -65,7 +66,8 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
       await refresh();
       toast(`Renamed to ${stem.trim()}${extOf(file.name)}`);
     } catch (error) {
-      setRenameError(error && typeof error === "object" && "message" in error ? String((error as { message: string }).message) : "That name will not work.");
+      // The same plain sentence a toast would show, under the field instead.
+      setRenameError(describeError(error));
     }
   };
 

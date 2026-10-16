@@ -5,6 +5,7 @@
 import { FolderInput, Pencil, Pin, Trash, X } from "lucide-react";
 import { useState } from "react";
 import { recycleFailureText } from "../lib/errors";
+import { locationLine } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { moveOpIds, useApp } from "../store/app";
 import { allRows, useFind } from "../store/find";
@@ -18,6 +19,7 @@ export function ActionBar({ onRename }: { onRename(path: string): void }) {
   const refresh = useFind((s) => s.refresh);
   const toast = useApp((s) => s.toast);
   const fail = useApp((s) => s.fail);
+  const roots = useApp((s) => s.info?.roots ?? []);
   const [picking, setPicking] = useState(false);
   const [confirmRecycle, setConfirmRecycle] = useState(false);
   if (selected.length === 0) return null;
@@ -32,7 +34,9 @@ export function ActionBar({ onRename }: { onRename(path: string): void }) {
       const moved = await ipc.moveFiles(selected, destination);
       clear();
       await refresh();
-      toast(moved.length === 1 ? "Moved." : `Moved ${moved.length} files.`, "info", await moveOpIds(moved));
+      // The toast names the folder the way Find does ("School Files > Word > October 2026").
+      const where = locationLine(destination, roots).replace(/^in /, "");
+      toast(moved.length === 1 ? `Moved to ${where}.` : `Moved ${moved.length} files to ${where}.`, "info", await moveOpIds(moved));
     } catch (error) {
       fail(error);
       await refresh();

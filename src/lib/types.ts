@@ -178,6 +178,12 @@ export interface Template {
   missing: boolean;
 }
 
+/** A dated copy made from a template; `opened` says whether Windows opened it. */
+export interface TemplateCopy {
+  path: string;
+  opened: boolean;
+}
+
 export interface ToteError {
   code:
     | "notFound"

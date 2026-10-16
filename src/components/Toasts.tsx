@@ -1,11 +1,28 @@
 // Short confirmations in the corner. Errors stay a little longer; a change
-// that can be reversed carries its own Undo button.
+// that can be reversed carries its own Undo button. Undo tries every part
+// and then says what really happened, in the same words everywhere.
 
 import { CircleAlert, CircleCheck, Undo2, X } from "lucide-react";
+import { describeError, undoText, type UndoFailure } from "../lib/errors";
 import { ipc } from "../lib/ipc";
+import type { OpRow } from "../lib/types";
 import { useApp, type Toast } from "../store/app";
 import { useFind } from "../store/find";
 import { useTodo } from "../store/todo";
+
+/** The file names behind Activity ids, read once so a failed Undo can be named; "That file" when the log cannot be read. */
+async function namesFor(stuck: { id: number; reason: string }[]): Promise<UndoFailure[]> {
+  let ops: OpRow[] = [];
+  try {
+    ops = await ipc.activity();
+  } catch (error) {
+    console.warn("Tote: could not read Activity for the names", error);
+  }
+  return stuck.map(({ id, reason }) => {
+    const op = ops.find((o) => o.id === id);
+    return { name: (op?.dst ?? op?.src ?? "").split(/[\\/]/).pop() || "That file", reason };
+  });
+}
 
 export function Toasts() {
   const toasts = useApp((s) => s.toasts);
@@ -16,22 +33,40 @@ export function Toasts() {
 
   const undo = async (item: Toast) => {
     dismiss(item.id);
-    try {
-      if (item.undoTask) {
-        const todo = useTodo.getState();
-        if (item.undoTask.action === "reopen") await todo.reopen(item.undoTask.id);
-        else await todo.restore(item.undoTask.id);
-        toast("Back on your list.");
+    if (item.undoTask) {
+      const todo = useTodo.getState();
+      const ok = item.undoTask.action === "reopen" ? await todo.reopen(item.undoTask.id) : await todo.restore(item.undoTask.id);
+      // The store has already said what went wrong; only a task that is back gets the good news.
+      if (ok) toast("Back on your list.");
+      return;
+    }
+    let undone = 0;
+    const failed: UndoFailure[] = [];
+    if (item.undoBatch) {
+      try {
+        const result = await ipc.undoBatch(item.undoBatch);
+        undone += result.undone;
+        failed.push(...result.failed.map((name) => ({ name, reason: null })));
+      } catch (error) {
+        fail(error);
         return;
       }
-      // Newest first, so a chain of moves unwinds in the right order.
-      if (item.undoBatch) await ipc.undoBatch(item.undoBatch);
-      for (const id of [...(item.undoIds ?? [])].reverse()) await ipc.undo(id);
-      await refreshFind();
-      toast("Put back where it was.");
-    } catch (error) {
-      fail(error);
     }
+    // Newest first, so a chain of moves unwinds in the right order. A file
+    // that cannot go back does not stop the others; it is named at the end.
+    const stuck: { id: number; reason: string }[] = [];
+    for (const id of [...(item.undoIds ?? [])].reverse()) {
+      try {
+        await ipc.undo(id);
+        undone += 1;
+      } catch (error) {
+        console.warn("Tote: undo failed", error);
+        stuck.push({ id, reason: describeError(error) });
+      }
+    }
+    if (stuck.length > 0) failed.push(...(await namesFor(stuck)));
+    await refreshFind();
+    toast(undoText(undone, failed), failed.length === 0 ? "info" : "error");
   };
 
   if (toasts.length === 0) return null;

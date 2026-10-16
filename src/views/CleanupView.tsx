@@ -7,13 +7,14 @@ import { CheckCheck, ChevronRight, CircleCheck, FolderTree, Trash } from "lucide
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Dialog } from "../components/Dialog";
 import { FolderPicker } from "../components/FolderPicker";
+import { LoadFailed } from "../components/LoadFailed";
 import { OrganizeDialog } from "../components/OrganizeDialog";
 import { planSummary } from "../lib/organize";
 import { KindTile } from "../components/icons";
 import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
 import { OPEN_CARD_MAX, PAGE, useShown } from "../lib/paging";
-import { recycleFailureText } from "../lib/errors";
+import { describeError, recycleFailureText } from "../lib/errors";
 import { locationLine, monthName, relativeTime } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import type { AppInfo, CleanupReport, OrganizePlan, Suggestion } from "../lib/types";
@@ -58,6 +59,7 @@ function FoldSection({ id, title, lead, count, action, testId, children }: { id:
 
 export function CleanupView({ info }: { info: AppInfo }) {
   const [report, setReport] = useState<CleanupReport | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [ticked, setTicked] = useState<string[]>([]);
   const [skipped, setSkipped] = useState<string[]>([]);
   const [picking, setPicking] = useState<string | null>(null);
@@ -72,10 +74,13 @@ export function CleanupView({ info }: { info: AppInfo }) {
       const [nextReport, nextPlan] = await Promise.all([ipc.cleanup(), ipc.organizePlan()]);
       setReport(nextReport);
       setPlan(nextPlan);
+      setLoadError(null);
     } catch (error) {
-      fail(error);
+      // The sentence sits where the cards would be, with Try again; never a skeleton for good.
+      console.warn("Tote:", error);
+      setLoadError(describeError(error));
     }
-  }, [fail]);
+  }, []);
 
   // Organize now (spec 5.11): the plan is worked out again on the native side
   // when it runs; only the confirmed file list travels.
@@ -115,7 +120,7 @@ export function CleanupView({ info }: { info: AppInfo }) {
   const accept = (s: Suggestion) => act(async () => moveOpIds(await ipc.moveFiles([s.file.path], s.suggestedDir)), `Moved to ${dirLabel(s.suggestedDir, info.roots)}.`);
   const moveTo = (path: string, dir: string) => {
     setPicking(null);
-    return act(async () => moveOpIds(await ipc.moveFiles([path], dir)), "Moved.");
+    return act(async () => moveOpIds(await ipc.moveFiles([path], dir)), `Moved to ${dirLabel(dir, info.roots)}.`);
   };
   const recycleTicked = async () => {
     setConfirm(false);
@@ -183,8 +188,9 @@ export function CleanupView({ info }: { info: AppInfo }) {
         <h1 className="view-title">Clean up</h1>
         <p className="view-lead">Things Tote noticed. Nothing moves until you click, and everything can be undone.</p>
       </div>
+      {loadError && <LoadFailed text={loadError} onRetry={() => void load()} testId="cleanup-load-failed" />}
       {report === null ? (
-        <SkeletonList label="Looking around" />
+        !loadError && <SkeletonList label="Looking around" />
       ) : tidy ? (
         <div className="card empty" data-testid="cleanup-tidy">
           <span className="empty-mark is-good" aria-hidden>

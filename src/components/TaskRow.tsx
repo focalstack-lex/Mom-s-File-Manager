@@ -94,7 +94,7 @@ function TaskDetails({ id, task, info }: { id: string; task: Task; info: AppInfo
           </button>
         )}
       </div>
-      {task.due === null ? <p className="field-note">Pick a due date to make it repeat.</p> : !quarters && <p className="field-note">Every quarter needs the quarter dates in Settings.</p>}
+      {task.due === null ? <p className="field-note">Pick a due date to make it repeat.</p> : !quarters && <p className="field-note">Add the quarter dates in Settings first.</p>}
       {task.files.length > 0 && (
         <div className="task-files">
           {task.files.map((file) => (

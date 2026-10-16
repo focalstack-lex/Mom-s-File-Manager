@@ -1,5 +1,8 @@
 //! The one error type every command returns. Serialized for the renderer as
-//! `{ code, message, path? }`; the renderer maps `code` to plain copy.
+//! `{ code, message, path? }`. `message` is always one plain sentence with a
+//! next step, the sentence she reads; raw OS or library text goes to the log
+//! only (audit T-17, 2026-10-16). The renderer falls back to one fixed
+//! sentence per `code` when `message` is missing.
 
 use serde::Serialize;
 
@@ -31,6 +34,13 @@ pub enum ErrorCode {
     UpdateInstall,
 }
 
+/// What a failed database read says; `From<rusqlite::Error>` assumes a read.
+pub const DB_READ: &str = "Tote could not read its list right now. Try again in a moment.";
+/// What a failed database write says.
+pub const DB_WRITE: &str = "Tote could not save that. Try again in a moment.";
+/// What a file another program holds open says (a Windows sharing violation).
+pub const IN_USE: &str = "That file is open in another program. Close it there, then try again.";
+
 #[derive(Debug, Clone, Serialize, thiserror::Error)]
 #[error("{message}")]
 #[serde(rename_all = "camelCase")]
@@ -50,8 +60,32 @@ impl ToteError {
         Self::new(ErrorCode::Validation, message)
     }
 
+    /// A `Db` error with a message of the caller's own, for failures that
+    /// never reach her (db.rs reports them at start and in the log).
     pub fn db(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Db, message)
+    }
+
+    /// A database read that failed: the raw error is logged, she reads `DB_READ`.
+    pub fn db_read(error: impl std::fmt::Display) -> Self {
+        log::warn!("database read: {error}");
+        Self::new(ErrorCode::Db, DB_READ)
+    }
+
+    /// A database write that failed: the raw error is logged, she reads `DB_WRITE`.
+    pub fn db_write(error: impl std::fmt::Display) -> Self {
+        log::warn!("database write: {error}");
+        Self::new(ErrorCode::Db, DB_WRITE)
+    }
+
+    /// Rewords a `Db` error that came through `From` (which assumes a read)
+    /// for a caller that was writing, such as through `db::set_setting`. Any
+    /// other code passes through unchanged.
+    pub fn as_write(mut self) -> Self {
+        if self.code == ErrorCode::Db {
+            self.message = DB_WRITE.into();
+        }
+        self
     }
 
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
@@ -60,22 +94,34 @@ impl ToteError {
     }
 }
 
+/// The code and sentence for an io error. Windows reports a file another
+/// program holds open as a sharing or lock violation (os errors 32 and 33),
+/// which std leaves uncategorized, so the raw code is read first.
+pub fn io_words(error: &std::io::Error) -> (ErrorCode, &'static str) {
+    use std::io::ErrorKind;
+    if cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)) {
+        return (ErrorCode::InUse, IN_USE);
+    }
+    match error.kind() {
+        ErrorKind::NotFound => (ErrorCode::NotFound, "That file is no longer there. Search for it in Find."),
+        ErrorKind::PermissionDenied => (ErrorCode::PermissionDenied, "Windows did not allow that change. Check the file in File Explorer, then try again."),
+        ErrorKind::AlreadyExists => (ErrorCode::AlreadyExists, "A file with that name already exists there. Pick another name."),
+        ErrorKind::StorageFull => (ErrorCode::Io, "The drive is full. Free some space, then try again."),
+        _ => (ErrorCode::Io, "Tote could not finish that change. Try again in a moment."),
+    }
+}
+
 impl From<std::io::Error> for ToteError {
     fn from(error: std::io::Error) -> Self {
-        use std::io::ErrorKind;
-        let code = match error.kind() {
-            ErrorKind::NotFound => ErrorCode::NotFound,
-            ErrorKind::PermissionDenied => ErrorCode::PermissionDenied,
-            ErrorKind::AlreadyExists => ErrorCode::AlreadyExists,
-            _ => ErrorCode::Io,
-        };
-        Self::new(code, error.to_string())
+        let (code, sentence) = io_words(&error);
+        log::warn!("io: {error}");
+        Self::new(code, sentence)
     }
 }
 
 impl From<rusqlite::Error> for ToteError {
     fn from(error: rusqlite::Error) -> Self {
-        Self::db(error.to_string())
+        Self::db_read(error)
     }
 }
 
@@ -92,6 +138,53 @@ mod tests {
         assert_eq!(error.code, ErrorCode::NotFound);
         let error: ToteError = std::io::Error::other("other").into();
         assert_eq!(error.code, ErrorCode::Io);
+        let error: ToteError = std::io::Error::new(std::io::ErrorKind::StorageFull, "full").into();
+        assert_eq!(error.code, ErrorCode::Io);
+        assert!(error.message.starts_with("The drive is full."));
+    }
+
+    /// Windows reports a file held open by another program as os error 32
+    /// (sharing) or 33 (lock); std leaves both uncategorized.
+    #[cfg(windows)]
+    #[test]
+    fn a_sharing_violation_means_the_file_is_open_elsewhere() {
+        for code in [32, 33] {
+            let error: ToteError = std::io::Error::from_raw_os_error(code).into();
+            assert_eq!(error.code, ErrorCode::InUse, "os error {code}");
+            assert_eq!(error.message, IN_USE);
+        }
+    }
+
+    /// The sentence she reads never carries the OS text (audit T-17): every
+    /// io error, whatever Windows said, becomes one plain sentence that ends
+    /// with what to do next.
+    #[test]
+    fn no_io_error_puts_os_text_in_the_message() {
+        use std::io::ErrorKind;
+        let mut errors: Vec<std::io::Error> = [2, 3, 5, 32, 33, 112, 1155, 1314].into_iter().map(std::io::Error::from_raw_os_error).collect();
+        for kind in [ErrorKind::NotFound, ErrorKind::PermissionDenied, ErrorKind::AlreadyExists, ErrorKind::StorageFull, ErrorKind::Interrupted, ErrorKind::TimedOut, ErrorKind::Other] {
+            errors.push(std::io::Error::new(kind, "The process cannot access the file because it is being used by another process. (os error 32)"));
+        }
+        errors.push(std::io::Error::other("Error during a `trash` operation: Unknown { description: \"Some operations were aborted\" }"));
+        for error in errors {
+            let raw = error.to_string();
+            let tote: ToteError = error.into();
+            for technical in ["os error", "Error during", "process", "{", "`"] {
+                assert!(!tote.message.contains(technical), "{raw:?} became {:?}, which carries {technical:?}", tote.message);
+            }
+            assert!(tote.message.ends_with('.') && tote.message.contains(". "), "one sentence plus a next step: {:?}", tote.message);
+        }
+    }
+
+    #[test]
+    fn database_errors_say_read_or_write() {
+        let read: ToteError = rusqlite::Error::QueryReturnedNoRows.into();
+        assert_eq!(read.code, ErrorCode::Db);
+        assert_eq!(read.message, DB_READ);
+        assert_eq!(read.as_write().message, DB_WRITE);
+        let write = ToteError::db_write(rusqlite::Error::QueryReturnedNoRows);
+        assert_eq!((write.code, write.message.as_str()), (ErrorCode::Db, DB_WRITE));
+        assert_eq!(ToteError::validation("Type a name first.").as_write().message, "Type a name first.", "only a Db error is reworded");
     }
 
     #[test]

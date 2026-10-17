@@ -364,10 +364,11 @@ fn backup_count(file: &Path) -> i64 {
 
 /// Removes tasks deleted over a week ago and tasks done over 30 days ago.
 pub fn purge(conn: &Connection, now: i64) -> Result<usize> {
-    Ok(conn.execute(
+    write(
+        conn,
         "DELETE FROM todo.tasks WHERE (deleted_at IS NOT NULL AND deleted_at < ?1) OR (done_at IS NOT NULL AND done_at < ?2)",
         params![now - DELETED_KEEP_SECS, now - DONE_KEEP_SECS],
-    )?)
+    )
 }
 
 const COLUMNS: &str = "id, title, due, repeat, done_at, created_at";
@@ -644,6 +645,7 @@ mod tests {
         assert_eq!(words(complete(&conn, task.id, &[], NOW).unwrap_err()), not_saved, "complete");
         assert_eq!(words(delete(&conn, task.id, NOW).unwrap_err()), not_saved, "delete");
         assert_eq!(words(detach_file(&conn, task.id, "x").unwrap_err()), not_saved, "detach");
+        assert_eq!(words(purge(&conn, NOW).unwrap_err()), not_saved, "purge");
         assert_eq!(list(&conn, NOW).unwrap().len(), 1, "reads still work");
         conn.pragma_update(None, "query_only", "OFF").unwrap();
         assert!(delete(&conn, task.id, NOW).is_ok());

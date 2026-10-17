@@ -212,6 +212,9 @@ export function ActivityView({ info }: { info: AppInfo }) {
                   const firstShown = entry.ops.find(showable);
                   // The files the batch could not take are listed under it, each with its reason.
                   const stayed = entry.ops.filter((o) => o.status === "failed");
+                  // After an Undo all that could not put every file back, the files
+                  // still in their new place are listed too, each with its own Undo.
+                  const stillThere = entry.ops.some((o) => o.status === "undone") ? entry.ops.filter((o) => o.status === "done") : [];
                   const undone = !live && stayed.length < entry.ops.length;
                   return (
                     <div key={entry.batch} className="activity-batch" data-testid="activity-batch">
@@ -252,6 +255,27 @@ export function ActivityView({ info }: { info: AppInfo }) {
                               <span>{detail}</span>
                             </div>
                             <FailedActions op={op} onError={fail} />
+                          </div>
+                        );
+                      })}
+                      {stillThere.map((op) => {
+                        const { title } = describeOp(op, info.roots);
+                        return (
+                          <div key={op.id} className="activity-row activity-batch-row" data-testid="activity-batch-still">
+                            <span className="op-mark is-filed">
+                              <OpIcon op={op} />
+                            </span>
+                            <div className="activity-text">
+                              <strong>{title}</strong>
+                              <span>Still in its new place. Undo it on its own to try again.</span>
+                            </div>
+                            <span className="activity-actions">
+                              {showable(op) && <ShowButton op={op} onError={fail} />}
+                              <button type="button" className="button button-subtle activity-undo" onClick={() => void undo(op)} data-testid="undo">
+                                <Undo2 size={18} aria-hidden />
+                                Undo
+                              </button>
+                            </span>
                           </div>
                         );
                       })}

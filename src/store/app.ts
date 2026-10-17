@@ -27,8 +27,10 @@ interface AppStore {
   toasts: Toast[];
   /** Folder choices changed; the watchers pick them up after a restart. */
   foldersChanged: boolean;
-  /** Browser download settings; null until the first check returns. */
+  /** Browser download settings; null until the first check returns, or when the last check could not run. */
   browsers: BrowserStatus[] | null;
+  /** The last browser check could not run; Settings shows this sentence with Check again. */
+  browsersError: string | null;
   /** A newer Tote, once the daily check finds one. */
   update: UpdateInfo | null;
   /** She chose Later; the banner returns the next time Tote starts. */
@@ -57,6 +59,7 @@ export const useApp = create<AppStore>((set, get) => ({
   toasts: [],
   foldersChanged: false,
   browsers: null,
+  browsersError: null,
   update: null,
   updateDismissed: false,
   updating: false,
@@ -64,11 +67,12 @@ export const useApp = create<AppStore>((set, get) => ({
   markFoldersChanged: () => set({ foldersChanged: true }),
   checkBrowsers: async () => {
     try {
-      set({ browsers: await ipc.browserCheck() });
+      set({ browsers: await ipc.browserCheck(), browsersError: null });
     } catch (error) {
-      // The check is advice only; a failure is logged and the notice stays hidden.
+      // The check is advice only: the Find notice stays hidden, and Settings
+      // says the check could not run rather than that no browser was found.
       console.warn("Tote: browser check failed", error);
-      set({ browsers: [] });
+      set({ browsers: null, browsersError: describeError(error) });
     }
   },
   checkUpdate: async () => {

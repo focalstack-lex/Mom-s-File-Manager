@@ -686,7 +686,7 @@ fn check_folder_choice(folder: &Path, roots: &[PathBuf], home: Option<&Path>) ->
         return Err(ToteError::validation("Pick a folder inside your files, not a whole drive."));
     }
     if roots.iter().any(|r| paths::same_path(r, folder) || folder.starts_with(r)) {
-        return Err(ToteError::validation("Tote already looks in that folder."));
+        return Err(ToteError::validation("Tote already looks in that folder. Pick another one."));
     }
     Ok(())
 }
@@ -708,7 +708,7 @@ pub async fn remove_folder(state: State<'_, AppState>, path: String) -> Result<S
     blocking("remove_folder", move || {
         let folder = Path::new(&path);
         if !core.roots.removable(folder) {
-            return Err(ToteError::validation("Documents and Downloads are where filing happens, so they stay."));
+            return Err(ToteError::validation("Documents and Downloads are where filing happens, so they stay. Remove a different folder instead."));
         }
         let mut settings = settings_of(&core);
         let was_extra = settings.extra_folders.iter().any(|e| paths::same_path(Path::new(e), folder));
@@ -930,8 +930,9 @@ mod tests {
         assert_eq!(message(&drive), too_wide, "a drive root");
         assert_eq!(message(&home), too_wide, "the home folder");
         assert_eq!(message(&base), too_wide, "a parent of every root");
-        assert_eq!(message(&documents), "Tote already looks in that folder.");
-        assert_eq!(message(&lessons), "Tote already looks in that folder.");
+        let already = "Tote already looks in that folder. Pick another one.";
+        assert_eq!(message(&documents), already);
+        assert_eq!(message(&lessons), already);
         assert!(check_folder_choice(&other, &roots, Some(&home)).is_ok(), "a folder beside the roots");
         assert!(check_folder_choice(&other, &roots, None).is_ok());
         // A folder added earlier in the same session is a root only after
@@ -940,8 +941,8 @@ mod tests {
         std::fs::create_dir_all(&inside_other).unwrap();
         let pending = |folder: &Path| Settings { extra_folders: vec![paths::display(folder)], ..Settings::default() };
         let with_other = covered_folders(roots.clone(), &pending(&other));
-        assert_eq!(check_folder_choice(&inside_other, &with_other, Some(&home)).unwrap_err().message, "Tote already looks in that folder.", "inside a folder added this session");
-        assert_eq!(check_folder_choice(&other, &with_other, Some(&home)).unwrap_err().message, "Tote already looks in that folder.", "the folder added this session itself");
+        assert_eq!(check_folder_choice(&inside_other, &with_other, Some(&home)).unwrap_err().message, already, "inside a folder added this session");
+        assert_eq!(check_folder_choice(&other, &with_other, Some(&home)).unwrap_err().message, already, "the folder added this session itself");
         let with_inside = covered_folders(roots.clone(), &pending(&inside_other));
         assert_eq!(check_folder_choice(&other, &with_inside, Some(&home)).unwrap_err().message, too_wide, "above a folder added this session");
         assert!(check_folder_choice(&base.join("Elsewhere"), &with_inside, Some(&home)).is_ok());

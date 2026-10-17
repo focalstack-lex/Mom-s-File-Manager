@@ -33,7 +33,7 @@ const errorToasts = () => useApp.getState().toasts.filter((t) => t.kind === "err
 
 beforeEach(() => {
   answers.clear();
-  useApp.setState({ info: null, infoError: null, toasts: [] });
+  useApp.setState({ info: null, infoError: null, toasts: [], browsers: null, browsersError: null });
   useFind.setState({ result: null, failed: false, loading: false });
   useTodo.setState({ tasks: null, loadError: null });
 });
@@ -57,6 +57,18 @@ describe("app store", () => {
     expect(errorToasts()).toEqual(["Tote could not save that. Try again in a moment."]);
     answers.set("set_settings", () => settings);
     expect(await useApp.getState().saveSettings(settings)).toBe(true);
+  });
+
+  it("records a browser check that could not run as a sentence, never as no browsers found", async () => {
+    answers.set("browser_check", () => {
+      throw { code: "io", message: RAW } satisfies ToteError;
+    });
+    await useApp.getState().checkBrowsers();
+    expect(useApp.getState()).toMatchObject({ browsers: null, browsersError: "Windows could not finish that. Try again in a moment." });
+    expect(useApp.getState().toasts).toHaveLength(0);
+    answers.set("browser_check", () => []);
+    await useApp.getState().checkBrowsers();
+    expect(useApp.getState()).toMatchObject({ browsers: [], browsersError: null });
   });
 });
 
@@ -92,11 +104,11 @@ describe("todo store", () => {
     answers.set("list_tasks", () => [task(1)]);
     answers.set("reopen_task", () => undefined);
     answers.set("restore_task", () => {
-      throw { code: "validation", message: "That task is no longer on the list." } satisfies ToteError;
+      throw { code: "validation", message: "That task is no longer on the list. Open To do again to check." } satisfies ToteError;
     });
     expect(await useTodo.getState().reopen(1)).toBe(true);
     expect(await useTodo.getState().restore(1)).toBe(false);
-    expect(errorToasts()).toEqual(["That task is no longer on the list."]);
+    expect(errorToasts()).toEqual(["That task is no longer on the list. Open To do again to check."]);
     expect(useTodo.getState().tasks).toHaveLength(1);
   });
 });

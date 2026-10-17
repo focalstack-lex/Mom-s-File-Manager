@@ -152,7 +152,7 @@ pub async fn install(app: &AppHandle) -> Result<()> {
         .check()
         .await
         .map_err(|error| failed(Stage::Check, error))?
-        .ok_or_else(|| ToteError::validation("Tote is already up to date."))?;
+        .ok_or_else(|| ToteError::validation("Tote is already up to date. There is nothing to install."))?;
     let version = update.version.clone();
     let bytes = update.download(|_, _| {}, || {}).await.map_err(|error| failed(Stage::Download, error))?;
     log::info!("update: {version} downloaded ({} bytes) and its signature verified", bytes.len());

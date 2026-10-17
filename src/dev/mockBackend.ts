@@ -134,7 +134,7 @@ function nextDay(due: string, repeat: Repeat): string | null {
 }
 function taskById(id: unknown): MockTask {
   const task = tasks.find((t) => t.id === id && !t.deleted);
-  if (!task) throw { code: "validation", message: "That task is no longer on the list." };
+  if (!task) throw { code: "validation", message: "That task is no longer on the list. Open To do again to check." };
   return task;
 }
 const plain = ({ repeatedFrom: _r, edited: _e, deleted: _d, ...task }: MockTask): Task => ({ ...task, files: [...task.files] });
@@ -355,7 +355,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   list_activity: () => ops.map((op) => ({ ...op })),
   undo: (a) => {
     const op = ops.find((o) => o.id === a.id);
-    if (!op || op.status !== "done") throw { code: "validation", message: "Only completed changes can be undone." };
+    if (!op || op.status !== "done") throw { code: "validation", message: "Only completed changes can be undone. Open Activity to check it." };
     if (op.kind === "recycle") files.push(file(op.src.slice(0, op.src.lastIndexOf("\\")), op.src.slice(op.src.lastIndexOf("\\") + 1)));
     else if (op.dst) {
       const row = files.find((f) => f.path === op.dst);
@@ -406,7 +406,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
   remove_folder: (a) => {
     const path = String(a.path);
-    if (path === DOCS || path === DOWNLOADS) throw { code: "validation", message: "Documents and Downloads are where filing happens, so they stay." };
+    if (path === DOCS || path === DOWNLOADS) throw { code: "validation", message: "Documents and Downloads are where filing happens, so they stay. Remove a different folder instead." };
     const wasExtra = settings.extraFolders.includes(path);
     settings = { ...settings, extraFolders: settings.extraFolders.filter((p) => p !== path), excludedFolders: wasExtra ? settings.excludedFolders : [...settings.excludedFolders, path] };
     return settings;
@@ -433,17 +433,24 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
   undo_batch: (a) => {
     let undone = 0;
+    const failed: string[] = [];
     for (const op of ops.filter((o) => o.batch === a.batch && o.status === "done")) {
       if (op.kind === "recycle") files.push(file(op.src.slice(0, op.src.lastIndexOf("\\")), op.src.slice(op.src.lastIndexOf("\\") + 1)));
-      const row = files.find((f) => f.path === op.dst);
-      if (row) {
+      else {
+        const row = files.find((f) => f.path === op.dst);
+        // A file that is no longer where the run put it cannot go back: the
+        // native side names it and leaves its row done, so Undo all can retry.
+        if (!row) {
+          failed.push(op.src.slice(op.src.lastIndexOf("\\") + 1));
+          continue;
+        }
         row.path = op.src;
         row.parent = op.src.slice(0, op.src.lastIndexOf("\\"));
       }
       op.status = "undone";
       undone += 1;
     }
-    return { undone, failed: [] };
+    return { undone, failed };
   },
   browser_check: () => [
     { browser: "Chrome", profile: "Teacher", ok: true, asks: false, folder: null, advice: "Saves to Downloads. Nothing to change." },
@@ -502,7 +509,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
   restore_task: (a) => {
     const task = tasks.find((t) => t.id === a.id);
-    if (!task) throw { code: "validation", message: "That task is no longer on the list." };
+    if (!task) throw { code: "validation", message: "That task is no longer on the list. Open To do again to check." };
     task.deleted = false;
   },
   attach_file: (a) => {
@@ -520,7 +527,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
 };
 
 export function installMockBackend(): void {
-  const mock: MockBackend & { calls: typeof calls; simulateDownload(): void; offerUpdate(version: string): void } = {
+  const mock: MockBackend & { calls: typeof calls; simulateDownload(): void; offerUpdate(version: string): void; vanish(path: string): void } = {
     calls,
     async invoke(command, args) {
       calls.push({ command, args });
@@ -544,6 +551,11 @@ export function installMockBackend(): void {
     },
     offerUpdate(version) {
       offeredUpdate = { version, notes: null };
+    },
+    // The file was deleted outside Tote (in File Explorer): it is gone from
+    // the index and no Activity row records it, so an Undo cannot find it.
+    vanish(path) {
+      files = files.filter((f) => f.path !== path);
     },
     simulateDownload() {
       const row = file(`${SCHOOL}\\PDF\\2026-10`, "Reading Assessment Q2.pdf", { originLabel: "Messenger", downloadedAt: NOW, modified: NOW });

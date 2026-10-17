@@ -24,6 +24,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
   const loadTemplates = useFind((s) => s.loadTemplates);
   const loadInfo = useApp((s) => s.loadInfo);
   const browsers = useApp((s) => s.browsers);
+  const browsersError = useApp((s) => s.browsersError);
   const checkBrowsers = useApp((s) => s.checkBrowsers);
   const [draft, setDraft] = useState<Settings>(info.settings);
   const needsRestart = useApp((s) => s.foldersChanged);
@@ -139,7 +140,12 @@ export function SettingsView({ info }: { info: AppInfo }) {
         <p className="field-note">
           Tote files what lands in Downloads. A browser that asks where to save, or saves somewhere else, means those files stay where they were saved. Tote still lists them under Recent downloads.
         </p>
-        {browsers === null ? (
+        {browsersError ? (
+          // A check that could not run is not "no browsers found": the sentence says so, and Check again tries once more.
+          <p className="field-note" role="alert" data-testid="browsers-failed">
+            {browsersError}
+          </p>
+        ) : browsers === null ? (
           <p className="field-note">Checking...</p>
         ) : browsers.length === 0 ? (
           <p className="field-note">No Chrome, Edge, Brave or Firefox settings were found on this computer.</p>

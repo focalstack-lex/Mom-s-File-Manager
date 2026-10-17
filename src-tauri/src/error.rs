@@ -181,25 +181,40 @@ mod tests {
     }
 
     /// The string literal passed as the message of each `ToteError::new(`
-    /// call in `source`; a call whose message is a constant or a variable
-    /// is skipped (those sentences are checked where they are defined).
+    /// and `ToteError::validation(` call in `source`; a call whose message
+    /// is a constant, a variable or a `format!` is skipped (those sentences
+    /// are checked where they are defined).
     fn literal_sentences(source: &str) -> Vec<String> {
-        let call = "ToteError::new(";
-        source
-            .match_indices(call)
-            .filter_map(|(index, _)| {
-                let rest = &source[index + call.len()..];
-                let after_code = rest[rest.find(',')? + 1..].trim_start();
-                let literal = after_code.strip_prefix('"')?;
+        // Each call shape, and whether a code argument comes before the message.
+        let calls = [("ToteError::new(", true), ("ToteError::validation(", false)];
+        let mut found = Vec::new();
+        for (call, has_code) in calls {
+            found.extend(source.match_indices(call).filter_map(|(index, _)| {
+                let mut rest = &source[index + call.len()..];
+                if has_code {
+                    rest = &rest[rest.find(',')? + 1..];
+                }
+                let literal = rest.trim_start().strip_prefix('"')?;
                 Some(literal[..literal.find('"')?].to_string())
-            })
-            .collect()
+            }));
+        }
+        found
     }
+
+    /// Sentences that are the next step themselves: an instruction she reads
+    /// under the field or the picker it is about, so nothing needs to follow.
+    const OWN_NEXT_STEP: [&str; 4] = [
+        "Type a name first.",
+        "Type what needs doing first.",
+        "Add the quarter dates in Settings first.",
+        "Pick a folder inside your files, not a whole drive.",
+    ];
 
     /// The renderer keeps a plain native sentence as it is, so a sentence
     /// without a next step would reach her as is (audit T-18 review). Every
-    /// handwritten sentence in the modules that touch her files follows the
-    /// rule the io table follows: one sentence, then what to do next.
+    /// handwritten sentence in the modules that touch her files, her folders,
+    /// her tasks and the update follows the rule the io table follows: one
+    /// sentence, then what to do next.
     #[test]
     fn every_handwritten_sentence_carries_a_next_step() {
         let sources = [
@@ -208,15 +223,23 @@ mod tests {
             ("clipboard.rs", include_str!("clipboard.rs")),
             ("tasks.rs", include_str!("tasks.rs")),
             ("templates.rs", include_str!("templates.rs")),
+            ("paths.rs", include_str!("paths.rs")),
+            ("update.rs", include_str!("update.rs")),
+            ("worker.rs", include_str!("worker.rs")),
+            ("lib.rs", include_str!("lib.rs")),
         ];
         let mut sentences: Vec<(String, String)> = [DB_READ, DB_WRITE, IN_USE, FILE_GONE, NAME_TAKEN].iter().map(|s| ("error.rs".to_string(), s.to_string())).collect();
         for (file, source) in sources {
             // A file whose every sentence is a shared constant has no literal to scan.
             sentences.extend(literal_sentences(source).into_iter().map(|s| (file.to_string(), s)));
         }
-        assert!(sentences.len() >= 25, "the scan found only {} sentences; the pattern may have drifted", sentences.len());
+        assert!(sentences.len() >= 40, "the scan found only {} sentences; the pattern may have drifted", sentences.len());
+        for own in OWN_NEXT_STEP {
+            assert!(sentences.iter().any(|(_, s)| s == own), "{own:?} is listed as its own next step but the scan no longer finds it");
+        }
         for (file, sentence) in sentences {
-            assert!(sentence.ends_with('.') && sentence.contains(". "), "{file}: {sentence:?} has no next step");
+            let instruction = OWN_NEXT_STEP.contains(&sentence.as_str());
+            assert!(sentence.ends_with('.') && (instruction || sentence.contains(". ")), "{file}: {sentence:?} has no next step");
             for technical in ["os error", "Error during", "{", "`", "::"] {
                 assert!(!sentence.contains(technical), "{file}: {sentence:?} carries {technical:?}");
             }

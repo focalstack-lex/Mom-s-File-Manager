@@ -911,6 +911,55 @@ async function driveFailures(browser) {
     copyText === "A fresh copy of SF9 Template is in School Files." && unopenedText === "A fresh copy of SF9 Template is in School Files. Tote could not open it; open it from Find.",
     JSON.stringify({ copyText, unopenedText }));
 
+  // 19m. Settings: a browser check that could not run says so with Check again, never "no browsers were found"; Check again then lists them.
+  const FINISH = { code: "io", message: "Tote could not finish that. Try again in a moment." };
+  await page.locator('[data-testid="nav-settings"]').click();
+  await visible(page, '[data-testid="settings-view"]');
+  await planFail(page, "browser_check", FINISH);
+  await page.locator('[data-testid="browsers-recheck"]').click();
+  const browsersFailedText = await page.locator('[data-testid="browsers-failed"]').textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  const noneFoundShown = await page.locator('[data-testid="browsers-card"]').getByText("were found").count();
+  const rowsWhileFailed = await page.locator('[data-testid="browser-row"]').count();
+  await page.locator('[data-testid="browsers-card"]').scrollIntoViewIfNeeded();
+  await capture(page, "19m-browsers-check-failed");
+  await page.locator('[data-testid="browsers-recheck"]').click();
+  const browsersBack = await page.waitForFunction(() => document.querySelectorAll('[data-testid="browser-row"]').length === 2 && !document.querySelector('[data-testid="browsers-failed"]'), null, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  record("Settings: a browser check that could not run shows its sentence with Check again instead of saying no browsers were found, and Check again lists them",
+    browsersFailedText === FINISH.message && noneFoundShown === 0 && rowsWhileFailed === 0 && browsersBack,
+    JSON.stringify({ browsersFailedText, noneFoundShown, rowsWhileFailed, browsersBack }));
+
+  // 19n. Organize toast Undo, partly: one organized file is gone before Undo; the toast says what went back and names the file, and Activity keeps the run with Undo all and lists the file that stayed with its own Undo.
+  await page.locator('[data-testid="nav-cleanup"]').click();
+  await visible(page, '[data-testid="organize-card"]');
+  const firstMove = await page.evaluate(async () => {
+    const plan = await window.__toteMock.invoke("organize_plan", {});
+    const move = plan.moves[0];
+    return { name: move.name, dst: `${move.destDir}\\${move.name}`, total: plan.moves.length };
+  });
+  await page.locator('[data-testid="organize-open"]').click();
+  await visible(page, '[data-testid="organize-dialog"]');
+  await page.locator('[data-testid="organize-confirm"]').click();
+  const organizedToast = page.locator(".toast", { hasText: "Organized" });
+  await organizedToast.locator('[data-testid="toast-undo"]').waitFor({ timeout: STEP_TIMEOUT_MS });
+  // Deleted in File Explorer between the run and the Undo.
+  await page.evaluate((dst) => window.__toteMock.vanish(dst), firstMove.dst);
+  await organizedToast.locator('[data-testid="toast-undo"]').click();
+  const partialUndoText = await page.locator(".toast-error .toast-text", { hasText: "Put back" }).textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  await capture(page, "19n-organize-undo-partial");
+  await page.locator('[data-testid="nav-activity"]').click();
+  await page.waitForSelector('[data-testid="activity-batch"]', { timeout: STEP_TIMEOUT_MS });
+  const run = page.locator('[data-testid="activity-batch"]').first();
+  const runTitle = await run.locator("strong").first().textContent();
+  const runUndoAll = await run.locator('[data-testid="undo-batch"]').count();
+  const stillRows = await run.locator('[data-testid="activity-batch-still"]').count();
+  const stillTitle = await run.locator('[data-testid="activity-batch-still"] strong').first().textContent().catch(() => null);
+  const stillUndo = await run.locator('[data-testid="activity-batch-still"] [data-testid="undo"]').count();
+  await capture(page, "19n-organize-activity-partial");
+  const expectedUndo = `Put back ${firstMove.total - 1} of ${firstMove.total}. ${firstMove.name}: `;
+  record("Organize toast Undo: when one organized file is gone, the toast says Put back N of M and names the file, and Activity keeps the run with Undo all and lists the file that stayed with its own Undo",
+    firstMove.total > 1 && (partialUndoText ?? "").startsWith(expectedUndo) && runTitle?.startsWith("Organized") && runUndoAll === 1 && stillRows === 1 && stillTitle === `Moved ${firstMove.name}` && stillUndo === 1,
+    JSON.stringify({ partialUndoText, runTitle, runUndoAll, stillRows, stillTitle, stillUndo, firstMove }));
+
   const failureToasts = await toastAudit(page);
   record("No toast in the failure drive carried program text", failureToasts.seen > 0 && failureToasts.raw.length === 0, JSON.stringify(failureToasts));
   await context.close();

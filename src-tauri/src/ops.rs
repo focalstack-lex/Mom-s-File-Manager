@@ -388,7 +388,7 @@ fn recorded_recycle(conn: &Connection, id: i64) -> Result<Option<(i64, u64)>> {
 pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
     let row = get(conn, id)?.ok_or_else(|| ToteError::new(ErrorCode::NotFound, "That change is no longer in the list. Open Activity to see what is there."))?;
     if row.status != "done" {
-        return Err(ToteError::validation("Only completed changes can be undone."));
+        return Err(ToteError::validation("Only completed changes can be undone. Open Activity to check it."));
     }
     let src = PathBuf::from(&row.src);
     match row.kind.as_str() {
@@ -411,7 +411,7 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
         "newFolder" => {
             let folder = roots.confine(&src)?;
             if std::fs::read_dir(&folder).map(|mut d| d.next().is_some()).unwrap_or(false) {
-                return Err(ToteError::validation("That folder has files in it now, so it stays."));
+                return Err(ToteError::validation("That folder has files in it now, so it stays. Empty it in File Explorer first if you want it gone."));
             }
             std::fs::remove_dir(&folder)?;
         }

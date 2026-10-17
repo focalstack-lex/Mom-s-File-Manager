@@ -105,7 +105,7 @@ impl Roots {
         self.documents
             .as_ref()
             .map(|d| resolve(d).unwrap_or_else(|_| d.clone()).join("School Files"))
-            .ok_or_else(|| ToteError::new(ErrorCode::NotFound, "The Documents folder could not be found."))
+            .ok_or_else(|| ToteError::new(ErrorCode::NotFound, "The Documents folder could not be found. Check it in File Explorer, then try again."))
     }
 
     /// Resolves `path` and refuses it unless it sits inside one of the roots.
@@ -122,7 +122,7 @@ impl Roots {
         }
         Err(ToteError::new(
             ErrorCode::OutsideRoots,
-            "Tote only works with files in the folders listed in Settings.",
+            "Tote only works with files in the folders listed in Settings. Add that folder there first.",
         )
         .with_path(display(path)))
     }
@@ -137,10 +137,10 @@ pub fn same_path(a: &Path, b: &Path) -> bool {
 /// Windows `\\?\` prefix removed so paths stay readable.
 pub fn resolve(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
-        return Err(ToteError::new(ErrorCode::InvalidPath, "The path must be absolute.").with_path(display(path)));
+        return Err(ToteError::new(ErrorCode::InvalidPath, "That file's location is not complete. Pick the file again in Find.").with_path(display(path)));
     }
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(ToteError::new(ErrorCode::InvalidPath, "The path must not contain '..'.").with_path(display(path)));
+        return Err(ToteError::new(ErrorCode::InvalidPath, "That file's location steps outside its folder. Pick the file again in Find.").with_path(display(path)));
     }
     let mut existing = path.to_path_buf();
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
@@ -151,7 +151,7 @@ pub fn resolve(path: &Path) -> Result<PathBuf> {
                 existing = parent.to_path_buf();
             }
             _ => {
-                return Err(ToteError::new(ErrorCode::NotFound, "The folder does not exist.").with_path(display(path)))
+                return Err(ToteError::new(ErrorCode::NotFound, "That folder could not be found. Check it in File Explorer, then try again.").with_path(display(path)))
             }
         }
     }
@@ -200,7 +200,7 @@ pub fn validate_name(name: &str) -> Result<()> {
         ));
     }
     if trimmed.ends_with('.') || trimmed != name {
-        return Err(ToteError::new(ErrorCode::InvalidName, "Names cannot start or end with a space or a period."));
+        return Err(ToteError::new(ErrorCode::InvalidName, "Names cannot start or end with a space or a period. Remove it and try again."));
     }
     let stem = trimmed.split('.').next().unwrap_or("").to_ascii_uppercase();
     if RESERVED.contains(&stem.as_str()) {

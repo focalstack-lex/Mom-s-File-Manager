@@ -194,7 +194,7 @@ pub fn clean_title(title: &str) -> Result<String> {
 pub fn clean_due(due: Option<&str>) -> Result<Option<NaiveDate>> {
     match due.map(str::trim).filter(|text| !text.is_empty()) {
         None => Ok(None),
-        Some(text) => parse_day(text).map(Some).ok_or_else(|| ToteError::validation("That date could not be read.")),
+        Some(text) => parse_day(text).map(Some).ok_or_else(|| ToteError::validation("That date could not be read. Pick it from the calendar.")),
     }
 }
 
@@ -242,7 +242,7 @@ pub fn reminder(now: NaiveDateTime, last: Option<NaiveDate>, open: &[(String, Na
 
 fn not_found() -> ToteError {
     // Validation, not NotFound: the renderer words NotFound as a missing file.
-    ToteError::validation("That task is no longer on the list.")
+    ToteError::validation("That task is no longer on the list. Open To do again to check.")
 }
 
 /// Opens tasks.sqlite beside the main database and attaches it as `todo`.

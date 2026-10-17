@@ -60,9 +60,10 @@ export function ActionBar({ onRename }: { onRename(path: string): void }) {
       const ops = await ipc.recycleFiles(selected);
       clear();
       await refresh();
-      // A refused or lost file comes back as a failed row with its reason.
+      // A refused or lost file comes back as a failed row with its reason;
+      // the files that did go can still come back from the toast's Undo.
       const trouble = recycleFailureText(ops);
-      if (trouble) toast(trouble, "error");
+      if (trouble) toast(trouble, "error", ops.filter((o) => o.status === "done").map((o) => o.id));
       else toast(ops.length === 1 ? "Moved to the Recycle Bin." : `${ops.length} files moved to the Recycle Bin.`, "info", ops.map((o) => o.id));
     } catch (error) {
       fail(error);

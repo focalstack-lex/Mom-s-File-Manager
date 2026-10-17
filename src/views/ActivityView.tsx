@@ -97,6 +97,21 @@ function ShowButton({ op, onError }: { op: OpRow; onError(error: unknown): void 
   );
 }
 
+/** What a failed row offers: Not done, and File Explorer on the file while it is still there. */
+function FailedActions({ op, onError }: { op: OpRow; onError(error: unknown): void }) {
+  return (
+    <span className="activity-actions">
+      <span className="activity-state">Not done</span>
+      {fileStillThere(op) && (
+        <button type="button" className="button button-subtle activity-undo" onClick={() => void ipc.reveal(op.src).catch(onError)} data-testid="failed-reveal">
+          <FolderOpen size={18} aria-hidden />
+          Show the file
+        </button>
+      )}
+    </span>
+  );
+}
+
 function OpIcon({ op }: { op: OpRow }) {
   const props = { size: 20, "aria-hidden": true };
   if (op.status === "failed") return <CircleAlert {...props} />;
@@ -195,29 +210,51 @@ export function ActivityView({ info }: { info: AppInfo }) {
                   const live = entry.ops.some((o) => o.status === "done");
                   const recycled = entry.ops.every((o) => o.kind === "recycle");
                   const firstShown = entry.ops.find(showable);
+                  // The files the batch could not take are listed under it, each with its reason.
+                  const stayed = entry.ops.filter((o) => o.status === "failed");
+                  const undone = !live && stayed.length < entry.ops.length;
                   return (
-                    <div key={entry.batch} className={`activity-row${live ? "" : " is-undone"}`} data-testid="activity-batch">
-                      <span className={`op-mark${live && !recycled ? " is-filed" : ""}`}>{recycled ? <Trash size={20} aria-hidden /> : <FolderInput size={20} aria-hidden />}</span>
-                      <div className="activity-text">
-                        <strong>{batchTitle(entry.ops)}</strong>
-                        <span>
-                          {batchDetail(entry.ops, info.roots)} {"\u00b7"} {relativeTime(entry.createdAt)}
-                        </span>
+                    <div key={entry.batch} className="activity-batch" data-testid="activity-batch">
+                      <div className={`activity-row${undone ? " is-undone" : ""}${stayed.length > 0 ? " has-failed" : ""}`}>
+                        <span className={`op-mark${live && !recycled ? " is-filed" : ""}`}>{recycled ? <Trash size={20} aria-hidden /> : <FolderInput size={20} aria-hidden />}</span>
+                        <div className="activity-text">
+                          <strong>{batchTitle(entry.ops)}</strong>
+                          <span>
+                            {batchDetail(entry.ops, info.roots)} {"\u00b7"} {relativeTime(entry.createdAt)}
+                          </span>
+                        </div>
+                        {live ? (
+                          <span className="activity-actions">
+                            {firstShown && <ShowButton op={firstShown} onError={fail} />}
+                            <button type="button" className="button button-subtle activity-undo" onClick={() => void undoAll(entry.batch)} data-testid="undo-batch">
+                              <Undo2 size={18} aria-hidden />
+                              Undo all
+                            </button>
+                          </span>
+                        ) : undone ? (
+                          <span className="activity-state">
+                            <RotateCcw size={16} aria-hidden />
+                            Undone
+                          </span>
+                        ) : (
+                          <span className="activity-state">Not done</span>
+                        )}
                       </div>
-                      {live ? (
-                        <span className="activity-actions">
-                          {firstShown && <ShowButton op={firstShown} onError={fail} />}
-                          <button type="button" className="button button-subtle activity-undo" onClick={() => void undoAll(entry.batch)} data-testid="undo-batch">
-                            <Undo2 size={18} aria-hidden />
-                            Undo all
-                          </button>
-                        </span>
-                      ) : (
-                        <span className="activity-state">
-                          <RotateCcw size={16} aria-hidden />
-                          Undone
-                        </span>
-                      )}
+                      {stayed.map((op) => {
+                        const { title, detail } = describeOp(op, info.roots);
+                        return (
+                          <div key={op.id} className="activity-row is-failed activity-batch-row" data-testid="activity-batch-failed">
+                            <span className="op-mark">
+                              <OpIcon op={op} />
+                            </span>
+                            <div className="activity-text">
+                              <strong>{title}</strong>
+                              <span>{detail}</span>
+                            </div>
+                            <FailedActions op={op} onError={fail} />
+                          </div>
+                        );
+                      })}
                     </div>
                   );
                 }
@@ -250,15 +287,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
                         Undone
                       </span>
                     ) : (
-                      <span className="activity-actions">
-                        <span className="activity-state">Not done</span>
-                        {fileStillThere(op) && (
-                          <button type="button" className="button button-subtle activity-undo" onClick={() => void ipc.reveal(op.src).catch(fail)} data-testid="failed-reveal">
-                            <FolderOpen size={18} aria-hidden />
-                            Show the file
-                          </button>
-                        )}
-                      </span>
+                      <FailedActions op={op} onError={fail} />
                     )}
                   </div>
                 );

@@ -127,9 +127,10 @@ export function CleanupView({ info }: { info: AppInfo }) {
     try {
       const ops = await ipc.recycleFiles(ticked);
       setTicked([]);
-      // A refused or lost copy comes back as a failed row with its reason.
+      // A refused or lost copy comes back as a failed row with its reason;
+      // the copies that did go can still come back from the toast's Undo.
       const trouble = recycleFailureText(ops);
-      if (trouble) toast(trouble, "error");
+      if (trouble) toast(trouble, "error", ops.filter((o) => o.status === "done").map((o) => o.id));
       else toast(ops.length === 1 ? "1 copy moved to the Recycle Bin." : `${ops.length} copies moved to the Recycle Bin.`, "info", ops.map((o) => o.id));
     } catch (error) {
       fail(error);

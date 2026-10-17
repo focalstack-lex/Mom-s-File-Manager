@@ -3,7 +3,7 @@
 
 use crate::db;
 use crate::dupes;
-use crate::error::Result;
+use crate::error::{Result, ToteError};
 use crate::extract;
 use crate::origin::Origin;
 use crate::sorter;
@@ -236,6 +236,11 @@ pub fn upsert(conn: &Connection, entry: &Entry) -> Result<i64> {
     }
 }
 
+/// A write that fails says not saved; `From<rusqlite::Error>` assumes a read.
+fn run(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<usize> {
+    conn.execute(sql, params).map_err(ToteError::db_write)
+}
+
 /// Writes a new or changed row and its searchable text. Returns the row id.
 pub fn write(conn: &Connection, entry: &Entry, change: Change, content: Option<String>) -> Result<i64> {
     let path_text = entry.path.to_string_lossy().into_owned();
@@ -249,15 +254,17 @@ pub fn write(conn: &Connection, entry: &Entry, change: Change, content: Option<S
     let id = match change {
         Change::Unchanged(id) => return Ok(id),
         Change::Modified(id) => {
-            conn.execute(
+            run(
+                conn,
                 "UPDATE files SET size = ?2, modified = ?3, content_indexed = ?4 WHERE id = ?1",
                 params![id, entry.size as i64, entry.modified, content.is_some() as i64],
             )?;
-            conn.execute("DELETE FROM files_fts WHERE rowid = ?1", [id])?;
+            run(conn, "DELETE FROM files_fts WHERE rowid = ?1", [id])?;
             id
         }
         Change::New => {
-            conn.execute(
+            run(
+                conn,
                 "INSERT INTO files(path, parent, name, ext, kind, size, modified, group_key, content_indexed) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![path_text, parent, name, ext, kind, entry.size as i64, entry.modified, group_key, content.is_some() as i64],
             )?;
@@ -266,7 +273,8 @@ pub fn write(conn: &Connection, entry: &Entry, change: Change, content: Option<S
     };
     // A document that happens to hold the snippet marks must not light up.
     let content = content.map(|c| if c.contains([MARK_START, MARK_END]) { c.replace([MARK_START, MARK_END], " ") } else { c });
-    conn.execute(
+    run(
+        conn,
         "INSERT INTO files_fts(rowid, name, content) VALUES(?1, ?2, ?3)",
         params![id, indexed_name(&name), content.unwrap_or_default()],
     )?;
@@ -304,8 +312,8 @@ pub fn remove(conn: &Connection, path: &Path) -> Result<()> {
         rows.collect::<std::result::Result<Vec<i64>, _>>()?
     };
     for id in ids {
-        conn.execute("DELETE FROM files_fts WHERE rowid = ?1", [id])?;
-        conn.execute("DELETE FROM files WHERE id = ?1", [id])?;
+        run(conn, "DELETE FROM files_fts WHERE rowid = ?1", [id])?;
+        run(conn, "DELETE FROM files WHERE id = ?1", [id])?;
     }
     Ok(())
 }
@@ -323,7 +331,8 @@ pub fn relocate(conn: &Connection, from: &Path, to: &Path) -> Result<()> {
     let ext = sorter::extension(to);
     let parent = to.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let kind = sorter::classify(&ext).as_str();
-    let changed = conn.execute(
+    let changed = run(
+        conn,
         "UPDATE files SET path = ?2, parent = ?3, name = ?4, ext = ?5, kind = ?6, group_key = ?7 WHERE path = ?1",
         params![from_text, to_text, parent, name, ext, kind, dupes::group_key(&stem, &ext)],
     )?;
@@ -331,10 +340,10 @@ pub fn relocate(conn: &Connection, from: &Path, to: &Path) -> Result<()> {
         refresh_path(conn, to)?;
     } else {
         let id: i64 = conn.query_row("SELECT id FROM files WHERE path = ?1", [&to_text], |r| r.get(0))?;
-        conn.execute("UPDATE files_fts SET name = ?2 WHERE rowid = ?1", params![id, indexed_name(&name)])?;
+        run(conn, "UPDATE files_fts SET name = ?2 WHERE rowid = ?1", params![id, indexed_name(&name)])?;
     }
-    conn.execute("UPDATE pins SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
-    conn.execute("UPDATE templates SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
+    run(conn, "UPDATE pins SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
+    run(conn, "UPDATE templates SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
     // Files attached to a task follow too. A move must never fail because of
     // the list (for example when tasks.sqlite could not be opened), so a
     // problem here is logged and the move stands.
@@ -345,7 +354,8 @@ pub fn relocate(conn: &Connection, from: &Path, to: &Path) -> Result<()> {
 }
 
 pub fn set_origin(conn: &Connection, path: &Path, origin: &Origin, downloaded_at: i64) -> Result<()> {
-    conn.execute(
+    run(
+        conn,
         "UPDATE files SET origin_label = ?2, origin_host = ?3, downloaded_at = ?4 WHERE path = ?1",
         params![path.to_string_lossy().into_owned(), origin.label, origin.host, downloaded_at],
     )?;
@@ -591,9 +601,9 @@ pub fn orphan_pins(conn: &Connection) -> Result<Vec<String>> {
 
 pub fn set_pinned(conn: &Connection, path: &str, pinned: bool) -> Result<()> {
     if pinned {
-        conn.execute("INSERT OR IGNORE INTO pins(path, created_at) VALUES(?1, ?2)", params![path, db::now()])?;
+        run(conn, "INSERT OR IGNORE INTO pins(path, created_at) VALUES(?1, ?2)", params![path, db::now()])?;
     } else {
-        conn.execute("DELETE FROM pins WHERE path = ?1", [path])?;
+        run(conn, "DELETE FROM pins WHERE path = ?1", [path])?;
     }
     Ok(())
 }
@@ -682,6 +692,26 @@ mod tests {
         assert!(content[0].snippet.as_deref().unwrap().contains(&format!("{MARK_START}Santos{MARK_END}")));
         let kinds = Filters { kinds: vec!["word".into()], ..Default::default() };
         assert_eq!(search(&conn, "", &kinds, 50).unwrap().len(), 2);
+    }
+
+    /// A pin, a move's index update or a removal that fails says not
+    /// saved, never not read (audit T-18); reads still answer.
+    #[test]
+    fn a_failed_index_write_says_not_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = seed(dir.path());
+        let from = dir.path().join("Grade 7 Quiz.docx");
+        conn.pragma_update(None, "query_only", "ON").unwrap();
+        let not_saved = (crate::error::ErrorCode::Db, crate::error::DB_WRITE);
+        let error = set_pinned(&conn, &from.to_string_lossy(), true).unwrap_err();
+        assert_eq!((error.code, error.message.as_str()), not_saved, "set_pinned");
+        let error = relocate(&conn, &from, &dir.path().join("Moved.docx")).unwrap_err();
+        assert_eq!((error.code, error.message.as_str()), not_saved, "relocate");
+        let error = remove(&conn, &from).unwrap_err();
+        assert_eq!((error.code, error.message.as_str()), not_saved, "remove");
+        assert!(by_path(&conn, &from.to_string_lossy()).unwrap().is_some(), "reads still work");
+        conn.pragma_update(None, "query_only", "OFF").unwrap();
+        assert!(set_pinned(&conn, &from.to_string_lossy(), true).is_ok());
     }
 
     #[test]

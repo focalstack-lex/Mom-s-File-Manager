@@ -59,15 +59,24 @@ export function foldBatches(ops: OpRow[]): ActivityEntry[] {
 /**
  * One Activity row for a batch: "Organized 84 files into 9 folders" for an
  * Organize run, "Moved 4 files to the Recycle Bin" or "Moved 3 files to
- * October 2026" when several ticked files were sent at once.
+ * October 2026" when several ticked files were sent at once. A row that
+ * failed is never counted as done: "Moved 1 of 2 files to the Recycle Bin",
+ * and "Could not move 2 files to the Recycle Bin" when none went.
  */
 export function batchTitle(ops: OpRow[]): string {
-  const folders = new Set(ops.map((o) => (o.dst ?? "").slice(0, (o.dst ?? "").lastIndexOf("\\"))));
-  const count = ops.length === 1 ? "1 file" : `${ops.length.toLocaleString()} files`;
-  if (ops.length > 0 && ops.every((o) => o.kind === "recycle")) return `Moved ${count} to the Recycle Bin`;
+  const went = ops.filter((o) => o.status !== "failed");
+  const folderOf = (o: OpRow) => (o.dst ?? "").slice(0, (o.dst ?? "").lastIndexOf("\\"));
+  // The folders the files reached; when none did, the ones they were meant for.
+  const folders = new Set((went.length > 0 ? went : ops).map(folderOf));
+  const total = ops.length === 1 ? "1 file" : `${ops.length.toLocaleString()} files`;
+  const count = went.length === ops.length || went.length === 0 ? total : `${went.length.toLocaleString()} of ${total}`;
+  const verb = went.length === 0 ? "Could not move" : "Moved";
+  if (ops.length > 0 && ops.every((o) => o.kind === "recycle")) return `${verb} ${count} to the Recycle Bin`;
   if ((ops[0]?.batch ?? "").startsWith("move-")) {
     const [only] = folders;
-    return folders.size === 1 && only ? `Moved ${count} to ${monthName(only.split("\\").pop() ?? only)}` : `Moved ${count}`;
+    return folders.size === 1 && only ? `${verb} ${count} to ${monthName(only.split("\\").pop() ?? only)}` : `${verb} ${count}`;
   }
-  return `Organized ${planSummary(ops.length, folders.size)}`;
+  if (went.length === 0) return `Could not organize ${total}`;
+  const into = folders.size === 1 ? "1 folder" : `${folders.size.toLocaleString()} folders`;
+  return `Organized ${count} into ${into}`;
 }

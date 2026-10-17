@@ -8,7 +8,7 @@
 use crate::cleanup::{self, CleanupReport};
 use crate::clipboard;
 use crate::db;
-use crate::error::{ToteError, ErrorCode, Result};
+use crate::error::{ToteError, ErrorCode, Result, FILE_GONE};
 use crate::extract;
 use crate::index::{self, FileRow, Filters, Group, IndexStatus};
 use crate::ops::{self, OpRow};
@@ -74,25 +74,74 @@ fn rules_of(core: &Core) -> Vec<crate::organize::SubjectRule> {
     crate::organize::effective_rules(&settings_of(core).subject_rules)
 }
 
-/// The stored settings, or the defaults when nothing is stored. Settings
-/// text that cannot be read is logged and kept aside under
-/// `settings.unreadable-<time>` (once per text) before the defaults are
-/// used, so the next save never loses what she had (audit T-47). The live
-/// row is left as it is for a newer Tote to read.
+/// The stored settings, or the defaults when nothing is stored. The text is
+/// read one field at a time (`read_settings`), so a field a hand edit or
+/// another Tote version wrote in a different shape resets only itself; when
+/// any field was reset the text is logged and kept aside under
+/// `settings.unreadable-<time>` (once per text), so the next save never
+/// loses what she had (audit T-47). The live row is left as it is for a
+/// newer Tote to read.
 pub fn settings_from(conn: &rusqlite::Connection) -> Settings {
     match db::get_setting(conn, "settings") {
-        Ok(Some(json)) => match serde_json::from_str(&json) {
-            Ok(settings) => settings,
-            Err(error) => {
-                log::warn!("settings could not be read ({error}); using the defaults");
+        Ok(Some(json)) => {
+            let (settings, reset) = read_settings(&json);
+            if !reset.is_empty() {
+                log::warn!("settings could not be read in full; reset to the defaults: {}", reset.join(", "));
                 keep_unreadable(conn, &json);
-                Settings::default()
             }
-        },
+            settings
+        }
         Ok(None) => Settings::default(),
         Err(error) => {
             log::warn!("settings could not be loaded: {}", error.message);
             Settings::default()
+        }
+    }
+}
+
+/// Reads settings text one field at a time. A missing field is its default
+/// (an older Tote never wrote it); a field that cannot be read is its
+/// default and is named in the list, with the reason logged. Text that is
+/// not a JSON object at all resets everything and names "settings".
+fn read_settings(json: &str) -> (Settings, Vec<&'static str>) {
+    let object = match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(serde_json::Value::Object(object)) => object,
+        Ok(_) => {
+            log::warn!("settings text is not an object; using the defaults");
+            return (Settings::default(), vec!["settings"]);
+        }
+        Err(error) => {
+            log::warn!("settings text could not be read ({error}); using the defaults");
+            return (Settings::default(), vec!["settings"]);
+        }
+    };
+    let mut reset = Vec::new();
+    let defaults = Settings::default();
+    let settings = Settings {
+        start_at_login: field(&object, "startAtLogin", defaults.start_at_login, &mut reset),
+        notifications: field(&object, "notifications", defaults.notifications, &mut reset),
+        tour_done: field(&object, "tourDone", defaults.tour_done, &mut reset),
+        school_year: field(&object, "schoolYear", defaults.school_year, &mut reset),
+        quarters: field(&object, "quarters", defaults.quarters, &mut reset),
+        extra_folders: field(&object, "extraFolders", defaults.extra_folders, &mut reset),
+        excluded_folders: field(&object, "excludedFolders", defaults.excluded_folders, &mut reset),
+        subject_rules: field(&object, "subjectRules", defaults.subject_rules, &mut reset),
+        check_updates: field(&object, "checkUpdates", defaults.check_updates, &mut reset),
+        todo_seen: field(&object, "todoSeen", defaults.todo_seen, &mut reset),
+    };
+    (settings, reset)
+}
+
+/// One field of the settings text: its value when it reads, else `default`
+/// with the field's name added to `reset`.
+fn field<T: serde::de::DeserializeOwned>(object: &serde_json::Map<String, serde_json::Value>, name: &'static str, default: T, reset: &mut Vec<&'static str>) -> T {
+    let Some(value) = object.get(name) else { return default };
+    match serde_json::from_value(value.clone()) {
+        Ok(read) => read,
+        Err(error) => {
+            log::warn!("settings field {name} could not be read ({error}); its default is used");
+            reset.push(name);
+            default
         }
     }
 }
@@ -293,7 +342,7 @@ pub async fn open_path(state: State<'_, AppState>, app: tauri::AppHandle, path: 
     blocking("open_path", move || {
         let confined = core.roots.confine(Path::new(&path))?;
         if !confined.exists() {
-            return Err(ToteError::new(ErrorCode::NotFound, "That file is no longer there.").with_path(path));
+            return Err(ToteError::new(ErrorCode::NotFound, FILE_GONE).with_path(path));
         }
         app.opener()
             .open_path(paths::display(&confined), None::<&str>)
@@ -309,7 +358,7 @@ pub async fn reveal_path(state: State<'_, AppState>, app: tauri::AppHandle, path
     blocking("reveal_path", move || {
         let confined = core.roots.confine(Path::new(&path))?;
         if !confined.exists() {
-            return Err(ToteError::new(ErrorCode::NotFound, "That file is no longer there.").with_path(path));
+            return Err(ToteError::new(ErrorCode::NotFound, FILE_GONE).with_path(path));
         }
         app.opener()
             .reveal_item_in_dir(&confined)
@@ -608,7 +657,7 @@ pub async fn add_folder(state: State<'_, AppState>, path: String) -> Result<Sett
     blocking("add_folder", move || {
         let folder = paths::resolve(Path::new(&path))?;
         if !folder.is_dir() {
-            return Err(ToteError::new(ErrorCode::NotFound, "That folder could not be found.").with_path(path));
+            return Err(ToteError::new(ErrorCode::NotFound, "That folder could not be found. Pick another folder.").with_path(path));
         }
         let mut settings = settings_of(&core);
         check_folder_choice(&folder, &covered_folders(core.roots.all(), &settings), dirs::home_dir().as_deref())?;
@@ -715,7 +764,7 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<()> {
 #[tauri::command]
 pub async fn browser_check() -> Result<Vec<crate::browsers::BrowserStatus>> {
     blocking("browser_check", move || {
-        let downloads = dirs::download_dir().ok_or_else(|| ToteError::new(ErrorCode::NotFound, "The Downloads folder could not be found."))?;
+        let downloads = dirs::download_dir().ok_or_else(|| ToteError::new(ErrorCode::NotFound, "The Downloads folder could not be found. Check it in File Explorer, then try again."))?;
         Ok(crate::browsers::check(&downloads, dirs::desktop_dir().as_deref()))
     })
     .await
@@ -920,6 +969,36 @@ mod tests {
         db::set_setting(&conn, "settings", &good).unwrap();
         assert!(settings_from(&conn).tour_done, "readable settings are read as before");
         assert!(settings_from(&db::open_memory().unwrap()).start_at_login, "nothing stored means the defaults");
+    }
+
+    /// One field in the wrong shape resets only itself: the other fields
+    /// survive, a missing field is its default, and the text is kept aside
+    /// once because something was reset (audit T-47).
+    #[test]
+    fn an_unreadable_field_resets_only_itself() {
+        let conn = db::open_memory().unwrap();
+        let row = r#"{"startAtLogin":false,"quarters":"none","extraFolders":["D:\\Lessons"],"tourDone":true}"#;
+        db::set_setting(&conn, "settings", row).unwrap();
+        let settings = settings_from(&conn);
+        assert!(!settings.start_at_login, "a good field survives");
+        assert_eq!(settings.extra_folders, vec!["D:\\Lessons".to_string()]);
+        assert!(settings.tour_done);
+        assert!(settings.quarters.is_empty(), "the field that could not be read is its default");
+        assert!(settings.notifications, "a missing field is its default");
+        let kept = || -> Vec<String> {
+            let mut stmt = conn.prepare("SELECT value FROM settings WHERE key LIKE 'settings.unreadable-%'").unwrap();
+            stmt.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(kept(), vec![row.to_string()], "the text is kept aside because a field was reset");
+        // A row that only lacks a newer field reads clean and keeps nothing aside.
+        db::set_setting(&conn, "settings", r#"{"tourDone":true}"#).unwrap();
+        assert!(settings_from(&conn).tour_done);
+        assert_eq!(kept().len(), 1);
+        let (settings, reset) = read_settings("not json");
+        assert!(settings.start_at_login);
+        assert_eq!(reset, ["settings"]);
+        assert_eq!(read_settings("[1, 2]").1, ["settings"]);
+        assert_eq!(read_settings(r#"{"startAtLogin":"yes","quarters":7}"#).1, ["startAtLogin", "quarters"]);
     }
 
     /// The renderer words the template toast from `opened`.

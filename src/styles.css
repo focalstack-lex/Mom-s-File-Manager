@@ -1856,6 +1856,19 @@ kbd {
   color: var(--text-muted);
 }
 
+/* A batch where a file stayed: the mark warns, the title counts what went,
+   and each file that stayed sits under the row, inset to its text, with
+   its reason and Show the file. */
+.activity-row.has-failed .op-mark {
+  background: var(--coral-soft);
+  color: var(--coral);
+}
+
+.activity-batch-row {
+  margin-left: calc(40px + var(--space-3));
+  border-top: 1px solid var(--border);
+}
+
 .activity-text {
   display: flex;
   flex-direction: column;

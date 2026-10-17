@@ -6,7 +6,7 @@
 
 use crate::commands::DateRange;
 use crate::db;
-use crate::error::{ErrorCode, Result, ToteError};
+use crate::error::{ErrorCode, Result, ToteError, FILE_GONE};
 use crate::paths::{self, Roots};
 use crate::sorter;
 use chrono::{Days, Months, NaiveDate, NaiveDateTime, Timelike};
@@ -410,10 +410,15 @@ pub fn list(conn: &Connection, now: i64) -> Result<Vec<Task>> {
     tasks.into_iter().map(|task| Ok(Task { files: files_of(conn, task.id)?, ..task })).collect()
 }
 
+/// A write that fails says not saved; `From<rusqlite::Error>` assumes a read.
+fn write(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<usize> {
+    conn.execute(sql, params).map_err(ToteError::db_write)
+}
+
 pub fn add(conn: &Connection, title: &str, due: Option<&str>, now: i64) -> Result<Task> {
     let title = clean_title(title)?;
     let due = clean_due(due)?;
-    conn.execute("INSERT INTO todo.tasks(title, due, repeat, created_at) VALUES(?1, ?2, 'never', ?3)", params![title, due.map(day_text), now])?;
+    write(conn, "INSERT INTO todo.tasks(title, due, repeat, created_at) VALUES(?1, ?2, 'never', ?3)", params![title, due.map(day_text), now])?;
     get(conn, conn.last_insert_rowid())
 }
 
@@ -434,7 +439,8 @@ pub fn update(conn: &Connection, id: i64, title: &str, due: Option<&str>, repeat
     let title = clean_title(title)?;
     let due = clean_due(due)?;
     check_repeat(repeat, due, quarters)?;
-    let changed = conn.execute(
+    let changed = write(
+        conn,
         "UPDATE todo.tasks SET title = ?2, due = ?3, repeat = ?4, edited_at = ?5 WHERE id = ?1 AND deleted_at IS NULL",
         params![id, title, due.map(day_text), repeat.as_str(), now],
     )?;
@@ -447,18 +453,19 @@ pub fn update(conn: &Connection, id: i64, title: &str, due: Option<&str>, repeat
 /// Ticks a task off. A repeating one gets its next copy in the same
 /// transaction, so the list never shows one without the other.
 pub fn complete(conn: &Connection, id: i64, quarters: &[DateRange], now: i64) -> Result<Completed> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = conn.unchecked_transaction().map_err(ToteError::db_write)?;
     let task = get(&tx, id)?;
     if task.done_at.is_some() {
         return Ok(Completed { task, next: None, no_next_quarter: false });
     }
-    tx.execute("UPDATE todo.tasks SET done_at = ?2 WHERE id = ?1", params![id, now])?;
+    write(&tx, "UPDATE todo.tasks SET done_at = ?2 WHERE id = ?1", params![id, now])?;
     let mut next_id = None;
     let mut no_next_quarter = false;
     if let Some(due) = task.due.as_deref().and_then(parse_day) {
         match next_due(due, task.repeat, quarters) {
             Some(Next::Due(day)) => {
-                tx.execute(
+                write(
+                    &tx,
                     "INSERT INTO todo.tasks(title, due, repeat, repeated_from, created_at) VALUES(?1, ?2, ?3, ?4, ?5)",
                     params![task.title, day_text(day), task.repeat.as_str(), id, now],
                 )?;
@@ -468,35 +475,36 @@ pub fn complete(conn: &Connection, id: i64, quarters: &[DateRange], now: i64) ->
             None => {}
         }
     }
-    tx.commit()?;
+    tx.commit().map_err(ToteError::db_write)?;
     Ok(Completed { task: get(conn, id)?, next: next_id.map(|n| get(conn, n)).transpose()?, no_next_quarter })
 }
 
 /// Undo of a tick: back on the list, and the copy that tick made goes, but
 /// only while she has not touched it (edited, done or given files).
 pub fn reopen(conn: &Connection, id: i64) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    if tx.execute("UPDATE todo.tasks SET done_at = NULL WHERE id = ?1 AND deleted_at IS NULL", [id])? == 0 {
+    let tx = conn.unchecked_transaction().map_err(ToteError::db_write)?;
+    if write(&tx, "UPDATE todo.tasks SET done_at = NULL WHERE id = ?1 AND deleted_at IS NULL", [id])? == 0 {
         return Err(not_found());
     }
-    tx.execute(
+    write(
+        &tx,
         "DELETE FROM todo.tasks WHERE repeated_from = ?1 AND edited_at IS NULL AND done_at IS NULL AND deleted_at IS NULL \
          AND NOT EXISTS (SELECT 1 FROM todo.task_files f WHERE f.task_id = todo.tasks.id)",
         [id],
     )?;
-    tx.commit()?;
+    tx.commit().map_err(ToteError::db_write)?;
     Ok(())
 }
 
 pub fn delete(conn: &Connection, id: i64, now: i64) -> Result<()> {
-    if conn.execute("UPDATE todo.tasks SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL", params![id, now])? == 0 {
+    if write(conn, "UPDATE todo.tasks SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL", params![id, now])? == 0 {
         return Err(not_found());
     }
     Ok(())
 }
 
 pub fn restore(conn: &Connection, id: i64) -> Result<()> {
-    if conn.execute("UPDATE todo.tasks SET deleted_at = NULL WHERE id = ?1", [id])? == 0 {
+    if write(conn, "UPDATE todo.tasks SET deleted_at = NULL WHERE id = ?1", [id])? == 0 {
         return Err(not_found());
     }
     Ok(())
@@ -506,15 +514,15 @@ pub fn restore(conn: &Connection, id: i64) -> Result<()> {
 pub fn attach_file(conn: &Connection, roots: &Roots, id: i64, path: &Path, now: i64) -> Result<Task> {
     let file = roots.confine(path)?;
     if !file.is_file() {
-        return Err(ToteError::new(ErrorCode::NotFound, "That file could not be found.").with_path(paths::display(&file)));
+        return Err(ToteError::new(ErrorCode::NotFound, FILE_GONE).with_path(paths::display(&file)));
     }
     get(conn, id)?;
-    conn.execute("INSERT OR IGNORE INTO todo.task_files(task_id, path, added_at) VALUES(?1, ?2, ?3)", params![id, paths::display(&file), now])?;
+    write(conn, "INSERT OR IGNORE INTO todo.task_files(task_id, path, added_at) VALUES(?1, ?2, ?3)", params![id, paths::display(&file), now])?;
     get(conn, id)
 }
 
 pub fn detach_file(conn: &Connection, id: i64, path: &str) -> Result<Task> {
-    conn.execute("DELETE FROM todo.task_files WHERE task_id = ?1 AND path = ?2", params![id, path])?;
+    write(conn, "DELETE FROM todo.task_files WHERE task_id = ?1 AND path = ?2", params![id, path])?;
     get(conn, id)
 }
 
@@ -621,6 +629,24 @@ mod tests {
         assert_eq!(reminder(at("2026-10-14", 8), None, &late[..1], true).unwrap().body, "1 task is overdue.");
         let future = vec![("Next week".to_string(), d("2026-10-20"))];
         assert_eq!(reminder(at("2026-10-14", 8), None, &future, true), None, "nothing due");
+    }
+
+    /// A task add, tick, delete or detach that fails says not saved, never
+    /// not read (audit T-18); reads still answer.
+    #[test]
+    fn a_failed_task_write_says_not_saved() {
+        let conn = memory();
+        let task = add(&conn, "Print the quiz", Some("2026-10-20"), NOW).unwrap();
+        conn.pragma_update(None, "query_only", "ON").unwrap();
+        let not_saved = (ErrorCode::Db, crate::error::DB_WRITE.to_string());
+        let words = |error: ToteError| (error.code, error.message);
+        assert_eq!(words(add(&conn, "Submit SF2", None, NOW).unwrap_err()), not_saved, "add");
+        assert_eq!(words(complete(&conn, task.id, &[], NOW).unwrap_err()), not_saved, "complete");
+        assert_eq!(words(delete(&conn, task.id, NOW).unwrap_err()), not_saved, "delete");
+        assert_eq!(words(detach_file(&conn, task.id, "x").unwrap_err()), not_saved, "detach");
+        assert_eq!(list(&conn, NOW).unwrap().len(), 1, "reads still work");
+        conn.pragma_update(None, "query_only", "OFF").unwrap();
+        assert!(delete(&conn, task.id, NOW).is_ok());
     }
 
     #[test]

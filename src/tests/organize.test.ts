@@ -51,4 +51,21 @@ describe("activity folding", () => {
     const moved = [op(3, "move-1", `${SCHOOL}\\Word\\2026-10\\a.docx`), op(4, "move-1", `${SCHOOL}\\Word\\2026-10\\b.docx`)];
     expect(batchTitle(moved)).toBe("Moved 2 files to October 2026");
   });
+
+  it("keeps a refused file inside its batch and counts only the files that went", () => {
+    const refused = { ...op(2, "recycle-1"), kind: "recycle" as const, dst: null, status: "failed" as const, message: "Files on a flash drive or a network folder cannot go to the Recycle Bin. Delete it in File Explorer if you are sure." };
+    const went = { ...op(1, "recycle-1"), kind: "recycle" as const, dst: null };
+    const entries = foldBatches([went, refused, op(3, null)]);
+    expect(entries.map((e) => e.type)).toEqual(["batch", "op"]);
+    expect(entries[0].type === "batch" && entries[0].ops.map((o) => o.status)).toEqual(["done", "failed"]);
+    expect(batchTitle([went, refused])).toBe("Moved 1 of 2 files to the Recycle Bin");
+    expect(batchTitle([refused, { ...refused, id: 5 }])).toBe("Could not move 2 files to the Recycle Bin");
+    // Undo all leaves the refused row as it was; the title still counts what had gone.
+    expect(batchTitle([{ ...went, status: "undone" }, refused])).toBe("Moved 1 of 2 files to the Recycle Bin");
+    const stuck = { ...op(4, "move-1", `${SCHOOL}\\Word\\2026-10\\b.docx`), status: "failed" as const, message: "That file is open in another program. Close it there, then try again." };
+    expect(batchTitle([op(3, "move-1", `${SCHOOL}\\Word\\2026-10\\a.docx`), stuck])).toBe("Moved 1 of 2 files to October 2026");
+    expect(batchTitle([stuck])).toBe("Could not move 1 file to October 2026");
+    expect(batchTitle([op(6, "organize-1"), { ...op(7, "organize-1", `${SCHOOL}\\Science\\x7.docx`), status: "failed" as const }])).toBe("Organized 1 of 2 files into 1 folder");
+    expect(batchTitle([{ ...op(8, "organize-1"), status: "failed" as const }])).toBe("Could not organize 1 file");
+  });
 });

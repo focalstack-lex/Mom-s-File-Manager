@@ -77,6 +77,8 @@ let files: FileRow[] = [
   file(DOWNLOADS, "old attendance.pdf", { modified: NOW - 90 * DAY }),
   file(DOWNLOADS, "setup-printer.exe", { modified: NOW - 120 * DAY }),
   file(`${DOCS}\\Forms`, "SF9 Template.docx", { modified: NOW - 200 * DAY }),
+  // A path of 260 characters or more, which the Recycle Bin refuses (ops.rs), so the drive can see a partial Recycle Bin result.
+  file(`${DOCS}\\Forms\\${"Division Science Fair 2026 Documentation ".repeat(6).trim()}`, "Deep Quiz.docx", { modified: NOW - 30 * DAY }),
 ];
 
 // Enough files that the lists need "Show more" (spec 5.10): 9 more recent
@@ -105,8 +107,11 @@ const ops: OpRow[] = [
   // Two Recycle Bin rows that failed, worded as ops.rs words them: a refused file that stayed, and one Windows removed.
   { id: 4, kind: "recycle", src: `${DESKTOP}\\Deep Quiz.docx`, dst: null, status: "failed", message: "This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.", automatic: false, createdAt: NOW - 2 * DAY, batch: null },
   { id: 5, kind: "recycle", src: `${DOWNLOADS}\\Field Trip Photos.zip`, dst: null, status: "failed", message: "Windows removed it without putting it in the Recycle Bin, so it cannot be brought back.", automatic: false, createdAt: NOW - 3 * DAY, batch: null },
+  // Two files sent to the Recycle Bin at once where one was refused: ops.rs gives the refused row the batch too, so Activity shows "1 of 2" with the refused file under it.
+  { id: 6, kind: "recycle", src: `${DESKTOP}\\Old Seat Plan.xlsx`, dst: null, status: "done", message: null, automatic: false, createdAt: NOW - 4 * DAY, batch: "recycle-seed" },
+  { id: 7, kind: "recycle", src: "E:\\Seat Plan Photos.jpg", dst: null, status: "failed", message: "Files on a flash drive or a network folder cannot go to the Recycle Bin. Delete it in File Explorer if you are sure.", automatic: false, createdAt: NOW - 4 * DAY, batch: "recycle-seed" },
 ];
-let nextOp = 6;
+let nextOp = 8;
 let templates: Template[] = [{ id: 1, path: `${DOCS}\\Forms\\SF9 Template.docx`, name: "SF9 Template", missing: false }];
 let settings: Settings = { startAtLogin: true, notifications: true, tourDone: false, schoolYear: null, quarters: [], extraFolders: [], excludedFolders: [], subjectRules: [], checkUpdates: true, todoSeen: false };
 // No update is offered until the UI drive calls offerUpdate(), so every other
@@ -209,7 +214,7 @@ function find(query: string, filters: Filters): FindResult {
 
 function moveTo(path: string, destination: string, kind: OpRow["kind"], batch: string | null = null): string {
   const row = files.find((f) => f.path === path);
-  if (!row) throw { code: "notFound", message: "That file is no longer there." };
+  if (!row) throw { code: "notFound", message: "That file is no longer there. Search for it in Find." };
   let name = row.name;
   let n = 2;
   while (files.some((f) => f.parent === destination && f.name === name)) {
@@ -255,10 +260,12 @@ function organizePlan() {
 // Edge states a real start can report, asked for through the page's query
 // string so the UI drive can see them: ?rebuilt=kept or ?rebuilt=lost (the
 // index was rebuilt, with or without her settings), ?tasks=unavailable (the
-// To do store could not be opened).
+// To do store could not be opened), ?template=unopened (a template copy is
+// made but Windows could not open it).
 const edge = new URLSearchParams(window.location.search);
 const rebuilt = edge.get("rebuilt") === "kept" ? { kept: true } : edge.get("rebuilt") === "lost" ? { kept: false } : null;
 const tasksUnavailable = edge.get("tasks") === "unavailable";
+const templateUnopened = edge.get("template") === "unopened";
 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   get_app_info: () => ({
@@ -288,7 +295,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   copy_files: () => undefined,
   preview: (a) => {
     const row = files.find((f) => f.path === a.path);
-    if (!row) throw { code: "notFound", message: "That file is no longer there." };
+    if (!row) throw { code: "notFound", message: "That file is no longer there. Search for it in Find." };
     const text = CONTENT[row.name];
     return { kind: row.kind === "images" ? "image" : text ? "text" : "details", text: text ?? null, name: row.name, size: row.size, modified: row.modified, parent: row.parent };
   },
@@ -300,11 +307,11 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
   rename_file: (a) => {
     const row = files.find((f) => f.path === a.path);
-    if (!row) throw { code: "notFound", message: "That file is no longer there." };
+    if (!row) throw { code: "notFound", message: "That file is no longer there. Search for it in Find." };
     const stem = String(a.newStem);
     if (/[\\/:*?"<>|]/.test(stem)) throw { code: "invalidName", message: "Names cannot contain : or similar characters." };
     const name = `${stem}.${row.ext}`;
-    if (files.some((f) => f.parent === row.parent && f.name === name && f !== row)) throw { code: "alreadyExists", message: "A file with that name already exists in this folder." };
+    if (files.some((f) => f.parent === row.parent && f.name === name && f !== row)) throw { code: "alreadyExists", message: "A file with that name already exists there. Pick another name." };
     ops.unshift({ id: nextOp++, kind: "rename", src: row.path, dst: `${row.parent}\\${name}`, status: "done", message: null, automatic: false, createdAt: NOW, batch: null });
     row.name = name;
     row.path = `${row.parent}\\${name}`;
@@ -384,7 +391,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     const copy = file(`${SCHOOL}\\Word\\2026-10`, `${t.name} 2026-10-12.docx`, { modified: NOW });
     files.unshift(copy);
     ops.unshift({ id: nextOp++, kind: "copy", src: t.path, dst: copy.path, status: "done", message: null, automatic: false, createdAt: NOW, batch: null });
-    return { path: copy.path, opened: true };
+    return { path: copy.path, opened: !templateUnopened };
   },
   get_settings: () => settings,
   set_settings: (a) => {
@@ -501,7 +508,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   attach_file: (a) => {
     const task = taskById(a.id);
     const row = files.find((f) => f.path === a.path);
-    if (!row) throw { code: "notFound", message: "That file could not be found." };
+    if (!row) throw { code: "notFound", message: "That file is no longer there. Search for it in Find." };
     if (!task.files.some((f) => f.path === row.path)) task.files.push({ path: row.path, name: row.name, ext: row.ext, kind: row.kind, missing: false });
     return plain(task);
   },

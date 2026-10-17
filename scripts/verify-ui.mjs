@@ -334,14 +334,26 @@ async function drive(browser) {
   const goneRow = page.locator(".activity-row.is-failed", { hasText: "Windows removed it" }).first();
   const goneTitle = await goneRow.locator("strong").textContent();
   const goneShow = await goneRow.locator('[data-testid="failed-reveal"]').count();
+  // A Recycle Bin batch where one file stayed counts what went, keeps Undo all, and lists the file that stayed under it with its reason.
+  const partialBatch = page.locator('[data-testid="activity-batch"]', { hasText: "1 of 2" }).first();
+  const partialTitle = await partialBatch.locator("strong").first().textContent();
+  const partialUndo = await partialBatch.locator('[data-testid="undo-batch"]').count();
+  const partialStayed = partialBatch.locator('[data-testid="activity-batch-failed"]');
+  const partialStayedTitle = await partialStayed.locator("strong").textContent();
+  const partialReason = await partialStayed.locator(".activity-text span").textContent();
+  const partialShow = await partialStayed.locator('[data-testid="failed-reveal"]').count();
+  await partialBatch.scrollIntoViewIfNeeded();
+  await capture(page, "10-activity-partial-batch");
+  await page.locator('[data-testid="undo"]').first().scrollIntoViewIfNeeded();
   await page.locator('[data-testid="undo"]').first().click();
   await page.waitForFunction(() => document.querySelector(".activity-state")?.textContent?.includes("Undone"), null, { timeout: STEP_TIMEOUT_MS });
   const undone = await page.locator(".activity-state", { hasText: "Undone" }).count();
   await capture(page, "10-activity");
   record(
-    "Activity lists changes in plain words, marks the failed sort and the two failed Recycle Bin rows with their reasons (Show the file only while the file is still there), and Undo marks the row undone",
-    activityOk && activityRows >= 5 && failedRow === 3 && firstTitle?.startsWith("Moved") && refusedTitle === "Could not send Deep Quiz.docx to the Recycle Bin" && refusedReason?.includes("Move it to a shorter folder first") && refusedShow === 1 && goneTitle === "Could not send Field Trip Photos.zip to the Recycle Bin" && goneShow === 0 && undone >= 1,
-    JSON.stringify({ activityRows, failedRow, firstTitle, refusedTitle, refusedReason, refusedShow, goneTitle, goneShow, undone }),
+    "Activity lists changes in plain words, marks the failed sort and the failed Recycle Bin rows with their reasons (Show the file only while the file is still there), titles a batch with one refused file as 1 of 2 with that file under it, and Undo marks the row undone",
+    activityOk && activityRows >= 5 && failedRow === 4 && firstTitle?.startsWith("Moved") && refusedTitle === "Could not send Deep Quiz.docx to the Recycle Bin" && refusedReason?.includes("Move it to a shorter folder first") && refusedShow === 1 && goneTitle === "Could not send Field Trip Photos.zip to the Recycle Bin" && goneShow === 0
+      && partialTitle === "Moved 1 of 2 files to the Recycle Bin" && partialUndo === 1 && partialStayedTitle === "Could not send Seat Plan Photos.jpg to the Recycle Bin" && partialReason?.includes("flash drive") && partialShow === 1 && undone >= 1,
+    JSON.stringify({ activityRows, failedRow, firstTitle, refusedTitle, refusedReason, refusedShow, goneTitle, goneShow, partialTitle, partialUndo, partialStayedTitle, partialReason, partialShow, undone }),
   );
 
   // 11b. Two files sent to the Recycle Bin at once are one Activity row with Undo all; a filed file can be shown in its folder.
@@ -783,6 +795,26 @@ async function driveFailures(browser) {
     movedText === "Moved 2 files to Documents > Forms." && /^Put back 1 of 2\. [^:]+\.(docx|pdf|xlsx): That file is open in another program\. Close it there, then try again\.$/.test(partialText ?? ""),
     JSON.stringify({ movedText, partialText }));
 
+  // 19j. Find's home list: a refresh that fails after a Move keeps the Pinned and Recent lists and says so above them, with Try again.
+  await checks.nth(0).check();
+  await page.getByRole("button", { name: "Move to..." }).click();
+  await visible(page, '[data-testid="folder-picker"]');
+  await page.locator(".folder-option", { hasText: "School Files > Word" }).first().click();
+  await planFail(page, "find", DB_READ);
+  await page.locator('[data-testid="move-confirm"]').click();
+  const homeLine = await visible(page, '[data-testid="find-refresh-failed"]');
+  const homeText = await lineText(page, "find-refresh-failed");
+  const homeRows = await page.locator('[data-testid="recent"] [data-testid="file-row"]').count();
+  const homeNoLoadLine = (await page.locator('[data-testid="find-load-failed"]').count()) === 0;
+  // The failed refresh is said in the line only; the error toast from 19e's partial Undo may still be up.
+  const homeNoErrorToast = (await page.locator(".toast-text", { hasText: DB_READ.message }).count()) === 0;
+  await capture(page, "19j-home-refresh-failed");
+  await page.locator('[data-testid="find-refresh-failed-retry"]').click();
+  const homeBack = await hidden(page, '[data-testid="find-refresh-failed"]');
+  record("Find: a refresh that fails after a Move keeps the Pinned and Recent lists and says so in one quiet line above them with Try again, which clears it",
+    homeLine && homeText === "Tote could not refresh this list, so it may be out of date. Try again in a moment." && homeRows > 0 && homeNoLoadLine && homeNoErrorToast && homeBack,
+    JSON.stringify({ homeLine, homeText, homeRows, homeNoLoadLine, homeNoErrorToast, homeBack }));
+
   // 19f. To do: a failed load shows the sentence with Try again instead of a skeleton for good.
   await planFail(page, "list_tasks", DB_READ, 2);
   await page.locator('[data-testid="nav-todo"]').click();
@@ -839,6 +871,45 @@ async function driveFailures(browser) {
   await capture(page, "19i-settings-save-failed");
   record("Settings: a save that failed shows the save sentence and the switch goes back to the kept value",
     switchBefore && saveToast === DB_WRITE.message && switchReverted, JSON.stringify({ switchBefore, saveToast, switchReverted }));
+
+  // 19k. Recycle Bin, partly refused: the toast names the file that stayed and its Undo brings back the file that went.
+  await page.locator('[data-testid="nav-find"]').click();
+  await visible(page, '[data-testid="search-input"]');
+  await page.locator('[data-testid="search-input"]').fill("quiz");
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="results"] [data-testid="file-row"]').length === 2, null, { timeout: STEP_TIMEOUT_MS });
+  const quizChecks = page.locator('[data-testid="results"] [data-testid="file-row"] input[type=checkbox]');
+  await quizChecks.nth(0).check();
+  await quizChecks.nth(1).check();
+  await page.getByRole("button", { name: "Recycle Bin" }).click();
+  await visible(page, '[data-testid="recycle-confirm"]');
+  await page.getByRole("button", { name: "Move to Recycle Bin" }).click();
+  const partialRecycle = page.locator(".toast-error", { hasText: "Moved 1 of 2 to the Recycle Bin" });
+  const partialRecycleText = await partialRecycle.locator(".toast-text").textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  const partialRecycleUndo = await partialRecycle.locator('[data-testid="toast-undo"]').count();
+  const rowsAfterRecycle = await page.locator('[data-testid="results"] [data-testid="file-row"]').count();
+  await capture(page, "19k-recycle-partial");
+  await partialRecycle.locator('[data-testid="toast-undo"]').click();
+  const putBackText = await page.locator(".toast:not(.toast-error) .toast-text", { hasText: "Put back" }).textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  const keptBack = await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="results"] .row-name-text')].some((el) => el.textContent === "Grade 7 Quiz 2.docx"), null, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  record("Recycle Bin: when one of two files is refused, the toast says Moved 1 of 2 and names the file with the reason, and its Undo brings the file that went back",
+    /^Moved 1 of 2 to the Recycle Bin\. Deep Quiz\.docx: This file's folder name is too long for the Recycle Bin\. Move it to a shorter folder first\.$/.test(partialRecycleText ?? "") && partialRecycleUndo === 1 && rowsAfterRecycle === 1 && putBackText === "Put back where it was." && keptBack,
+    JSON.stringify({ partialRecycleText, partialRecycleUndo, rowsAfterRecycle, putBackText, keptBack }));
+
+  // 19l. Templates: the toast says the fresh copy is in School Files, and adds how to open it when Tote could not.
+  await page.locator('[data-testid="search-input"]').fill("");
+  await visible(page, '[data-testid="templates"]');
+  await page.locator('[data-testid="templates"] button', { hasText: "SF9 Template" }).click();
+  const copyText = await page.locator(".toast:not(.toast-error) .toast-text", { hasText: "fresh copy" }).textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  const unopened = await newPage(browser, VIEWPORT, "/?template=unopened");
+  await unopened.page.keyboard.press("Escape");
+  await hidden(unopened.page, '[data-testid="tour"]');
+  await unopened.page.locator('[data-testid="templates"] button', { hasText: "SF9 Template" }).click();
+  const unopenedText = await unopened.page.locator(".toast .toast-text", { hasText: "fresh copy" }).textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  await capture(unopened.page, "19l-template-unopened");
+  await unopened.context.close();
+  record("Templates: the toast says the fresh copy is in School Files, and when Tote could not open it, says to open it from Find",
+    copyText === "A fresh copy of SF9 Template is in School Files." && unopenedText === "A fresh copy of SF9 Template is in School Files. Tote could not open it; open it from Find.",
+    JSON.stringify({ copyText, unopenedText }));
 
   const failureToasts = await toastAudit(page);
   record("No toast in the failure drive carried program text", failureToasts.seen > 0 && failureToasts.raw.length === 0, JSON.stringify(failureToasts));

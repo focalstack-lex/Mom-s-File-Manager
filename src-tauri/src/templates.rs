@@ -1,6 +1,6 @@
 //! The Templates shelf (spec 5.6): master files that are copied, never edited.
 
-use crate::error::{ToteError, ErrorCode, Result};
+use crate::error::{ToteError, ErrorCode, Result, FILE_GONE};
 use crate::index;
 use crate::ops;
 use crate::paths::{self, Roots};
@@ -30,7 +30,7 @@ pub fn list(conn: &Connection) -> Result<Vec<Template>> {
 pub fn add(conn: &Connection, roots: &Roots, path: &Path) -> Result<Template> {
     let path = roots.confine(path)?;
     if !path.is_file() {
-        return Err(ToteError::new(ErrorCode::NotFound, "That file could not be found.").with_path(paths::display(&path)));
+        return Err(ToteError::new(ErrorCode::NotFound, FILE_GONE).with_path(paths::display(&path)));
     }
     let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     conn.execute(
@@ -52,10 +52,10 @@ pub fn remove(conn: &Connection, id: i64) -> Result<()> {
 pub fn use_template(conn: &Connection, roots: &Roots, id: i64) -> Result<PathBuf> {
     let (path, name): (String, String) = conn
         .query_row("SELECT path, name FROM templates WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|_| ToteError::new(ErrorCode::NotFound, "That template is no longer on the shelf."))?;
+        .map_err(|_| ToteError::new(ErrorCode::NotFound, "That template is no longer on the shelf. Add it again in Settings."))?;
     let master = roots.confine(Path::new(&path))?;
     if !master.is_file() {
-        return Err(ToteError::new(ErrorCode::NotFound, "The template file has been moved or deleted.").with_path(path));
+        return Err(ToteError::new(ErrorCode::NotFound, "The template file has been moved or deleted. Search for it in Find.").with_path(path));
     }
     let ext = sorter::extension(&master);
     let now = chrono::Local::now();

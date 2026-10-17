@@ -40,6 +40,10 @@ pub const DB_READ: &str = "Tote could not read its list right now. Try again in 
 pub const DB_WRITE: &str = "Tote could not save that. Try again in a moment.";
 /// What a file another program holds open says (a Windows sharing violation).
 pub const IN_USE: &str = "That file is open in another program. Close it there, then try again.";
+/// What a file that is no longer at its path says, wherever that is found.
+pub const FILE_GONE: &str = "That file is no longer there. Search for it in Find.";
+/// What a name already taken in the folder says, wherever that is found.
+pub const NAME_TAKEN: &str = "A file with that name already exists there. Pick another name.";
 
 #[derive(Debug, Clone, Serialize, thiserror::Error)]
 #[error("{message}")]
@@ -103,9 +107,9 @@ pub fn io_words(error: &std::io::Error) -> (ErrorCode, &'static str) {
         return (ErrorCode::InUse, IN_USE);
     }
     match error.kind() {
-        ErrorKind::NotFound => (ErrorCode::NotFound, "That file is no longer there. Search for it in Find."),
+        ErrorKind::NotFound => (ErrorCode::NotFound, FILE_GONE),
         ErrorKind::PermissionDenied => (ErrorCode::PermissionDenied, "Windows did not allow that change. Check the file in File Explorer, then try again."),
-        ErrorKind::AlreadyExists => (ErrorCode::AlreadyExists, "A file with that name already exists there. Pick another name."),
+        ErrorKind::AlreadyExists => (ErrorCode::AlreadyExists, NAME_TAKEN),
         ErrorKind::StorageFull => (ErrorCode::Io, "The drive is full. Free some space, then try again."),
         _ => (ErrorCode::Io, "Tote could not finish that change. Try again in a moment."),
     }
@@ -173,6 +177,49 @@ mod tests {
                 assert!(!tote.message.contains(technical), "{raw:?} became {:?}, which carries {technical:?}", tote.message);
             }
             assert!(tote.message.ends_with('.') && tote.message.contains(". "), "one sentence plus a next step: {:?}", tote.message);
+        }
+    }
+
+    /// The string literal passed as the message of each `ToteError::new(`
+    /// call in `source`; a call whose message is a constant or a variable
+    /// is skipped (those sentences are checked where they are defined).
+    fn literal_sentences(source: &str) -> Vec<String> {
+        let call = "ToteError::new(";
+        source
+            .match_indices(call)
+            .filter_map(|(index, _)| {
+                let rest = &source[index + call.len()..];
+                let after_code = rest[rest.find(',')? + 1..].trim_start();
+                let literal = after_code.strip_prefix('"')?;
+                Some(literal[..literal.find('"')?].to_string())
+            })
+            .collect()
+    }
+
+    /// The renderer keeps a plain native sentence as it is, so a sentence
+    /// without a next step would reach her as is (audit T-18 review). Every
+    /// handwritten sentence in the modules that touch her files follows the
+    /// rule the io table follows: one sentence, then what to do next.
+    #[test]
+    fn every_handwritten_sentence_carries_a_next_step() {
+        let sources = [
+            ("ops.rs", include_str!("ops.rs")),
+            ("commands.rs", include_str!("commands.rs")),
+            ("clipboard.rs", include_str!("clipboard.rs")),
+            ("tasks.rs", include_str!("tasks.rs")),
+            ("templates.rs", include_str!("templates.rs")),
+        ];
+        let mut sentences: Vec<(String, String)> = [DB_READ, DB_WRITE, IN_USE, FILE_GONE, NAME_TAKEN].iter().map(|s| ("error.rs".to_string(), s.to_string())).collect();
+        for (file, source) in sources {
+            // A file whose every sentence is a shared constant has no literal to scan.
+            sentences.extend(literal_sentences(source).into_iter().map(|s| (file.to_string(), s)));
+        }
+        assert!(sentences.len() >= 25, "the scan found only {} sentences; the pattern may have drifted", sentences.len());
+        for (file, sentence) in sentences {
+            assert!(sentence.ends_with('.') && sentence.contains(". "), "{file}: {sentence:?} has no next step");
+            for technical in ["os error", "Error during", "{", "`", "::"] {
+                assert!(!sentence.contains(technical), "{file}: {sentence:?} carries {technical:?}");
+            }
         }
     }
 

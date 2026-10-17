@@ -218,6 +218,8 @@ export function FindView({ info }: { info: AppInfo }) {
             </section>
           ) : (
             <>
+              {/* A refresh that failed after a change leaves the last lists up and says so above them; a first load that failed is worded under Recent downloads. */}
+              {failed && result !== null && <LoadFailed quiet text="Tote could not refresh this list, so it may be out of date. Try again in a moment." onRetry={() => void refresh()} testId="find-refresh-failed" />}
               {result && result.pinned.length > 0 && (
                 <section className="section" aria-label="Pinned" data-testid="pinned">
                   <h2 className="card-title">Pinned</h2>

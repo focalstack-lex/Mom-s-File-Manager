@@ -1,7 +1,7 @@
 //! Files on the clipboard as files (CF_HDROP), so she can paste a file into a
 //! Messenger or Gmail message straight from a result row (spec 5.3).
 
-use crate::error::{ToteError, ErrorCode, Result};
+use crate::error::{ToteError, ErrorCode, Result, FILE_GONE};
 use std::path::Path;
 
 #[cfg(windows)]
@@ -19,14 +19,14 @@ pub fn copy_files(paths: &[std::path::PathBuf]) -> Result<()> {
 
 #[cfg(not(windows))]
 pub fn copy_files(_paths: &[std::path::PathBuf]) -> Result<()> {
-    Err(ToteError::new(ErrorCode::Unsupported, "Copying files to the clipboard is only available on Windows."))
+    Err(ToteError::new(ErrorCode::Unsupported, "Copying files to the clipboard is only available on Windows. Use File Explorer instead."))
 }
 
 /// Every path must exist before it is offered to another program.
 pub fn check_exists(paths: &[std::path::PathBuf]) -> Result<()> {
     for path in paths {
         if !Path::new(path).exists() {
-            return Err(ToteError::new(ErrorCode::NotFound, "That file is no longer there.").with_path(path.to_string_lossy()));
+            return Err(ToteError::new(ErrorCode::NotFound, FILE_GONE).with_path(path.to_string_lossy()));
         }
     }
     Ok(())

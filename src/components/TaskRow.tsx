@@ -1,8 +1,11 @@
 // One task: a checkbox, the title and one quiet line. Clicking the title
-// opens the details in place: date, repeat, attached files, Delete.
+// opens the details in place: date, repeat, attached files, Delete. A task
+// ticked off or deleted leaves the list, so focus moves to the next task
+// (or the one before, or the add box), never back to the page.
 
 import { ChevronRight, FolderOpen, Paperclip, Trash, X } from "lucide-react";
 import { useCallback, useId, useState } from "react";
+import { focusSoon, revealCard } from "../lib/focus";
 import { locationLine } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { groupOf, hasQuarters, taskMeta } from "../lib/todo";
@@ -11,6 +14,16 @@ import { useApp } from "../store/app";
 import { useTodo } from "../store/todo";
 import { AttachDialog } from "./AttachDialog";
 import { KindTile } from "./icons";
+
+const ADD_BOX = '[data-testid="todo-input"]';
+
+/** The same part (`part`, a selector inside a row) of the open tasks around `id`, read before a change takes it away: the next task, else the one before. */
+function nextTasks(id: number, part: string): string[] {
+  const rows = [...document.querySelectorAll<HTMLElement>('[data-testid="todo-group"] [data-testid="task-row"]')];
+  const at = rows.findIndex((row) => row.dataset.task === String(id));
+  const pick = (row?: HTMLElement) => (row?.dataset.task ? `[data-testid="todo-group"] [data-task="${row.dataset.task}"] ${part}` : null);
+  return at < 0 ? [] : [pick(rows[at + 1]), pick(rows[at - 1])].filter((s): s is string => Boolean(s));
+}
 
 export function TaskRow({ task, info, now }: { task: Task; info: AppInfo; now: Date }) {
   const expanded = useTodo((s) => s.openId === task.id);
@@ -22,11 +35,23 @@ export function TaskRow({ task, info, now }: { task: Task; info: AppInfo; now: D
   const meta = taskMeta(task, now);
   const overdue = !done && groupOf(task.due, now) === "Overdue";
 
+  // Ticked off, the task folds into Done; put back, it returns to its group with the focus.
+  const tick = async () => {
+    if (done) {
+      await reopen(task.id);
+      focusSoon(`[data-testid="todo-group"] [data-task="${task.id}"] [data-testid="task-check"]`, ADD_BOX);
+    } else {
+      const then = nextTasks(task.id, '[data-testid="task-check"]');
+      await complete(task);
+      focusSoon(...then, ADD_BOX);
+    }
+  };
+
   return (
-    <div className={`task${expanded ? " is-open" : ""}${done ? " is-done" : ""}`} data-testid="task-row">
+    <div className={`task${expanded ? " is-open" : ""}${done ? " is-done" : ""}`} data-testid="task-row" data-task={task.id}>
       <div className="task-line">
         <label className="row-check">
-          <input type="checkbox" checked={done} onChange={() => void (done ? reopen(task.id) : complete(task))} aria-label={done ? `Put ${task.title} back on the list` : `Mark ${task.title} as done`} data-testid="task-check" />
+          <input type="checkbox" checked={done} onChange={() => void tick()} aria-label={done ? `Put ${task.title} back on the list` : `Mark ${task.title} as done`} data-testid="task-check" />
         </label>
         <button type="button" className="task-body" onClick={() => setOpen(expanded ? null : task.id)} aria-expanded={expanded} aria-controls={detailsId} data-testid="task-open">
           <span className="task-text">
@@ -44,6 +69,7 @@ export function TaskRow({ task, info, now }: { task: Task; info: AppInfo; now: D
 function TaskDetails({ id, task, info }: { id: string; task: Task; info: AppInfo }) {
   const update = useTodo((s) => s.update);
   const remove = useTodo((s) => s.remove);
+  const setView = useApp((s) => s.setView);
   const [title, setTitle] = useState(task.title);
   const [attaching, setAttaching] = useState(false);
   const closeAttach = useCallback(() => setAttaching(false), []);
@@ -94,7 +120,27 @@ function TaskDetails({ id, task, info }: { id: string; task: Task; info: AppInfo
           </button>
         )}
       </div>
-      {task.due === null ? <p className="field-note">Pick a due date to make it repeat.</p> : !quarters && <p className="field-note">Add the quarter dates in Settings first.</p>}
+      {task.due === null ? (
+        <p className="field-note">Pick a due date to make it repeat.</p>
+      ) : (
+        !quarters && (
+          // Every quarter waits for the quarter dates; the button goes straight to them.
+          <p className="field-note quarter-note" data-testid="quarter-note">
+            Add the quarter dates in Settings first.
+            <button
+              type="button"
+              className="button button-quiet"
+              onClick={() => {
+                setView("settings");
+                revealCard("school-year-card");
+              }}
+              data-testid="quarter-settings"
+            >
+              Open Settings
+            </button>
+          </p>
+        )
+      )}
       {task.files.length > 0 && (
         <div className="task-files">
           {task.files.map((file) => (
@@ -107,7 +153,15 @@ function TaskDetails({ id, task, info }: { id: string; task: Task; info: AppInfo
           <Paperclip size={18} aria-hidden />
           Attach a file
         </button>
-        <button type="button" className="button button-subtle" onClick={() => void remove(task)} data-testid="task-delete">
+        <button
+          type="button"
+          className="button button-subtle"
+          onClick={() => {
+            const then = nextTasks(task.id, '[data-testid="task-open"]');
+            void remove(task).then(() => focusSoon(...then, ADD_BOX));
+          }}
+          data-testid="task-delete"
+        >
           <Trash size={18} aria-hidden />
           Delete task
         </button>

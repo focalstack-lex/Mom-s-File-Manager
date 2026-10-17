@@ -13,7 +13,7 @@
  * Usage: node scripts/verify-native.mjs   (needs src-tauri/target/release/tote.exe)
  */
 import { spawn, execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -447,6 +447,73 @@ async function main() {
     record("The green title bar replaces the Windows frame; Maximize and Restore work from its buttons",
       frame.frameless && frame.controls.join(",") === "Minimize,Maximize,Close" && maximized && restoreLabel === "Restore" && unmaximized,
       JSON.stringify({ ...frame, maximized, restoreLabel, unmaximized }));
+
+    // 13. A search answers while a large file is copied (audit T-12). The lab
+    // has one drive, so TOTE_TEST_COPY_MOVES (test mode only) sends every move
+    // through the copy between drives: the lock rule is what is tested.
+    await stop(session);
+    session = await launch({ ...env, TOTE_TEST_COPY_MOVES: "1" });
+    if (!session.page) throw new Error("could not attach with copy moves on");
+    page = session.page;
+    const bigName = "Class Video.mp4";
+    const bigSize = 300 * 1024 * 1024;
+    const bigHome = join(LAB, "Desktop", bigName);
+    const bigAway = join(LAB, "Documents", "Forms", bigName);
+    writeFileSync(bigHome, Buffer.alloc(bigSize, 7));
+    const partialsUnder = (folder) => (existsSync(folder) ? readdirSync(folder, { recursive: true }).map(String).filter((n) => n.split(/[\\/]/).pop().startsWith(".tote-partial-")) : []);
+    const during = await page.evaluate(async ({ paths, destination }) => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      let settled = false;
+      const move = invoke("move_files", { paths, destination }).then(() => "ok", (e) => JSON.stringify(e)).finally(() => { settled = true; });
+      // Ask at once: on a fast disk the copy can finish in well under 150 ms.
+      await new Promise((done) => setTimeout(done, 5));
+      const movingAtStart = !settled;
+      const started = performance.now();
+      const found = await invoke("find", { query: "santos", filters: { kinds: [], sources: [] } }).then((r) => JSON.stringify(r).includes("notes.txt"), () => false);
+      const searchMs = Math.round(performance.now() - started);
+      return { movingAtStart, searchMs, found, movingAtEnd: !settled, moved: await move };
+    }, { paths: [bigHome], destination: join(LAB, "Documents", "Forms") });
+    const bigLanded = existsSync(bigAway) && !existsSync(bigHome) && statSync(bigAway).size === bigSize && partialsUnder(join(LAB, "Documents", "Forms")).length === 0;
+    record("A search during a 300 MB move through the copy path answers within 2 s, and the file lands whole with no temporary copy left",
+      during.movingAtStart && during.found && during.searchMs < 2000 && during.moved === "ok" && bigLanded,
+      JSON.stringify({ ...during, bigLanded }));
+
+    // 14. Tote closed in the middle of an Organize copy (audit T-14): after the
+    // restart no change is left pending, the cut copy is gone, the original is
+    // whole, and Activity says the change did not finish.
+    renameSync(bigAway, bigHome);
+    const plan = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("organize_plan"));
+    const planned = plan.moves.find((m) => m.name === bigName);
+    let cutSeen = false;
+    if (planned) {
+      await page.evaluate((paths) => { window.__organizeRun = window.__TAURI_INTERNALS__.invoke("organize_run", { paths }).catch(() => undefined); }, [planned.path]);
+      const deadline = Date.now() + 15_000;
+      while (!cutSeen && Date.now() < deadline) {
+        cutSeen = partialsUnder(school).length > 0;
+        if (!cutSeen) await sleep(10);
+      }
+      // Ended at once: taskkill as a separate process can land after a fast disk has finished the copy.
+      if (cutSeen) session.app.kill();
+    }
+    await stop(session);
+    const pendingBefore = sql("SELECT count(*) FROM ops WHERE status = 'pending'");
+    session = await launch(env);
+    if (!session.page) throw new Error("could not attach after closing Tote mid-Organize");
+    page = session.page;
+    const pendingAfter = sql("SELECT count(*) FROM ops WHERE status = 'pending'");
+    const cutRow = sql(`SELECT status, message FROM ops WHERE kind = 'move' AND src LIKE '%${bigName}' ORDER BY id DESC LIMIT 1`);
+    const cutLeft = partialsUnder(school);
+    const originalWhole = existsSync(bigHome) && statSync(bigHome).size === bigSize;
+    const shown = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("list_activity")).then((rows) => rows.some((r) => r.src.endsWith("Class Video.mp4") && r.status === "failed"));
+    // When the close still landed after the move finished, the move must be whole and recorded as done.
+    const bigDest = join(planned ? planned.destDir : school, bigName);
+    const landedWhole = !existsSync(bigHome) && existsSync(bigDest) && statSync(bigDest).size === bigSize;
+    const cutOk = (cutRow.startsWith("[('failed', 'Tote was closed before this finished.") && originalWhole && shown) || (cutRow.startsWith("[('done'") && landedWhole);
+    rmSync(bigHome, { force: true });
+    rmSync(bigDest, { force: true });
+    record("Tote closed in the middle of an Organize copy leaves no pending row after the restart, no cut copy, the original whole, and a failed row in Activity",
+      Boolean(planned) && cutSeen && pendingBefore === "[(1,)]" && pendingAfter === "[(0,)]" && cutLeft.length === 0 && cutOk,
+      JSON.stringify({ planned: Boolean(planned), cutSeen, pendingBefore, pendingAfter, cutRow, cutLeft, originalWhole, landedWhole, shown }));
 
     if (process.env.TOTE_CHECK_UPDATE) {
       // The live manifest, the signed installer on the site and the public key

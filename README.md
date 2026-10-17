@@ -90,23 +90,82 @@ In test mode the app never registers itself to start at login and logs at debug 
 
 ### Moving from Desk
 
-Tote was called Desk until 2026-10-14. On a laptop that still has Desk, quit Desk from its tray icon and uninstall it (Settings > Apps) before installing Tote, so two copies never file the same downloads. On its first start Tote copies Desk's database (pins, templates, settings, Activity and Undo) from `%LOCALAPPDATA%\com.focalstack.desk`, and leaves that folder untouched. "Start at login" carries over with the settings and is registered for Tote on that start.
+Tote was called Desk until 2026-10-14. On its first start Tote copies Desk's database (pins, templates, settings, Activity and Undo) from `%LOCALAPPDATA%\com.focalstack.desk` and leaves that folder untouched; it copies only while Tote has no database of its own yet. On a laptop that still has Desk, do this in one sitting, in this order:
+
+1. Quit Desk from its tray icon, so two copies never file the same downloads.
+2. Install Tote and let it start once. That start makes the copy.
+3. Uninstall Desk (Settings > Apps) and leave **"Delete the application data" unticked** in its uninstaller. Ticked, it deletes `com.focalstack.desk`, and if Tote has not started before that, her pins, templates, settings and Undo history are gone for good.
+
+"Start at login" carries over with the settings and is registered for Tote on that start. Desk's old folder stays after its uninstall; delete it by hand once Tote shows her pins and templates.
 
 Downloads a browser saves elsewhere are still noticed (by the browser's web stamp) and listed under Recent downloads, but they stay where they were saved.
 
+### Uninstalling
+
+Settings > Apps > Tote > Uninstall removes the program, its shortcuts and its start at login entry, and never touches her files or `School Files`. Unless "Delete the application data" is ticked in the uninstaller, it leaves behind:
+
+- `%LOCALAPPDATA%\com.focalstack.tote`: the index (`tote.sqlite`, which holds text read from her documents), the To do list (`tasks.sqlite` and its daily copies `tasks.backup.sqlite` and `tasks.backup.previous.sqlite`), any `tote.damaged-*` copies set aside after damage, the log (`logs\tote.log`) and the window's WebView2 data. Ticking the box, or deleting the folder by hand after the uninstall, removes all of it, including her pins, templates, settings, Activity and To do list, for good. Leave it for a reinstall that should keep them.
+- a `Tote` value under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run`, which Windows keeps after the start entry itself is gone. It starts nothing; delete it in the Registry Editor if wanted.
+- Desk's old folder `%LOCALAPPDATA%\com.focalstack.desk`, on a laptop that had Desk (see Moving from Desk).
+
 ## Release
 
-1. Raise `version` in `src-tauri/tauri.conf.json`, `package.json` and `src-tauri/Cargo.toml`.
-2. Build, sign and publish in one step:
+1. Raise `version` in `src-tauri/tauri.conf.json`, `package.json` and `src-tauri/Cargo.toml` (the same version in all three), and commit. This checkout and the portfolio must both be committed.
+2. Build, sign and publish in one step, from PowerShell, with the updater key's passphrase in this terminal only (on this checkout, set the `TAURI_CONFIG` override first, see "Building on a path with an apostrophe"):
 
-   ```bash
+   ```powershell
+   $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = Read-Host -MaskInput "Updater key passphrase"
    npm run release -- --notes "What changed, in one plain sentence."
+   Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
    ```
 
-   It writes `THIRD-PARTY-NOTICES.txt` (the license notices of every bundled package, installed next to `tote.exe` with `LICENSE.txt`), builds with the updater key (`%USERPROFILE%\.tauri\tote-updater.key`, or `TOTE_UPDATER_KEY`), copies `Tote_<version>_x64-setup.exe` into the portfolio's `tote/download/`, writes `tote/latest.json`, updates the file name, version, size and SHA-256 on the download page, and publishes the notices at `tote/third-party-notices.txt`. `--skip-build` publishes the last build.
-3. In the portfolio folder: review the diff, commit, push, then `vercel deploy --prod`. Installed copies offer the update within a day.
+   It writes `THIRD-PARTY-NOTICES.txt` (the license notices of every bundled package, installed next to `tote.exe` with `LICENSE.txt`), builds, signs the installer, keeps it and its `.sig` in `installers/`, copies `Tote_<version>_x64-setup.exe` into the portfolio's `tote/download/`, writes `tote/latest.json`, updates the file name, version, size and SHA-256 on the download page, publishes the notices at `tote/third-party-notices.txt`, removes older installers from `tote/download/`, and tags this commit `v<version>`. `--skip-build` publishes the last build after the same checks.
+3. In the portfolio folder: review the diff, commit, push, then `vercel deploy --prod`. Then push the tag from this checkout (`git push origin v<version>`). Installed copies offer the update within a day.
 
-The updater key is the only thing that lets installed copies trust an update. Keep a private backup of it (for example in a password manager); if it is lost, installed copies can no longer update and each laptop needs one manual install of a build with a new key. Never commit it. A plain `npx tauri build` fails without it, because `createUpdaterArtifacts` is on.
+### Release preflight
+
+`scripts/release.mjs` checks everything before it writes anything, lists every problem at once and stops with "Nothing was built or written." when there is one (the checks are tested in `scripts/release-checks.test.mjs`, which CI runs):
+
+- `--notes` is given and has no en or em dash.
+- `package.json`, `tauri.conf.json` and `Cargo.toml` carry the same version, and it is higher than the one in the published https://www.codewithlex.site/tote/latest.json and in the portfolio's copy (installed copies only take a higher version).
+- This checkout and the portfolio have no uncommitted changes, and the tag `v<version>` does not exist yet.
+- The download page names exactly one installer, that installer is in `tote/download/`, and the page shows exactly one SHA-256.
+- For a build: the updater key exists, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is not empty, `TAURI_CONFIG` is set on a checkout path with an apostrophe, and the Tauri CLI is installed.
+
+It then builds with the key kept out of the build's environment (the build runs `npm run build` and every package it pulls in), and signs the installer in a step of its own with `tauri signer sign --app-version <version>`, the only process given the key path and the passphrase (`tauri signer sign` reads its `--password` option from `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, so the passphrase is never on a command line). Before any write to the site it verifies the `.sig` the way the updater on her laptop does (made by the trusted key, matching the installer's bytes, its trusted comment naming this version and file), checks that the build changed no tracked file, and works out the page change in memory, changing only the four values that name the linked installer.
+
+### The updater key
+
+The updater key (`%USERPROFILE%\.tauri\tote-updater.key`, or `TOTE_UPDATER_KEY`) is the only thing that lets installed copies trust an update. Never commit it or put it in a synced folder. If it is lost, installed copies can no longer update and each laptop needs one manual install of a build with a new key. A plain `npx tauri build` fails without it, because `createUpdaterArtifacts` is on; the release turns that off for its build and signs afterwards.
+
+The key made for 0.2.0 has no passphrase (audit T-05, 2026-10-16), so the file alone is enough to sign an update, and the release now refuses to sign without one. `npx tauri signer generate` makes a new key and cannot add a passphrase to an existing one, so the plan, for Lex to carry out, is to move installed copies to a new key that has one:
+
+1. Make the new key and type a passphrase at its prompt (not with `--password`, which would land in the shell history), then keep the passphrase in a password manager:
+
+   ```powershell
+   npx tauri signer generate -w "$env:USERPROFILE\.tauri\tote-updater-2.key"
+   ```
+
+2. Keep the old public key in a file: `tote-updater.key.pub` next to the old key, or the current `plugins.updater.pubkey` value of `src-tauri/tauri.conf.json` saved as a file. Then put the contents of `tote-updater-2.key.pub` in `plugins.updater.pubkey`, raise the version and commit.
+3. Publish one release signed with the old key. It still installs on her laptop, and the build it installs trusts the new key from then on:
+
+   ```powershell
+   npm run release -- --key-change "$env:USERPROFILE\.tauri\tote-updater.key.pub" --notes "..."
+   ```
+
+   `--key-change` signs with the old key (the default `TOTE_UPDATER_KEY`), which has no passphrase, checks the signature against the old public key in that file, and refuses a file that names the key already in `tauri.conf.json`.
+4. Deploy, then wait until the foot of Settings on her laptop shows that version.
+5. From the next release on, set `$env:TOTE_UPDATER_KEY = "$env:USERPROFILE\.tauri\tote-updater-2.key"` before `npm run release`, and delete the old key and every copy of it: an unencrypted copy stays a usable key until it is gone.
+
+A laptop that missed the key change release (switched off the whole time) refuses every later update, because they are signed with a key it does not know; it needs one manual install from the download page. Back up only the new, passphrase-protected key file, and keep the passphrase apart from it.
+
+### Rolling back
+
+The updater only installs a version higher than the one running, so putting an older `latest.json` back cannot move an updated laptop back, and a build that crashes on start cannot update itself.
+
+- To undo a bad release, publish the last good code under a higher version: start a branch from the last good tag (`git switch -c rollback v<good version>`; releases before the first tagged one are the commits named "Tote 0.x.y: ..." in `git log`) or revert the bad commits, raise the version above the bad one, commit and release as usual. Installed copies take it within a day.
+- A laptop whose Tote no longer starts needs one manual install of that fixed, higher version from the download page. Do not install an older installer over a newer one: the newer version may have changed the index's tables.
+- Every released installer and its `.sig` stay in `installers/` (kept out of git), for that manual install and to check what was shipped.
 
 The installer is not code-signed, so Windows SmartScreen warns on the first manual install. Updates installed from inside Tote do not show that warning.
 

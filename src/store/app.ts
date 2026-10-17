@@ -33,9 +33,11 @@ interface AppStore {
   browsersError: string | null;
   /** A newer Tote, once the daily check finds one. */
   update: UpdateInfo | null;
-  /** She chose Later; the banner returns the next time Tote starts. */
+  /** She chose Later; the banner returns the next time Tote starts, and Settings keeps a quiet Update meanwhile. */
   updateDismissed: boolean;
   updating: boolean;
+  /** The last install failed: the banner and Settings show the same sentence as the toast, with Try again. */
+  updateError: string | null;
   setView(view: View): void;
   markFoldersChanged(): void;
   checkBrowsers(): Promise<void>;
@@ -48,9 +50,35 @@ interface AppStore {
   toast(text: string, kind?: Toast["kind"], undoIds?: number[], undoBatch?: string, undoTask?: Toast["undoTask"]): void;
   fail(error: unknown): void;
   dismissToast(id: number): void;
+  /** The pointer is over the toast or focus is in it: its time stops until `releaseToast`. */
+  holdToast(id: number): void;
+  releaseToast(id: number): void;
 }
 
 let nextToast = 1;
+
+/**
+ * How long each toast still has, outside the store so a timer is never part
+ * of what the screen draws. A toast under the pointer or holding focus waits
+ * (holds counts the pointer and focus separately), so she can always reach
+ * its Undo.
+ */
+const timers = new Map<number, { left: number; started: number; handle: number | undefined; holds: number }>();
+
+function runTimer(id: number, dismiss: (id: number) => void): void {
+  const timer = timers.get(id);
+  if (!timer || timer.holds > 0 || timer.handle !== undefined) return;
+  timer.started = Date.now();
+  timer.handle = window.setTimeout(() => dismiss(id), Math.max(0, timer.left));
+}
+
+function stopTimer(id: number): void {
+  const timer = timers.get(id);
+  if (!timer || timer.handle === undefined) return;
+  window.clearTimeout(timer.handle);
+  timer.handle = undefined;
+  timer.left -= Date.now() - timer.started;
+}
 
 export const useApp = create<AppStore>((set, get) => ({
   view: "find",
@@ -63,6 +91,7 @@ export const useApp = create<AppStore>((set, get) => ({
   update: null,
   updateDismissed: false,
   updating: false,
+  updateError: null,
   setView: (view) => set({ view }),
   markFoldersChanged: () => set({ foldersChanged: true }),
   checkBrowsers: async () => {
@@ -85,12 +114,14 @@ export const useApp = create<AppStore>((set, get) => ({
     }
   },
   installUpdate: async () => {
-    set({ updating: true });
+    set({ updating: true, updateError: null });
     try {
       // On success Windows closes Tote and opens the new version, so this
       // only returns on failure (or in a dry run).
       await ipc.installUpdate();
     } catch (error) {
+      // One sentence in three places: the toast, the banner and Settings.
+      set({ updateError: describeError(error) });
       get().fail(error);
     } finally {
       set({ updating: false });
@@ -123,15 +154,35 @@ export const useApp = create<AppStore>((set, get) => ({
   },
   toast: (text, kind = "info", undoIds, undoBatch, undoTask) => {
     const id = nextToast++;
-    set((state) => ({ toasts: [...state.toasts.slice(-2), { id, text, kind, undoIds, undoBatch, undoTask }] }));
+    const shown = [...get().toasts.slice(-2), { id, text, kind, undoIds, undoBatch, undoTask }];
+    // The oldest of four goes, timer and all.
+    for (const old of get().toasts) if (!shown.some((t) => t.id === old.id)) get().dismissToast(old.id);
+    set({ toasts: shown });
     // A toast that can be undone stays long enough to reach the button.
-    window.setTimeout(() => get().dismissToast(id), kind === "error" ? 9000 : undoIds?.length || undoBatch || undoTask ? 10000 : 6000);
+    timers.set(id, { left: kind === "error" ? 9000 : undoIds?.length || undoBatch || undoTask ? 10000 : 6000, started: 0, handle: undefined, holds: 0 });
+    runTimer(id, get().dismissToast);
   },
   fail: (error) => {
     console.warn("Tote:", error);
     get().toast(describeError(error), "error");
   },
-  dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+  dismissToast: (id) => {
+    stopTimer(id);
+    timers.delete(id);
+    set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) }));
+  },
+  holdToast: (id) => {
+    const timer = timers.get(id);
+    if (!timer) return;
+    timer.holds += 1;
+    stopTimer(id);
+  },
+  releaseToast: (id) => {
+    const timer = timers.get(id);
+    if (!timer) return;
+    timer.holds = Math.max(0, timer.holds - 1);
+    runTimer(id, get().dismissToast);
+  },
 }));
 
 /**

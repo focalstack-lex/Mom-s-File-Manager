@@ -11,6 +11,7 @@ import { TitleBar } from "./components/TitleBar";
 import { Toasts } from "./components/Toasts";
 import { Tour } from "./components/Tour";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { focusSoon, SEARCH_BOX } from "./lib/focus";
 import { CHANGED_EVENT, ipc, listen, SORTED_EVENT, type SortedEvent } from "./lib/ipc";
 import { useApp, type View } from "./store/app";
 import { useFind } from "./store/find";
@@ -197,9 +198,11 @@ export default function App() {
     else toast("Tote's index had to be rebuilt. Your files were not touched. Your pins, templates and settings could not be kept. Check Settings.", "error");
   }, [info?.rebuilt, toast]);
 
+  // The walkthrough ends where she starts: at the top of Find, typing in the search box.
   const finishTour = () => {
     document.querySelector('[data-testid="main"]')?.scrollTo({ top: 0 });
     if (info && !info.settings.tourDone) void saveSettings({ ...info.settings, tourDone: true });
+    focusSoon(SEARCH_BOX);
   };
 
   const openSchoolFiles = () => ipc.openSchoolFiles().catch(fail);

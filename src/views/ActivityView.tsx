@@ -1,11 +1,13 @@
 // Every change in plain words, newest first, grouped by day, with Undo
 // (spec 5.7). Several files sent at once are one row with Undo all. A file
 // that was filed or moved can be shown in its folder; a change that failed
-// says what to do next.
+// says what to do next. After an Undo, focus stays on the row, which now
+// reads Undone.
 
 import { CircleAlert, Copy, FolderInput, FolderOpen, FolderPlus, History, Pencil, RotateCcw, Trash, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { describeError, plainMessage, undoText } from "../lib/errors";
+import { focusSoon } from "../lib/focus";
 import { locationLine, relativeTime } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { LoadFailed } from "../components/LoadFailed";
@@ -169,6 +171,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
     } catch (error) {
       fail(error);
     }
+    focusSoon(`[data-batch="${CSS.escape(batch)}"] [data-testid="undo-batch"]`, `[data-batch="${CSS.escape(batch)}"] .activity-row`);
   };
 
   const undo = async (op: OpRow) => {
@@ -180,6 +183,8 @@ export function ActivityView({ info }: { info: AppInfo }) {
     } catch (error) {
       fail(error);
     }
+    // The Undo button gave way to "Undone"; the row itself keeps the focus.
+    focusSoon(`[data-op="${op.id}"] [data-testid="undo"]`, `[data-op="${op.id}"]`);
   };
 
   return (
@@ -217,7 +222,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
                   const stillThere = entry.ops.some((o) => o.status === "undone") ? entry.ops.filter((o) => o.status === "done") : [];
                   const undone = !live && stayed.length < entry.ops.length;
                   return (
-                    <div key={entry.batch} className="activity-batch" data-testid="activity-batch">
+                    <div key={entry.batch} className="activity-batch" data-testid="activity-batch" data-batch={entry.batch}>
                       <div className={`activity-row${undone ? " is-undone" : ""}${stayed.length > 0 ? " has-failed" : ""}`}>
                         <span className={`op-mark${live && !recycled ? " is-filed" : ""}`}>{recycled ? <Trash size={20} aria-hidden /> : <FolderInput size={20} aria-hidden />}</span>
                         <div className="activity-text">
@@ -261,7 +266,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
                       {stillThere.map((op) => {
                         const { title } = describeOp(op, info.roots);
                         return (
-                          <div key={op.id} className="activity-row activity-batch-row" data-testid="activity-batch-still">
+                          <div key={op.id} className="activity-row activity-batch-row" data-testid="activity-batch-still" data-op={op.id}>
                             <span className="op-mark is-filed">
                               <OpIcon op={op} />
                             </span>
@@ -285,7 +290,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
                 const op = entry.op;
                 const { title, detail } = describeOp(op, info.roots);
                 return (
-                  <div key={op.id} className={`activity-row${op.status === "failed" ? " is-failed" : ""}${op.status === "undone" ? " is-undone" : ""}`} data-testid="activity-row">
+                  <div key={op.id} className={`activity-row${op.status === "failed" ? " is-failed" : ""}${op.status === "undone" ? " is-undone" : ""}`} data-testid="activity-row" data-op={op.id}>
                     <span className={`op-mark${op.status === "done" && (op.kind === "autoSort" || op.kind === "move") ? " is-filed" : ""}`}>
                       <OpIcon op={op} />
                     </span>

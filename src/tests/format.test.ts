@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { copiesLabel, extOf, fileSize, locationLine, monthName, originLine, relativeTime, stemOf } from "../lib/format";
+import { copiesLabel, extOf, fileSize, isProgram, locationLine, monthName, originLine, relativeTime, stemOf } from "../lib/format";
 
 const now = new Date(2026, 9, 12, 15, 0, 0); // 12 October 2026, 3 PM local
 const unix = (d: Date) => Math.floor(d.getTime() / 1000);
@@ -41,5 +41,14 @@ describe("small helpers", () => {
     expect(stemOf("noext")).toBe("noext");
     expect(copiesLabel(1)).toBe("1 other copy");
     expect(copiesLabel(3)).toBe("3 other copies");
+  });
+});
+
+describe("isProgram", () => {
+  it("knows the programs, scripts and shortcuts that run when opened (audit T-41)", () => {
+    for (const ext of ["exe", "msi", "bat", "cmd", "ps1", "vbs", "js", "jse", "wsf", "hta", "lnk", "url", "scr", "com", "reg"]) expect(isProgram(ext)).toBe(true);
+    expect(isProgram(".EXE")).toBe(true);
+    expect(isProgram(extOf("setup-printer.exe"))).toBe(true);
+    for (const ext of ["docx", "pdf", "xlsx", "jpg", "html", "zip", "", undefined]) expect(isProgram(ext)).toBe(false);
   });
 });

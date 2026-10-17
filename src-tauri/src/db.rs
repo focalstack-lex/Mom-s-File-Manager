@@ -277,7 +277,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     // 2026-10-17 an undone row records the moment of the Undo and where the
     // file landed, so the Downloads watcher still knows a put-back file when
     // the put-back was a copy or landed beside a namesake as "Name (2)".
-    for (column, kind) in [("size", "INTEGER"), ("recycled_at", "INTEGER"), ("undone_at", "INTEGER"), ("undone_to", "TEXT")] {
+    // Since 2026-10-17 a move records when its file lost the web stamp on
+    // the way to a drive that cannot hold one (audit T-43).
+    for (column, kind) in [("size", "INTEGER"), ("recycled_at", "INTEGER"), ("undone_at", "INTEGER"), ("undone_to", "TEXT"), ("stamp_lost", "INTEGER NOT NULL DEFAULT 0")] {
         let present = conn.prepare("SELECT 1 FROM pragma_table_info('ops') WHERE name = ?1")?.exists([column])?;
         if !present {
             conn.execute_batch(&format!("ALTER TABLE ops ADD COLUMN {column} {kind}"))?;
@@ -383,6 +385,8 @@ mod tests {
         assert_eq!(recorded, (None, None), "the recycle columns are added too");
         let undone: (Option<i64>, Option<String>) = conn.query_row("SELECT undone_at, undone_to FROM ops", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(undone, (None, None), "and the Undo columns");
+        let stamp_lost: i64 = conn.query_row("SELECT stamp_lost FROM ops", [], |r| r.get(0)).unwrap();
+        assert_eq!(stamp_lost, 0, "and the web stamp column, false for old rows");
     }
 
     #[test]

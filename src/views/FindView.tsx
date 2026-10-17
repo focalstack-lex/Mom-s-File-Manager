@@ -1,5 +1,7 @@
 // The one screen she opens (spec 5.3): search, pinned, templates, recent
-// downloads, results grouped by copy.
+// downloads, results grouped by copy. On a short window (a school laptop at
+// 125 percent) the head, the Pinned rows and the template shelf tighten so
+// the first recent download is on the first screen (styles.css).
 
 import { FilePlus, Inbox, Info, Search, SearchX, X } from "lucide-react";
 import { browserNotice } from "../lib/browsers";
@@ -11,6 +13,7 @@ import { PreviewPanel } from "../components/PreviewPanel";
 import { ResultRow } from "../components/ResultRow";
 import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
+import { revealCard } from "../lib/focus";
 import { groupByDay, PAGE, takeRows, useShown } from "../lib/paging";
 import { ipc } from "../lib/ipc";
 import type { AppInfo, FileRow } from "../lib/types";
@@ -118,8 +121,8 @@ export function FindView({ info }: { info: AppInfo }) {
   const visibleGroups = result?.groups.slice(0, resultsShown) ?? [];
 
   return (
-    <div className="main-inner" data-testid="find-view">
-      <div className="view-head">
+    <div className="main-inner find-view" data-testid="find-view">
+      <div className="view-head find-head">
         <h1 className="view-title">Find a file</h1>
         {status && (
           <p className="status-line" data-testid="status-line">
@@ -130,7 +133,14 @@ export function FindView({ info }: { info: AppInfo }) {
           <p className="notice" data-testid="browser-notice">
             <Info size={18} aria-hidden />
             <span>{notice}</span>
-            <button type="button" className="button button-quiet" onClick={() => setView("settings")}>
+            <button
+              type="button"
+              className="button button-quiet"
+              onClick={() => {
+                setView("settings");
+                revealCard("browsers-card");
+              }}
+            >
               How to fix
             </button>
           </p>
@@ -225,7 +235,7 @@ export function FindView({ info }: { info: AppInfo }) {
                   <h2 className="card-title">Pinned</h2>
                   <div className="rows">
                     {result.pinned.map((file) => (
-                      <ResultRow key={file.path} file={file} roots={roots} renaming={renaming === file.path} onRenamed={() => setRenaming(null)} onCancelRename={() => setRenaming(null)} />
+                      <ResultRow key={file.path} file={file} roots={roots} compact renaming={renaming === file.path} onRenamed={() => setRenaming(null)} onCancelRename={() => setRenaming(null)} />
                     ))}
                   </div>
                 </section>
@@ -249,7 +259,7 @@ export function FindView({ info }: { info: AppInfo }) {
                 </section>
               )}
               {templates.length > 0 && (
-                <section className="section" aria-label="Templates" data-testid="templates">
+                <section className="section shelf-section" aria-label="Templates" data-testid="templates">
                   <h2 className="card-title">New from a template</h2>
                   <div className="shelf">
                     {templates.map((t) => (
@@ -261,7 +271,8 @@ export function FindView({ info }: { info: AppInfo }) {
                   </div>
                 </section>
               )}
-              <section className="section" aria-label="Recent downloads" data-testid="recent" data-tour="recent">
+              {/* The walkthrough's "Your downloads land here" points at the first row (ResultRow tourOpen), which always fits on screen. */}
+              <section className="section" aria-label="Recent downloads" data-testid="recent">
                 <h2 className="card-title">Recent downloads</h2>
                 {recent.length === 0 && !showSamples ? (
                   result === null && failed ? (

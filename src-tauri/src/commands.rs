@@ -431,19 +431,20 @@ pub async fn preview(state: State<'_, AppState>, path: String) -> Result<Preview
     .await
 }
 
+/// The lock is taken by each move for its record and its finish only, so a
+/// search answers while a file is copied to another drive (audit T-12).
 #[tauri::command]
 pub async fn move_files(state: State<'_, AppState>, paths: Vec<String>, destination: String) -> Result<Vec<String>> {
     let core = core_of(&state);
     blocking("move_files", move || {
-        let conn = core.db()?;
         let dest = Path::new(&destination);
         // Several files moved together are one batch: one Activity row, one Undo all.
         let batch = (paths.len() > 1).then(|| ops::new_batch("move"));
         let mut moved = Vec::new();
         for p in paths {
             let new_path = match &batch {
-                Some(batch) => ops::move_file_in_batch(&conn, &core.roots, &core.placed, Path::new(&p), dest, batch)?,
-                None => ops::move_file(&conn, &core.roots, &core.placed, Path::new(&p), dest, ops::OpKind::Move)?,
+                Some(batch) => ops::move_file_in_batch(&*core, &core.roots, &core.placed, Path::new(&p), dest, batch)?,
+                None => ops::move_file(&*core, &core.roots, &core.placed, Path::new(&p), dest, ops::OpKind::Move)?,
             };
             moved.push(paths::display(&new_path));
         }
@@ -560,11 +561,7 @@ pub async fn list_activity(state: State<'_, AppState>) -> Result<Vec<OpRow>> {
 #[tauri::command]
 pub async fn undo(state: State<'_, AppState>, id: i64) -> Result<()> {
     let core = core_of(&state);
-    blocking("undo", move || {
-        let conn = core.db()?;
-        ops::undo(&conn, &core.roots, &core.placed, id)
-    })
-    .await
+    blocking("undo", move || ops::undo(&*core, &core.roots, &core.placed, id)).await
 }
 
 #[tauri::command]
@@ -806,11 +803,7 @@ pub async fn organize_run(state: State<'_, AppState>, paths: Vec<String>) -> Res
 #[tauri::command]
 pub async fn undo_batch(state: State<'_, AppState>, batch: String) -> Result<ops::BatchUndo> {
     let core = core_of(&state);
-    blocking("undo_batch", move || {
-        let conn = core.db()?;
-        ops::undo_batch(&conn, &core.roots, &core.placed, &batch)
-    })
-    .await
+    blocking("undo_batch", move || ops::undo_batch(&*core, &core.roots, &core.placed, &batch)).await
 }
 
 /// The standard subject list, for "Use the standard list" in Settings.

@@ -1,11 +1,12 @@
 // Quick preview (spec 5.3): the words inside a document, the image itself,
 // or plain details, beside the list (a drawer over it on narrow windows).
-// It carries the labelled actions; Escape closes it.
+// It carries the labelled actions; Escape closes it. A program, script or
+// shortcut offers "Open the program", as its row does.
 
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Copy, FolderOpen, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { fileSize, locationLine, relativeTime } from "../lib/format";
+import { extOf, fileSize, isProgram, locationLine, relativeTime } from "../lib/format";
 import { ipc } from "../lib/ipc";
 import { describeError } from "../lib/errors";
 import type { Preview } from "../lib/types";
@@ -45,6 +46,7 @@ export function PreviewPanel({ roots }: { roots: string[] }) {
 
   if (!path) return null;
   const imageSrc = preview?.kind === "image" && !window.__toteMock ? convertFileSrc(path) : null;
+  const program = isProgram(extOf(path.split("\\").pop() ?? ""));
 
   return (
     <aside className="card preview" aria-label="Preview" data-testid="preview">
@@ -73,7 +75,7 @@ export function PreviewPanel({ roots }: { roots: string[] }) {
       )}
       <div className="preview-actions">
         <button type="button" className="button button-primary" onClick={() => void ipc.open(path).catch(fail)}>
-          Open
+          {program ? "Open the program" : "Open"}
         </button>
         <button type="button" className="button" onClick={() => void ipc.reveal(path).catch(fail)}>
           <FolderOpen size={18} aria-hidden />

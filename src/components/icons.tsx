@@ -3,6 +3,7 @@
 
 import { File, FileImage, FileSpreadsheet, FileText, FileType, FileVideo, Presentation } from "lucide-react";
 import { useId } from "react";
+import { isProgram } from "../lib/format";
 import type { Kind } from "../lib/types";
 
 export function KindIcon({ kind, size = 24 }: { kind: Kind; size?: number }) {
@@ -25,13 +26,18 @@ export function KindIcon({ kind, size = 24 }: { kind: Kind; size?: number }) {
   }
 }
 
-/** The kind icon over the file extension, so a Word file and a PDF never look alike. */
+/**
+ * The kind icon over the file extension, so a Word file and a PDF never look
+ * alike. A program, script or shortcut says "program" instead of its
+ * extension, since opening it runs something.
+ */
 export function KindTile({ kind, ext }: { kind: Kind; ext?: string }) {
-  const label = (ext ?? "").replace(/^\./, "").slice(0, 4);
+  const program = isProgram(ext);
+  const label = program ? "program" : (ext ?? "").replace(/^\./, "").slice(0, 4);
   return (
     <span className="kind-tile" aria-hidden>
       <KindIcon kind={kind} size={20} />
-      {label && <span className="kind-tile-ext">{label}</span>}
+      {label && <span className={`kind-tile-ext${program ? " is-program" : ""}`}>{label}</span>}
     </span>
   );
 }

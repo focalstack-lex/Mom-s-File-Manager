@@ -1,9 +1,12 @@
 // Short confirmations in the corner. Errors stay a little longer; a change
-// that can be reversed carries its own Undo button. Undo tries every part
-// and then says what really happened, in the same words everywhere.
+// that can be reversed carries its own Undo button. A toast waits while the
+// pointer is over it or focus is in it. Undo tries every part and then says
+// what really happened, in the same words everywhere; focus, which was on
+// the Undo button, goes back to the screen.
 
 import { CircleAlert, CircleCheck, Undo2, X } from "lucide-react";
 import { describeError, undoText, type UndoFailure } from "../lib/errors";
+import { refocusIfLost } from "../lib/focus";
 import { ipc } from "../lib/ipc";
 import type { OpRow } from "../lib/types";
 import { useApp, type Toast } from "../store/app";
@@ -29,6 +32,8 @@ export function Toasts() {
   const dismiss = useApp((s) => s.dismissToast);
   const toast = useApp((s) => s.toast);
   const fail = useApp((s) => s.fail);
+  const hold = useApp((s) => s.holdToast);
+  const release = useApp((s) => s.releaseToast);
   const refreshFind = useFind((s) => s.refresh);
 
   const undo = async (item: Toast) => {
@@ -38,6 +43,7 @@ export function Toasts() {
       const ok = item.undoTask.action === "reopen" ? await todo.reopen(item.undoTask.id) : await todo.restore(item.undoTask.id);
       // The store has already said what went wrong; only a task that is back gets the good news.
       if (ok) toast("Back on your list.");
+      refocusIfLost('[data-testid="todo-input"]');
       return;
     }
     let undone = 0;
@@ -67,13 +73,23 @@ export function Toasts() {
     if (stuck.length > 0) failed.push(...(await namesFor(stuck)));
     await refreshFind();
     toast(undoText(undone, failed), failed.length === 0 ? "info" : "error");
+    refocusIfLost();
   };
 
   if (toasts.length === 0) return null;
   return (
     <div className="toasts" aria-live="polite">
       {toasts.map((item) => (
-        <div key={item.id} className={`toast${item.kind === "error" ? " toast-error" : ""}`} role={item.kind === "error" ? "alert" : "status"}>
+        <div
+          key={item.id}
+          className={`toast${item.kind === "error" ? " toast-error" : ""}`}
+          role={item.kind === "error" ? "alert" : "status"}
+          onMouseEnter={() => hold(item.id)}
+          onMouseLeave={() => release(item.id)}
+          onFocus={() => hold(item.id)}
+          onBlur={() => release(item.id)}
+          data-testid="toast"
+        >
           {item.kind === "error" ? <CircleAlert size={22} aria-hidden /> : <CircleCheck size={22} aria-hidden />}
           <span className="toast-text">{item.text}</span>
           {((item.undoIds && item.undoIds.length > 0) || item.undoBatch || item.undoTask) && (

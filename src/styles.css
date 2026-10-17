@@ -36,7 +36,8 @@
   /* Text on canvas and cards */
   --text-primary: #17201b;
   --text-muted: #4f5c55;
-  --text-faint: #6b7872;
+  /* Quiet labels and placeholders; gated at 4.5:1 like body text, since it carries 13 px text */
+  --text-faint: #5c6962;
 
   /* The shell behind the sidebar and the canvas card: top and bottom of its gradient */
   --bg-shell-top: #1b5a40;
@@ -91,6 +92,9 @@
   --text-lg: 20px;
   --text-xl: 24px;
   --text-2xl: 32px;
+  /* Spec 7: file names 18 px semibold, and the lines under them (where it came from, where it is) 16 px */
+  --text-name: 18px;
+  --text-detail: 16px;
 
   --font: "Atkinson Hyperlegible Next", "Segoe UI", system-ui, sans-serif;
 
@@ -244,7 +248,7 @@ kbd {
   display: grid;
   place-items: center;
   width: 46px;
-  height: 36px;
+  height: var(--titlebar-height);
   border: 0;
   background: transparent;
   color: var(--sidebar-text);
@@ -277,7 +281,11 @@ kbd {
   padding: var(--space-1) 0 var(--space-3) var(--space-3);
   gap: var(--space-2);
   min-width: 0;
-  overflow: hidden;
+  /* A short window (200 percent scaling) scrolls the menu, so Settings is
+     always reachable; the wheel and Tab do it, so no bar takes the rail's room. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
 }
 
 /* A few faint specks near the top, fading out, so the shell reads as a surface. */
@@ -328,8 +336,8 @@ kbd {
 .sidebar-toggle {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   flex: none;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -665,10 +673,6 @@ kbd {
   flex: none;
 }
 
-.notice .button {
-  min-height: 36px;
-}
-
 .browser-row {
   display: grid;
   grid-template-columns: 24px 1fr;
@@ -768,7 +772,7 @@ kbd {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 var(--space-4);
   border-radius: 999px;
   border: 1.5px solid var(--border-strong);
@@ -884,20 +888,8 @@ kbd {
   color: var(--text-primary);
 }
 
-.button-danger {
-  color: var(--coral);
-  border-color: var(--coral);
-}
-
-.button-danger:hover {
-  background: var(--coral-soft);
-  border-color: var(--coral);
-}
-
-.button-danger:disabled {
-  color: var(--text-faint);
-  border-color: var(--border);
-}
+/* The Recycle Bin buttons are plain buttons: everything sent there can come
+   back, and spec 7 keeps coral for failures only. */
 
 .icon-button {
   display: inline-grid;
@@ -996,12 +988,18 @@ kbd {
 }
 
 .kind-tile-ext {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   line-height: 1;
   text-transform: uppercase;
   color: var(--text-muted);
+}
+
+/* "program" in place of exe, bat, lnk and the rest: a word, so lower case and untracked to fit the tile. */
+.kind-tile-ext.is-program {
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .row.is-previewed .kind-tile {
@@ -1030,8 +1028,8 @@ kbd {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--text-md);
-  font-weight: 700;
+  font-size: var(--text-name);
+  font-weight: 600;
   line-height: 1.3;
   min-width: 0;
 }
@@ -1045,7 +1043,7 @@ kbd {
 .row-meta,
 .row-where {
   color: var(--text-muted);
-  font-size: var(--text-sm);
+  font-size: var(--text-detail);
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -1065,7 +1063,7 @@ kbd {
 
 .row-snippet {
   color: var(--text-muted);
-  font-size: var(--text-sm);
+  font-size: var(--text-detail);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1083,10 +1081,6 @@ kbd {
   display: flex;
   align-items: center;
   gap: 2px;
-}
-
-.row-actions .button {
-  min-height: 40px;
 }
 
 .row:hover .row-open,
@@ -1109,7 +1103,6 @@ kbd {
 @media (hover: hover) {
   .row .row-reveal {
     opacity: 0;
-    transition: opacity 140ms ease;
   }
 
   .row:hover .row-reveal,
@@ -1183,7 +1176,7 @@ kbd {
 
 .copies-toggle {
   align-self: flex-start;
-  min-height: 36px;
+  min-height: 44px;
   padding: 0 var(--space-3);
   font-size: var(--text-sm);
 }
@@ -1383,6 +1376,14 @@ kbd {
   color: var(--accent);
 }
 
+/* The shelf's title and its buttons share one line while they fit. */
+.shelf-section {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--space-4);
+}
+
 /* Bottom action bar: sticks to the bottom of the main column, in the flow,
    so it never covers the last row. */
 
@@ -1391,6 +1392,9 @@ kbd {
   bottom: var(--space-4);
   align-self: center;
   display: flex;
+  /* Wraps onto a second line before anything is cut off (a small window, 200 percent scaling). */
+  flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
   gap: var(--space-1);
   background: var(--bg-card);
@@ -1425,10 +1429,6 @@ kbd {
   border-color: transparent;
 }
 
-.action-bar .button-danger:hover {
-  background: var(--coral-soft);
-}
-
 /* Dialogs */
 
 .dialog-backdrop {
@@ -1451,6 +1451,14 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  /* On a short window the body scrolls and the buttons stay in view
+     (.dialog-actions is sticky); no part shrinks to nothing. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.dialog > * {
+  flex-shrink: 0;
 }
 
 .dialog h2 {
@@ -1492,6 +1500,15 @@ kbd {
   gap: var(--space-2);
   flex-wrap: wrap;
   padding-top: var(--space-1);
+}
+
+/* Inside the dialog the buttons hold the bottom edge while the rest scrolls under them. */
+.dialog > .dialog-actions {
+  position: sticky;
+  bottom: 0;
+  margin: 0 calc(var(--space-5) * -1) calc(var(--space-5) * -1);
+  padding: var(--space-3) var(--space-5) var(--space-5);
+  background: var(--bg-card);
 }
 
 .folder-list {
@@ -1605,7 +1622,7 @@ kbd {
 }
 
 .rename-inline input {
-  min-height: 40px;
+  min-height: 44px;
   border: 1.5px solid var(--accent);
   border-radius: var(--radius-sm);
   padding: 0 var(--space-2);
@@ -1658,10 +1675,6 @@ kbd {
   flex: 1;
   min-width: 0;
   padding: var(--space-2) 0;
-}
-
-.toast .button {
-  min-height: 36px;
 }
 
 /* Activity */
@@ -1903,6 +1916,29 @@ kbd {
   gap: var(--space-1);
 }
 
+/* A phone-narrow window: the actions move under the text and the title
+   wraps between words, so nothing is squeezed to one word per line. */
+@media (max-width: 480px) {
+  .activity-row {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+
+  .activity-row > .activity-actions,
+  .activity-row > .activity-state {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .activity-batch-row {
+    margin-left: 0;
+  }
+
+  .activity-text strong {
+    white-space: normal;
+    overflow-wrap: break-word;
+  }
+}
+
 /* Undo is quiet at rest so the column of buttons does not outshout the file
    names, and takes its outline when the row is pointed at or focused. */
 .activity-row:hover .activity-undo,
@@ -2142,7 +2178,6 @@ kbd {
   border-radius: 999px;
   background: var(--border-strong);
   cursor: pointer;
-  transition: background-color 180ms ease;
 }
 
 .switch::after {
@@ -2155,7 +2190,6 @@ kbd {
   border-radius: 50%;
   background: var(--bg-card);
   box-shadow: 0 1px 3px rgba(20, 40, 30, 0.3);
-  transition: transform 220ms var(--ease-out);
 }
 
 .switch:checked {
@@ -2282,6 +2316,43 @@ kbd {
   border-radius: var(--radius-lg);
   pointer-events: none;
   box-shadow: 0 0 0 4px rgba(31, 107, 74, 0.25);
+}
+
+/* When the walkthrough scrolls a target to the top or bottom of the screen,
+   the ring keeps clear of the edge. */
+[data-tour] {
+  scroll-margin: var(--space-5);
+}
+
+/* A small window: the card gets smaller so it can sit beside its target
+   instead of on it (store/tour.ts placeCard). */
+@media (max-height: 620px), (max-width: 700px) {
+  .tour-card {
+    width: min(320px, calc(100vw - var(--space-4) * 2));
+    padding: var(--space-3) var(--space-4);
+    gap: var(--space-2);
+  }
+
+  .tour-card h2 {
+    font-size: var(--text-md);
+  }
+
+  .tour-card p {
+    font-size: var(--text-sm);
+  }
+}
+
+/* How to fix and the quarter note bring a Settings card to the top; it keeps a little room above. */
+.settings-list {
+  scroll-margin-top: var(--space-5);
+}
+
+/* The quarter note in a task: the sentence, then the button that opens the dates. */
+.quarter-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-2);
 }
 
 /* Responsive: the sidebar becomes an icon rail under 900 px; the preview
@@ -2767,6 +2838,19 @@ kbd {
     transition: transform 240ms var(--ease-out), background-color 140ms ease, color 140ms ease;
   }
 
+  /* The switch slides and the row's quiet actions fade in, only for those who have not asked for less motion. */
+  .switch {
+    transition: background-color 180ms ease;
+  }
+
+  .switch::after {
+    transition: transform 220ms var(--ease-out);
+  }
+
+  .row .row-reveal {
+    transition: opacity 140ms ease, background-color 140ms ease, color 140ms ease;
+  }
+
   /* Each view eases in instead of cutting. */
   .main > .main-inner {
     animation: view-in 360ms var(--ease-out);
@@ -2929,4 +3013,183 @@ kbd {
   display: flex;
   gap: var(--space-2);
   flex: none;
+}
+
+/* A short window (a school laptop at 125 percent is about 1093 by 566): the
+   Find head, the Pinned rows and the template shelf tighten so the first
+   recent download is on the first screen (audit T-24). The status line sits
+   beside the title, a pinned file is one line, and the gaps close up. */
+@media (max-height: 760px) {
+  .main {
+    padding-top: var(--space-4);
+  }
+
+  .find-view {
+    gap: var(--space-3);
+  }
+
+  .find-head {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--space-4);
+    padding-bottom: 0;
+  }
+
+  .find-head .view-title {
+    font-size: 26px;
+  }
+
+  .find-head .notice {
+    flex-basis: 100%;
+    margin-top: 0;
+  }
+
+  .search {
+    padding-top: var(--space-1);
+    padding-bottom: var(--space-1);
+  }
+
+  .search input {
+    padding: var(--space-1) 0;
+  }
+
+  .find-results {
+    gap: var(--space-4);
+  }
+
+  .find-results .section,
+  .day-group {
+    gap: var(--space-2);
+  }
+
+  .day-groups {
+    gap: var(--space-3);
+  }
+
+  .row {
+    padding-top: var(--space-1);
+    padding-bottom: var(--space-1);
+  }
+
+  .row-meta,
+  .row-where,
+  .row-snippet {
+    line-height: 1.4;
+  }
+
+  /* A pinned file: its name and where it is on one line (where it came from is in its description). */
+  .row.is-compact .row-body {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--space-3);
+  }
+
+  .row.is-compact .row-meta {
+    display: none;
+  }
+
+  .row.is-compact .row-name {
+    max-width: 100%;
+  }
+
+  .row.is-compact .kind-tile {
+    height: 44px;
+  }
+}
+
+/* Shorter still (about 600 px and under, as at 1093 by 566 with the browser
+   notice showing): the gaps close one more step on the token scale. */
+@media (max-height: 600px) {
+  .main {
+    padding-top: var(--space-2);
+  }
+
+  .find-view {
+    gap: var(--space-2);
+  }
+
+  .find-results {
+    gap: var(--space-2);
+  }
+
+  .find-results .section,
+  .day-group {
+    gap: var(--space-1);
+  }
+}
+
+/* Windows High Contrast (forced colours): the theme replaces backgrounds and
+   drops shadows, so every custom control and every chosen state draws its
+   own system-colour border or outline, and on and off never look alike
+   (audit T-09). */
+@media (forced-colors: active) {
+  .switch {
+    border: 2px solid CanvasText;
+    background: Canvas;
+  }
+
+  .switch::after {
+    top: 2px;
+    left: 2px;
+    width: 22px;
+    height: 22px;
+    background: CanvasText;
+    box-shadow: none;
+  }
+
+  .switch:checked {
+    border-color: Highlight;
+    background: Highlight;
+  }
+
+  .switch:checked::after {
+    background: HighlightText;
+  }
+
+  .chip[aria-pressed="true"],
+  .folder-option[aria-pressed="true"] {
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .folder-option[aria-pressed="true"] svg {
+    color: HighlightText;
+  }
+
+  .row.is-selected {
+    outline: 2px dashed CanvasText;
+    outline-offset: -2px;
+  }
+
+  .row.is-previewed,
+  .task.is-open > .task-line {
+    outline: 3px solid Highlight;
+    outline-offset: -3px;
+  }
+
+  .nav-button[aria-current="page"] {
+    outline: 3px solid Highlight;
+    outline-offset: -3px;
+  }
+
+  .tour-ring {
+    border-color: Highlight;
+  }
+
+  .nav-new {
+    border: 1px solid CanvasText;
+  }
+
+  .is-collapsed .nav-new {
+    background: Highlight;
+  }
+}
+
+@media (forced-colors: active) and (max-width: 900px) {
+  .nav-new {
+    background: Highlight;
+  }
 }

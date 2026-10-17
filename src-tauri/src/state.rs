@@ -66,6 +66,48 @@ pub struct Core {
     pub placed: Placed,
 }
 
+/// Where work that gives the database lock back between steps takes it
+/// from: the shared lock in the app (`Core`), or a connection the caller
+/// already holds (a guard it took, or a plain connection in tests), which
+/// is then used as it is with no second lock. A move holds it to record the
+/// change and to finish it, never while the file is copied (audit T-12).
+pub trait Db {
+    type Held<'a>: std::ops::Deref<Target = Connection>
+    where
+        Self: 'a;
+    fn hold(&self) -> Result<Self::Held<'_>>;
+}
+
+impl Db for Core {
+    type Held<'a>
+        = MutexGuard<'a, Connection>
+    where
+        Self: 'a;
+    fn hold(&self) -> Result<MutexGuard<'_, Connection>> {
+        self.db()
+    }
+}
+
+impl Db for Connection {
+    type Held<'a>
+        = &'a Connection
+    where
+        Self: 'a;
+    fn hold(&self) -> Result<&Connection> {
+        Ok(self)
+    }
+}
+
+impl Db for MutexGuard<'_, Connection> {
+    type Held<'a>
+        = &'a Connection
+    where
+        Self: 'a;
+    fn hold(&self) -> Result<&Connection> {
+        Ok(self)
+    }
+}
+
 impl Core {
     /// The database lock. A thread that panicked while holding it leaves it
     /// poisoned; SQLite keeps its own consistency (each statement is atomic),

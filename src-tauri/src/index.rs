@@ -7,6 +7,7 @@ use crate::error::{Result, ToteError};
 use crate::extract;
 use crate::origin::Origin;
 use crate::sorter;
+use crate::state::Db;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -195,6 +196,20 @@ pub fn walk(root: &Path, out: &mut Vec<Entry>) {
     }
 }
 
+/// What a folder that appeared or changed holds, for the watcher: None when
+/// the scanner skips that folder (its rows are then removed), else every
+/// indexable file under it. It only reads the disk, so it runs with no lock
+/// held; the files then go in chunk by chunk the way the scan writes them
+/// (audit T-12).
+pub fn walk_folder(path: &Path) -> Option<Vec<Entry>> {
+    if should_skip_dir(path) {
+        return None;
+    }
+    let mut entries = Vec::new();
+    walk(path, &mut entries);
+    Some(entries)
+}
+
 /// What the index knows about a file before it is written: nothing, a row
 /// that still matches the disk, or a row that needs refreshing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,26 +270,31 @@ fn write_then(conn: &Connection, entry: &Entry, change: Change, content: Option<
     if let Change::Unchanged(id) = change {
         return Ok(id);
     }
-    run(conn, "SAVEPOINT index_write", [])?;
-    let written = write_inner(conn, entry, change, content.as_deref())
-        .and_then(|id| before_release(conn).map(|()| id))
-        .and_then(|id| run(conn, "RELEASE index_write", []).map(|_| id));
-    if written.is_err() {
+    atomically(conn, "index_write", |conn| write_inner(conn, entry, change, content.as_deref()).and_then(|id| before_release(conn).map(|()| id)))
+}
+
+/// Runs `work` inside the savepoint `name`: what it wrote stays together or
+/// none of it does (audit T-48). A savepoint rather than a transaction, so
+/// it nests in a caller's transaction too.
+fn atomically<T>(conn: &Connection, name: &str, work: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    run(conn, &format!("SAVEPOINT {name}"), [])?;
+    let done = work(conn).and_then(|value| run(conn, &format!("RELEASE {name}"), []).map(|_| value));
+    if done.is_err() {
         // The release can fail too (a full disk, a constraint checked at
         // commit), and a savepoint left open would make every later
         // transaction fail at BEGIN and swallow every later write until
         // exit, so the undo runs on any failure. SQLite rolls back on its
         // own after some errors; the savepoint is then already gone and the
         // undo says so, which is no failure.
-        if let Err(undo) = conn.execute_batch("ROLLBACK TO index_write; RELEASE index_write") {
+        if let Err(undo) = conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}")) {
             if conn.is_autocommit() {
-                log::debug!("index: the failed write was already rolled back: {undo}");
+                log::debug!("index: the failed {name} was already rolled back: {undo}");
             } else {
-                log::warn!("index: a half-written row could not be undone: {undo}");
+                log::warn!("index: a half-done {name} could not be undone: {undo}");
             }
         }
     }
-    written
+    done
 }
 
 /// One scanned file with what the lookup and the extraction found, ready
@@ -426,6 +446,26 @@ pub fn refresh_path(conn: &Connection, path: &Path) -> Result<()> {
     }
 }
 
+/// `refresh_path` for one file with the scan's discipline, for a caller
+/// that gives the lock back between steps (a moved file the index did not
+/// know yet, a file Undo brought back, a file the watcher saw change): a
+/// short hold to look the file up, its words read with no lock held, a
+/// short hold to write it. The lookup is asked again at the write, so a row
+/// written meanwhile is refreshed rather than refused as taken.
+pub fn refresh_file(db: &impl Db, path: &Path) -> Result<()> {
+    let Some(entry) = entry_for(path) else {
+        return remove(&*db.hold()?, path);
+    };
+    let change = change_for(&*db.hold()?, &entry)?;
+    if let Change::Unchanged(_) = change {
+        return Ok(());
+    }
+    let content = content_for(&entry);
+    let conn = db.hold()?;
+    let change = change_for(&conn, &entry)?;
+    write(&conn, &entry, change, content).map(|_| ())
+}
+
 pub fn remove(conn: &Connection, path: &Path) -> Result<()> {
     let text = path.to_string_lossy().into_owned();
     let ids: Vec<i64> = {
@@ -434,19 +474,47 @@ pub fn remove(conn: &Connection, path: &Path) -> Result<()> {
         let rows = stmt.query_map(params![text, like], |r| r.get(0))?;
         rows.collect::<std::result::Result<Vec<i64>, _>>()?
     };
-    for id in ids {
-        run(conn, "DELETE FROM files_fts WHERE rowid = ?1", [id])?;
-        run(conn, "DELETE FROM files WHERE id = ?1", [id])?;
+    if ids.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    // A row and its search text go together (audit T-48).
+    atomically(conn, "index_remove", |conn| {
+        for id in &ids {
+            run(conn, "DELETE FROM files_fts WHERE rowid = ?1", [id])?;
+            run(conn, "DELETE FROM files WHERE id = ?1", [id])?;
+        }
+        Ok(())
+    })
 }
 
 fn escape_like(text: &str) -> String {
     text.replace('!', "!!").replace('%', "!%").replace('_', "!_")
 }
 
-/// Records a move or rename the app performed, keeping origin and pins.
+/// Records a move or rename the app performed, keeping origin and pins. A
+/// file the index did not know yet is read and written here.
 pub fn relocate(conn: &Connection, from: &Path, to: &Path) -> Result<()> {
+    if !relocate_row(conn, from, to)? {
+        refresh_path(conn, to)?;
+    }
+    Ok(())
+}
+
+/// `relocate` for a caller that gives the lock back between steps (a move,
+/// an Undo): the row follows the file under one short hold, and a file the
+/// index did not know yet is read with no lock held (`refresh_file`).
+pub fn relocate_unlocked(db: &impl Db, from: &Path, to: &Path) -> Result<()> {
+    let known = relocate_row(&*db.hold()?, from, to)?;
+    if !known {
+        refresh_file(db, to)?;
+    }
+    Ok(())
+}
+
+/// Moves the index row, its search name, a pin and a template from `from`
+/// to `to` in one savepoint, so a crash leaves all of it at one path or the
+/// other (audit T-48). Returns false when the index had no row for `from`.
+pub fn relocate_row(conn: &Connection, from: &Path, to: &Path) -> Result<bool> {
     let from_text = from.to_string_lossy().into_owned();
     let to_text = to.to_string_lossy().into_owned();
     let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -454,26 +522,51 @@ pub fn relocate(conn: &Connection, from: &Path, to: &Path) -> Result<()> {
     let ext = sorter::extension(to);
     let parent = to.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let kind = sorter::classify(&ext).as_str();
-    let changed = run(
-        conn,
-        "UPDATE files SET path = ?2, parent = ?3, name = ?4, ext = ?5, kind = ?6, group_key = ?7 WHERE path = ?1",
-        params![from_text, to_text, parent, name, ext, kind, dupes::group_key(&stem, &ext)],
-    )?;
-    if changed == 0 {
-        refresh_path(conn, to)?;
-    } else {
-        let id: i64 = conn.query_row("SELECT id FROM files WHERE path = ?1", [&to_text], |r| r.get(0))?;
-        run(conn, "UPDATE files_fts SET name = ?2 WHERE rowid = ?1", params![id, indexed_name(&name)])?;
-    }
-    run(conn, "UPDATE pins SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
-    run(conn, "UPDATE templates SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
+    let known = atomically(conn, "index_relocate", |conn| {
+        let changed = run(
+            conn,
+            "UPDATE files SET path = ?2, parent = ?3, name = ?4, ext = ?5, kind = ?6, group_key = ?7 WHERE path = ?1",
+            params![from_text, to_text, parent, name, ext, kind, dupes::group_key(&stem, &ext)],
+        )?;
+        if changed > 0 {
+            let id: i64 = conn.query_row("SELECT id FROM files WHERE path = ?1", [&to_text], |r| r.get(0))?;
+            run(conn, "UPDATE files_fts SET name = ?2 WHERE rowid = ?1", params![id, indexed_name(&name)])?;
+        }
+        run(conn, "UPDATE pins SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
+        run(conn, "UPDATE templates SET path = ?2 WHERE path = ?1", [&from_text, &to_text])?;
+        Ok(changed > 0)
+    })?;
     // Files attached to a task follow too. A move must never fail because of
     // the list (for example when tasks.sqlite could not be opened), so a
     // problem here is logged and the move stands.
     if let Err(error) = conn.execute("UPDATE OR IGNORE todo.task_files SET path = ?2 WHERE path = ?1", [&from_text, &to_text]) {
         log::warn!("task attachments not updated for {}: {error}", to.display());
     }
-    Ok(())
+    Ok(known)
+}
+
+/// Rows a crash left without their search text (audit T-48: the row and its
+/// text used to be written one after the other): the name goes back in, so
+/// Find lists the file again, and the row is marked changed, so the next
+/// scan reads its words again. Runs at start, before anything else writes.
+/// Returns how many rows were repaired.
+pub fn repair_unsearchable(conn: &Connection) -> Result<usize> {
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare("SELECT id, name FROM files WHERE id IN (SELECT id FROM files EXCEPT SELECT rowid FROM files_fts)")?;
+        let found = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        found.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    atomically(conn, "index_repair", |conn| {
+        for (id, name) in &rows {
+            run(conn, "INSERT INTO files_fts(rowid, name, content) VALUES(?1, ?2, '')", params![id, indexed_name(name)])?;
+            run(conn, "UPDATE files SET modified = -1, content_indexed = 0 WHERE id = ?1", [id])?;
+        }
+        Ok(())
+    })?;
+    Ok(rows.len())
 }
 
 pub fn set_origin(conn: &Connection, path: &Path, origin: &Origin, downloaded_at: i64) -> Result<()> {
@@ -850,6 +943,72 @@ mod tests {
         remove(&conn, &dir.path().join("sub")).unwrap();
         assert_eq!(count(&conn).unwrap(), 1);
         assert_eq!(orphan_pins(&conn).unwrap().len(), 1);
+    }
+
+    /// A move's index update is all or nothing (audit T-48): when one of its
+    /// steps fails, the row, its search name and the pin all stay at the old
+    /// path; once nothing stands in the way, all of them move.
+    #[test]
+    fn a_relocate_that_fails_halfway_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = seed(dir.path());
+        let from = dir.path().join("Grade 7 Quiz.docx");
+        let to = dir.path().join("sub").join("Science Quiz.docx");
+        set_pinned(&conn, &from.to_string_lossy(), true).unwrap();
+        // The file is also on the template shelf, and the shelf refuses to change.
+        conn.execute("INSERT INTO templates(path, name, created_at) VALUES(?1, 'Grade 7 Quiz', 1)", [from.to_string_lossy().into_owned()]).unwrap();
+        conn.execute_batch("CREATE TRIGGER no_template_move BEFORE UPDATE ON templates BEGIN SELECT RAISE(ABORT, 'refused'); END;").unwrap();
+        assert!(relocate_row(&conn, &from, &to).is_err());
+        let row = by_path(&conn, &from.to_string_lossy()).unwrap().expect("the row stayed at the old path");
+        assert!(row.pinned, "and so did the pin");
+        assert!(by_path(&conn, &to.to_string_lossy()).unwrap().is_none());
+        assert_eq!(search(&conn, "science", &Filters::default(), 10).unwrap().len(), 0, "the search name did not change alone");
+        assert!(conn.is_autocommit(), "no transaction is left open");
+        conn.execute_batch("DROP TRIGGER no_template_move").unwrap();
+        assert!(relocate_row(&conn, &from, &to).unwrap(), "the row was known");
+        assert!(by_path(&conn, &to.to_string_lossy()).unwrap().unwrap().pinned);
+        assert_eq!(search(&conn, "science", &Filters::default(), 10).unwrap().len(), 1);
+    }
+
+    /// A row a crash left without its search text cannot be found, and the
+    /// next scan would call it unchanged; the start-up repair puts its name
+    /// back and marks it changed, so the scan reads its words again.
+    #[test]
+    fn a_row_left_without_its_search_text_is_repaired_at_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = seed(dir.path());
+        let notes = dir.path().join("sub").join("notes.txt");
+        let id = by_path(&conn, &notes.to_string_lossy()).unwrap().unwrap().id;
+        conn.execute("DELETE FROM files_fts WHERE rowid = ?1", [id]).unwrap();
+        assert!(search(&conn, "notes", &Filters::default(), 10).unwrap().is_empty(), "lost to search");
+        let entry = entry_for(&notes).unwrap();
+        assert_eq!(change_for(&conn, &entry).unwrap(), Change::Unchanged(id), "and the scan would leave it so");
+        assert_eq!(repair_unsearchable(&conn).unwrap(), 1);
+        assert_eq!(search(&conn, "notes", &Filters::default(), 10).unwrap().len(), 1, "the name finds it again");
+        assert_eq!(change_for(&conn, &entry).unwrap(), Change::Modified(id), "the next scan reads its words again");
+        upsert(&conn, &entry).unwrap();
+        assert_eq!(search(&conn, "santos", &Filters::default(), 10).unwrap().len(), 1);
+        assert_eq!(repair_unsearchable(&conn).unwrap(), 0, "nothing else needed it");
+    }
+
+    /// The three steps through a `Db` that is given back between them: a
+    /// new file is written with its words, a changed file is refreshed, a
+    /// gone file is removed.
+    #[test]
+    fn refresh_file_indexes_with_the_lock_given_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_memory().unwrap();
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "Santos attendance").unwrap();
+        refresh_file(&conn, &file).unwrap();
+        assert_eq!(search(&conn, "santos", &Filters::default(), 10).unwrap().len(), 1);
+        std::fs::write(&file, "Reyes attendance, longer").unwrap();
+        refresh_file(&conn, &file).unwrap();
+        assert_eq!(search(&conn, "reyes", &Filters::default(), 10).unwrap().len(), 1);
+        assert_eq!(count(&conn).unwrap(), 1);
+        std::fs::remove_file(&file).unwrap();
+        refresh_file(&conn, &file).unwrap();
+        assert_eq!(count(&conn).unwrap(), 0);
     }
 
     #[test]

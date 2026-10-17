@@ -36,4 +36,33 @@ describe("walkthrough", () => {
     const placed = placeCard(corner, card, viewport);
     expect(placed.left + card.width).toBeLessThanOrEqual(viewport.width - 16 + 0.001);
   });
+
+  // Audit T-26: on small windows the left fallback was clamped onto the target.
+  it("never covers the ring when any side has room, at 640x480 and 1093x566, and stays under the title bar", () => {
+    const covers = (a: { top: number; left: number; width: number; height: number }, b: typeof a) =>
+      Math.min(a.left + a.width, b.left + b.width) > Math.max(a.left, b.left) && Math.min(a.top + a.height, b.top + b.height) > Math.max(a.top, b.top);
+    const cases = [
+      { viewport: { width: 640, height: 480 }, card: { width: 320, height: 190 }, target: { top: 60, left: 72, width: 520, height: 77 } },
+      { viewport: { width: 640, height: 480 }, card: { width: 320, height: 190 }, target: { top: 300, left: 72, width: 520, height: 120 } },
+      { viewport: { width: 640, height: 480 }, card: { width: 320, height: 190 }, target: { top: 200, left: 6, width: 52, height: 64 } },
+      { viewport: { width: 1093, height: 566 }, card: { width: 320, height: 190 }, target: { top: 150, left: 280, width: 770, height: 77 } },
+      { viewport: { width: 1093, height: 566 }, card: { width: 320, height: 190 }, target: { top: 420, left: 960, width: 90, height: 60 } },
+      { viewport: { width: 1093, height: 566 }, card: { width: 320, height: 190 }, target: { top: 250, left: 4, width: 228, height: 68 } },
+    ];
+    for (const { viewport, card, target } of cases) {
+      const placed = placeCard(target, card, viewport, 24, 52);
+      expect(placed.fits).toBe(true);
+      expect(covers({ top: placed.top, left: placed.left, ...card }, target)).toBe(false);
+      expect(placed.top).toBeGreaterThanOrEqual(52);
+      expect(placed.top + card.height).toBeLessThanOrEqual(viewport.height - 16);
+      expect(placed.left).toBeGreaterThanOrEqual(16);
+      expect(placed.left + card.width).toBeLessThanOrEqual(viewport.width - 16);
+    }
+  });
+
+  it("says when no side has room, so the walkthrough scrolls the target first", () => {
+    const placed = placeCard({ top: 150, left: 72, width: 520, height: 160 }, { width: 320, height: 190 }, { width: 640, height: 480 }, 24, 52);
+    expect(placed.fits).toBe(false);
+    expect(placed.top).toBeGreaterThanOrEqual(52);
+  });
 });

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Contrast gate over the design tokens in src/styles.css (spec 7): every text
-// token on every surface it can sit on. Body text needs 4.5:1; --text-faint
-// is reserved for 13 px and larger labels and needs 3:1; the accent is used
-// as a focus and selection mark and needs 3:1 on light surfaces.
+// token on every surface it can sit on. Body text needs 4.5:1, and so does
+// --text-faint, which carries 13 px labels and placeholders (normal text by
+// WCAG, audit T-27); the accent is used as a focus and selection mark and
+// needs 3:1 on light surfaces.
 import { readFileSync } from "node:fs";
 
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
@@ -28,7 +29,7 @@ const PAIRS = [
   ...["bg-canvas", "bg-card", "bg-raised", "accent-soft", "coral-soft"].flatMap((surface) => [
     { text: "text-primary", surface, min: 4.5 },
     { text: "text-muted", surface, min: 4.5 },
-    { text: "text-faint", surface, min: 3 },
+    { text: "text-faint", surface, min: 4.5 },
     { text: "accent", surface, min: 3 },
     { text: "coral", surface, min: 4.5 },
   ]),

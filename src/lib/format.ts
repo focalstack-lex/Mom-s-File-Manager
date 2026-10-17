@@ -81,6 +81,17 @@ export const KIND_LABEL: Record<Kind, string> = {
   other: "File",
 };
 
+/**
+ * Programs, scripts and shortcuts, the kinds sorter.rs keeps in Downloads:
+ * opening one runs something, so the row offers "Open the program" and the
+ * tile says "program" instead of a plain Open (audit T-41).
+ */
+const PROGRAM_EXTS = new Set(["exe", "msi", "bat", "cmd", "ps1", "vbs", "js", "jse", "wsf", "hta", "lnk", "url", "scr", "com", "reg"]);
+
+export function isProgram(ext: string | undefined): boolean {
+  return PROGRAM_EXTS.has((ext ?? "").replace(/^\./, "").toLowerCase());
+}
+
 /** The file name without its extension, for inline rename. */
 export function stemOf(name: string): string {
   const dot = name.lastIndexOf(".");

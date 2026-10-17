@@ -1,20 +1,28 @@
 // The first-run walkthrough (spec 5.9). The page dims except for the control
 // being explained; a card with an arrow drawn to that control says what it
-// does. Enter is Next, Escape is Skip, and Tab stays inside the card.
+// does, beside it and never on it. Enter is Next unless Skip or Back has
+// focus (then Enter presses that button), Escape is Skip, and Tab stays
+// inside the card.
 
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { trapTab } from "../lib/focus";
-import { placeCard, TOUR_STEPS, useTour } from "../store/tour";
+import { placeCard, TOUR_STEPS, useTour, type Box } from "../store/tour";
 
-interface Rect {
-  top: number;
-  left: number;
-  width: number;
-  height: number;
-}
+type Rect = Box;
 
 const PAD = 8;
+
+/** The ring's box around a target: the control plus a little room. */
+function ringBox(el: HTMLElement): Rect {
+  const r = el.getBoundingClientRect();
+  return { top: r.top - PAD, left: r.left - PAD, width: r.width + PAD * 2, height: r.height + PAD * 2 };
+}
+
+/** The card stays under the title bar, which sits above the walkthrough so the window can always be moved. */
+function cardTop(): number {
+  return (document.querySelector('[data-testid="titlebar"]')?.getBoundingClientRect().bottom ?? 0) + PAD;
+}
 
 export function Tour({ onFinish }: { onFinish(): void }) {
   const active = useTour((s) => s.active);
@@ -25,6 +33,7 @@ export function Tour({ onFinish }: { onFinish(): void }) {
   const [target, setTarget] = useState<Rect | null>(null);
   const [card, setCard] = useState({ width: 360, height: 200 });
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
+  const [minTop, setMinTop] = useState(16);
   const cardRef = useRef<HTMLDivElement>(null);
   const step = TOUR_STEPS[index];
 
@@ -35,17 +44,26 @@ export function Tour({ onFinish }: { onFinish(): void }) {
     // arrive (the browser notice, the first answer) and push it down.
     const place = () => {
       const el = find();
-      if (el) {
-        const r = el.getBoundingClientRect();
-        setTarget({ top: r.top - PAD, left: r.left - PAD, width: r.width + PAD * 2, height: r.height + PAD * 2 });
-      } else {
-        setTarget(null);
-      }
+      setTarget(el ? ringBox(el) : null);
       setViewport({ width: window.innerWidth, height: window.innerHeight });
+      setMinTop(cardTop());
       if (cardRef.current) setCard({ width: cardRef.current.offsetWidth, height: cardRef.current.offsetHeight });
     };
+    // Bring the target on screen; when the card then has no free side
+    // (a small window), move the target to the top of its scrolling area
+    // and then to the bottom, and keep the first spot where the card fits.
     const measure = () => {
-      find()?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      const el = find();
+      if (el) {
+        const size = cardRef.current ? { width: cardRef.current.offsetWidth, height: cardRef.current.offsetHeight } : { width: 360, height: 200 };
+        const view = { width: window.innerWidth, height: window.innerHeight };
+        const fits = () => placeCard(ringBox(el), size, view, 24, cardTop()).fits;
+        el.scrollIntoView({ block: "nearest", inline: "nearest" });
+        if (!fits()) {
+          el.scrollIntoView({ block: "start", inline: "nearest" });
+          if (!fits()) el.scrollIntoView({ block: "end", inline: "nearest" });
+        }
+      }
       place();
     };
     measure();
@@ -76,6 +94,10 @@ export function Tour({ onFinish }: { onFinish(): void }) {
         finish();
         onFinish();
       } else if (event.key === "Enter") {
+        // A focused card button (Skip, Back, Next) takes Enter itself, as any
+        // button does; Enter anywhere else means Next.
+        const focused = document.activeElement;
+        if (focused instanceof HTMLButtonElement && cardRef.current?.contains(focused)) return;
         event.preventDefault();
         if (index >= TOUR_STEPS.length - 1) onFinish();
         next();
@@ -92,7 +114,7 @@ export function Tour({ onFinish }: { onFinish(): void }) {
 
   const fallback: Rect = { top: viewport.height / 2 - 40, left: viewport.width / 2 - 160, width: 320, height: 80 };
   const box = target ?? fallback;
-  const placed = placeCard(box, card, viewport);
+  const placed = placeCard(box, card, viewport, 24, minTop);
   const from = anchorPoint(placed, card, box);
   const to = edgePoint(box, from);
   const control = { x: (from.x + to.x) / 2 + (placed.side === "below" || placed.side === "above" ? 40 : 0), y: (from.y + to.y) / 2 + (placed.side === "left" || placed.side === "right" ? 30 : 0) };

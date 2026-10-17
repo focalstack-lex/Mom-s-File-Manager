@@ -77,24 +77,50 @@ export const useTour = create<TourStore>((set, get) => ({
   finish: () => set({ active: false, index: 0 }),
 }));
 
-/** Where the card sits relative to its target so it never covers it. */
-export function placeCard(
-  target: { top: number; left: number; width: number; height: number },
-  card: { width: number; height: number },
-  viewport: { width: number; height: number },
-  gap = 24,
-): { top: number; left: number; side: "below" | "above" | "right" | "left" } {
-  const fitsBelow = target.top + target.height + gap + card.height <= viewport.height;
-  const fitsRight = target.left + target.width + gap + card.width <= viewport.width;
-  const clamp = (value: number, max: number) => Math.max(16, Math.min(value, max - 16));
-  if (fitsBelow && target.width >= card.width / 2) {
-    return { top: target.top + target.height + gap, left: clamp(target.left, viewport.width - card.width), side: "below" };
-  }
-  if (fitsRight) {
-    return { top: clamp(target.top, viewport.height - card.height), left: target.left + target.width + gap, side: "right" };
-  }
-  if (target.top - gap - card.height >= 0) {
-    return { top: target.top - gap - card.height, left: clamp(target.left, viewport.width - card.width), side: "above" };
-  }
-  return { top: clamp(target.top, viewport.height - card.height), left: clamp(target.left - gap - card.width, viewport.width - card.width), side: "left" };
+export interface Box {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
+export type Side = "below" | "above" | "right" | "left";
+
+const MARGIN = 16;
+
+/** How much of `a` lies over `b`, in square pixels. */
+function overlapArea(a: Box, b: Box): number {
+  const x = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
+  const y = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top);
+  return x > 0 && y > 0 ? x * y : 0;
+}
+
+/**
+ * Where the card sits beside its target (the ring's box) so it never covers
+ * it: the first side, in order, where the whole card fits inside the window
+ * below `minTop` (the title bar) and clear of the ring. A wide target tries
+ * below first; a narrow one (a menu item, a button) tries its right first.
+ * `fits` is false when no side has room; the walkthrough then scrolls the
+ * target to the other end of the screen and asks again, and if nothing
+ * helps the card goes where it covers the least.
+ */
+export function placeCard(target: Box, card: { width: number; height: number }, viewport: { width: number; height: number }, gap = 24, minTop = MARGIN): { top: number; left: number; side: Side; fits: boolean } {
+  const top = Math.max(MARGIN, minTop);
+  const clampX = (x: number) => Math.max(MARGIN, Math.min(x, viewport.width - MARGIN - card.width));
+  const clampY = (y: number) => Math.max(top, Math.min(y, viewport.height - MARGIN - card.height));
+  const at: Record<Side, { top: number; left: number }> = {
+    below: { top: target.top + target.height + gap, left: clampX(target.left) },
+    above: { top: target.top - gap - card.height, left: clampX(target.left) },
+    right: { top: clampY(target.top), left: target.left + target.width + gap },
+    left: { top: clampY(target.top), left: target.left - gap - card.width },
+  };
+  const order: Side[] = target.width >= card.width / 2 ? ["below", "right", "above", "left"] : ["right", "above", "left", "below"];
+  const inside = (p: { top: number; left: number }) => p.top >= top && p.left >= MARGIN && p.top + card.height <= viewport.height - MARGIN && p.left + card.width <= viewport.width - MARGIN;
+  const cover = (p: { top: number; left: number }) => overlapArea({ ...p, ...card }, target);
+  const free = order.find((side) => inside(at[side]) && cover(at[side]) === 0);
+  if (free) return { ...at[free], side: free, fits: true };
+  // No side has room: keep the card on screen where it covers the least.
+  const kept = order.map((side) => ({ side, top: clampY(at[side].top), left: clampX(at[side].left) }));
+  const best = kept.reduce((a, b) => (cover(b) < cover(a) ? b : a));
+  return { ...best, fits: false };
 }

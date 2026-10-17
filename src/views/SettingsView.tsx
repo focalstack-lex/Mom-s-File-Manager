@@ -1,6 +1,7 @@
 // Settings (spec 5.8): the few switches that exist, the school-year dates
 // that unlock two chips (picked from a calendar, stored as YYYY-MM-DD),
-// templates, and the walkthrough replay.
+// templates, and the walkthrough replay. A newer version she put off with
+// Later stays here as a quiet Update.
 
 import { CircleAlert, CircleCheck } from "lucide-react";
 import { useState } from "react";
@@ -29,6 +30,10 @@ export function SettingsView({ info }: { info: AppInfo }) {
   const [draft, setDraft] = useState<Settings>(info.settings);
   const needsRestart = useApp((s) => s.foldersChanged);
   const setNeedsRestart = useApp((s) => s.markFoldersChanged);
+  const offer = useApp((s) => (s.updateDismissed ? s.update : null));
+  const updating = useApp((s) => s.updating);
+  const updateError = useApp((s) => s.updateError);
+  const installUpdate = useApp((s) => s.installUpdate);
 
   const update = (patch: Partial<Settings>) => {
     const next = { ...draft, ...patch };
@@ -114,6 +119,17 @@ export function SettingsView({ info }: { info: AppInfo }) {
           </span>
           <input type="checkbox" role="switch" className="switch" checked={draft.checkUpdates} onChange={(e) => update({ checkUpdates: e.target.checked })} data-testid="check-updates" />
         </label>
+        {offer && (
+          <div className="toggle" data-testid="settings-update">
+            <span className="toggle-text">
+              Tote {offer.version} is ready
+              <span>{updating ? "Downloading it now. Tote will close and open again by itself." : updateError ?? "Updating takes about a minute. Tote closes and opens again by itself."}</span>
+            </span>
+            <button type="button" className="button button-quiet" onClick={() => void installUpdate()} disabled={updating} data-testid="settings-update-now">
+              {updating ? "Updating..." : updateError ? "Try again" : "Update"}
+            </button>
+          </div>
+        )}
         <div className="toggle">
           <span className="toggle-text">
             Walkthrough
@@ -165,7 +181,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
         </button>
       </section>
 
-      <section className="card settings-list" aria-labelledby="year-title">
+      <section className="card settings-list" aria-labelledby="year-title" data-testid="school-year-card">
         <h2 className="card-title" id="year-title">
           School year
         </h2>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CODE_SENTENCES, describeError, isPlain, plainMessage, recycleFailureText, undoText } from "../lib/errors";
-import { snippetHtml } from "../components/ResultRow";
+import { snippetHtml, snippetText } from "../components/ResultRow";
 import { describeOp, fileStillThere } from "../views/ActivityView";
 import type { OpRow, ToteError } from "../lib/types";
 
@@ -149,5 +149,12 @@ describe("snippetHtml", () => {
 
   it("drops a stray mark instead of showing it", () => {
     expect(snippetHtml("odd \uE000mark")).toBe("odd mark");
+  });
+});
+
+describe("snippetText", () => {
+  it("gives a screen reader the snippet's words without the marks (audit T-22)", () => {
+    const [start, end] = [String.fromCharCode(0xe000), String.fromCharCode(0xe001)];
+    expect(snippetText(`Santos ${start}Reyes${end} Dela Cruz [Name]`)).toBe("Santos Reyes Dela Cruz [Name]");
   });
 });

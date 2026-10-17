@@ -1,13 +1,16 @@
 // Clean up (spec 5.5): duplicate copies, Desktop clutter, old downloads.
 // Nothing happens until she clicks; no destructive box starts ticked. A file
 // that is an extra copy is only offered for the Recycle Bin, never also for a
-// move, so she is never asked two opposite things about the same file.
+// move, so she is never asked two opposite things about the same file. After
+// a row is dealt with, focus goes to the next row (or its section's title),
+// never back to the page.
 
 import { CheckCheck, ChevronRight, CircleCheck, FolderTree, Trash } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Dialog } from "../components/Dialog";
 import { FolderPicker } from "../components/FolderPicker";
 import { LoadFailed } from "../components/LoadFailed";
+import { focusSoon } from "../lib/focus";
 import { OrganizeDialog } from "../components/OrganizeDialog";
 import { planSummary } from "../lib/organize";
 import { KindTile } from "../components/icons";
@@ -57,6 +60,57 @@ function FoldSection({ id, title, lead, count, action, testId, children }: { id:
   );
 }
 
+/** The fold titles of the shared card and the Organize button: where focus goes when a whole section is done. */
+const SECTION_TITLES = ['[data-testid="tidy-card"] .fold-toggle', '[data-testid="organize-open"]'];
+
+/**
+ * Where focus goes once the suggestion for `path` leaves its list: the next
+ * suggestion's first button, else the one before, else its section's title.
+ * Read before the change, while the row is still on screen.
+ */
+function afterSuggestion(path: string): string[] {
+  const row = document.querySelector<HTMLElement>(`.suggestion[data-path="${CSS.escape(path)}"]`);
+  const items = row?.parentElement ? [...row.parentElement.querySelectorAll<HTMLElement>(":scope > .suggestion[data-path]")] : [];
+  const at = row ? items.indexOf(row) : -1;
+  const first = (el?: HTMLElement) => (el?.dataset.path ? `.suggestion[data-path="${CSS.escape(el.dataset.path)}"] button` : null);
+  const section = row?.closest("section.fold")?.querySelector<HTMLElement>(".fold-toggle")?.dataset.testid;
+  return [first(items[at + 1]), first(items[at - 1]), section ? `[data-testid="${section}"]` : null, ...SECTION_TITLES].filter((s): s is string => Boolean(s));
+}
+
+/**
+ * One list of suggested homes. Defined out here, not inside CleanupView, so
+ * a re-render keeps its rows (and the focus in them) instead of building a
+ * new component each time.
+ */
+function SuggestionList({ items, testId, roots, onAccept, onPick, onSkip }: { items: Suggestion[]; testId: string; roots: string[]; onAccept(s: Suggestion): void; onPick(path: string): void; onSkip(path: string): void }) {
+  return (
+    <div className="rows" data-testid={testId}>
+      {items.map((s) => (
+        <div key={s.file.path} className="suggestion" data-path={s.file.path}>
+          <KindTile kind={s.file.kind} ext={s.file.ext} />
+          <div className="suggestion-text">
+            <strong>{s.file.name}</strong>
+            <span>
+              edited {relativeTime(s.file.modified)} · would go to {dirLabel(s.suggestedDir, roots).split(" > ").map(monthName).join(" > ")}
+            </span>
+          </div>
+          <div className="suggestion-actions">
+            <button type="button" className="button" onClick={() => onAccept(s)}>
+              Move it there
+            </button>
+            <button type="button" className="button button-subtle" onClick={() => onPick(s.file.path)}>
+              Somewhere else
+            </button>
+            <button type="button" className="button button-subtle" onClick={() => onSkip(s.file.path)}>
+              Skip
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function CleanupView({ info }: { info: AppInfo }) {
   const [report, setReport] = useState<CleanupReport | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -100,13 +154,16 @@ export function CleanupView({ info }: { info: AppInfo }) {
       fail(error);
     }
     await load();
+    // The Organize card has gone with its button; the first section title takes the focus.
+    focusSoon(...SECTION_TITLES);
   };
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const act = async (work: () => Promise<number[] | void>, done: string) => {
+  /** Runs one change, says what happened, reloads, then focuses the first of `then` still on screen. */
+  const act = async (work: () => Promise<number[] | void>, done: string, then: string[]) => {
     try {
       const undoIds = await work();
       toast(done, "info", undoIds ?? undefined);
@@ -115,12 +172,18 @@ export function CleanupView({ info }: { info: AppInfo }) {
       fail(error);
       await load();
     }
+    focusSoon(...then);
   };
 
-  const accept = (s: Suggestion) => act(async () => moveOpIds(await ipc.moveFiles([s.file.path], s.suggestedDir)), `Moved to ${dirLabel(s.suggestedDir, info.roots)}.`);
+  const accept = (s: Suggestion) => act(async () => moveOpIds(await ipc.moveFiles([s.file.path], s.suggestedDir)), `Moved to ${dirLabel(s.suggestedDir, info.roots)}.`, afterSuggestion(s.file.path));
   const moveTo = (path: string, dir: string) => {
     setPicking(null);
-    return act(async () => moveOpIds(await ipc.moveFiles([path], dir)), `Moved to ${dirLabel(dir, info.roots)}.`);
+    return act(async () => moveOpIds(await ipc.moveFiles([path], dir)), `Moved to ${dirLabel(dir, info.roots)}.`, afterSuggestion(path));
+  };
+  const skip = (path: string) => {
+    const then = afterSuggestion(path);
+    setSkipped((list) => [...list, path]);
+    focusSoon(...then);
   };
   const recycleTicked = async () => {
     setConfirm(false);
@@ -136,6 +199,8 @@ export function CleanupView({ info }: { info: AppInfo }) {
       fail(error);
     }
     await load();
+    // The ticked copies are gone and the button is off until the next tick: its section's title, or the next section.
+    focusSoon('[data-testid="dupes-card-toggle"]', ...SECTION_TITLES);
   };
   const acceptAll = (items: Suggestion[]) => {
     const live = items.filter((s) => !skipped.includes(s.file.path));
@@ -143,35 +208,9 @@ export function CleanupView({ info }: { info: AppInfo }) {
       const moved: string[] = [];
       for (const s of live) moved.push(...(await ipc.moveFiles([s.file.path], s.suggestedDir)));
       return moveOpIds(moved);
-    }, `Moved ${live.length} files into School Files.`);
+    }, `Moved ${live.length} files into School Files.`, ['[data-testid="desktop-card-toggle"]', ...SECTION_TITLES]);
   };
-
-  const SuggestionList = ({ items, testId }: { items: Suggestion[]; testId: string }) => (
-    <div className="rows" data-testid={testId}>
-      {items.map((s) => (
-          <div key={s.file.path} className="suggestion">
-            <KindTile kind={s.file.kind} ext={s.file.ext} />
-            <div className="suggestion-text">
-              <strong>{s.file.name}</strong>
-              <span>
-                edited {relativeTime(s.file.modified)} · would go to {dirLabel(s.suggestedDir, info.roots).split(" > ").map(monthName).join(" > ")}
-              </span>
-            </div>
-            <div className="suggestion-actions">
-              <button type="button" className="button" onClick={() => void accept(s)}>
-                Move it there
-              </button>
-              <button type="button" className="button button-subtle" onClick={() => setPicking(s.file.path)}>
-                Somewhere else
-              </button>
-              <button type="button" className="button button-subtle" onClick={() => setSkipped((list) => [...list, s.file.path])}>
-                Skip
-              </button>
-            </div>
-          </div>
-      ))}
-    </div>
-  );
+  const listActions = { roots: info.roots, onAccept: (s: Suggestion) => void accept(s), onPick: setPicking, onSkip: skip };
 
   // Extra copies belong to the Recycle Bin question only.
   const extraCopies = new Set(report?.duplicates.flatMap((g) => g.others.map((o) => o.path)) ?? []);
@@ -228,7 +267,7 @@ export function CleanupView({ info }: { info: AppInfo }) {
                   count={report.duplicates.length}
                   testId="dupes-card"
                   action={
-                    <button type="button" className="button button-danger" disabled={ticked.length === 0} onClick={() => setConfirm(true)} data-testid="recycle-ticked">
+                    <button type="button" className="button" disabled={ticked.length === 0} onClick={() => setConfirm(true)} data-testid="recycle-ticked">
                       <Trash size={18} aria-hidden />
                       {ticked.length === 0 ? "Recycle ticked copies" : `Recycle ${ticked.length} ${ticked.length === 1 ? "copy" : "copies"}`}
                     </button>
@@ -286,12 +325,12 @@ export function CleanupView({ info }: { info: AppInfo }) {
                     </button>
                   }
                 >
-                  {(shown) => <SuggestionList items={desktop.slice(0, shown)} testId="desktop-list" />}
+                  {(shown) => <SuggestionList items={desktop.slice(0, shown)} testId="desktop-list" {...listActions} />}
                 </FoldSection>
               )}
               {oldDownloads.length > 0 && (
                 <FoldSection id="old" title="Old downloads" lead="Untouched for two months or more." count={oldDownloads.length} testId="old-card">
-                  {(shown) => <SuggestionList items={oldDownloads.slice(0, shown)} testId="old-downloads-list" />}
+                  {(shown) => <SuggestionList items={oldDownloads.slice(0, shown)} testId="old-downloads-list" {...listActions} />}
                 </FoldSection>
               )}
             </div>
@@ -309,7 +348,7 @@ export function CleanupView({ info }: { info: AppInfo }) {
             <button type="button" className="button" onClick={() => setConfirm(false)}>
               Keep them
             </button>
-            <button type="button" className="button button-danger" onClick={() => void recycleTicked()}>
+            <button type="button" className="button" onClick={() => void recycleTicked()}>
               Move to Recycle Bin
             </button>
           </div>

@@ -1,0 +1,13 @@
+# Keeps the commit-pinned actions in .github/workflows current (audit T-60).
+# Each update arrives as a pull request that moves the pin and its version
+# comment together, so the Verify run on it shows whether the new action works.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"

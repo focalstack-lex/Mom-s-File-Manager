@@ -1,15 +1,17 @@
-// One file on the Find screen: name, where it came from, where it is now.
-// Click (or Space) previews, double-click (or Enter) opens, arrow keys move
-// between files. Open, Show in folder, Copy and Pin wait quietly on the right
-// and come forward on hover, focus, selection or preview; the preview panel
-// carries the same actions with labels.
+// One file on the Find screen: name, where it came from, where it is now,
+// and for a content match the words that matched as well. Click (or Space)
+// previews, double-click (or Enter) opens, arrow keys move between files.
+// Open, Show in folder, Copy and Pin wait quietly on the right and come
+// forward on hover, focus, selection or preview; the preview panel carries
+// the same actions with labels. A program, script or shortcut offers "Open
+// the program", so a plain Open never runs one by surprise.
 
 import { Check, Copy, FolderOpen, Pin, X } from "lucide-react";
 import { useId, useState, type KeyboardEvent } from "react";
 import { describeError } from "../lib/errors";
-import { focusSiblingRow } from "../lib/focus";
+import { focusSiblingRow, focusSoon, refocusIfLost, rowTarget } from "../lib/focus";
 import { ipc } from "../lib/ipc";
-import { copiesLabel, extOf, locationLine, originLine, stemOf } from "../lib/format";
+import { copiesLabel, extOf, isProgram, locationLine, originLine, stemOf } from "../lib/format";
 import type { FileRow } from "../lib/types";
 import { useApp } from "../store/app";
 import { useFind } from "../store/find";
@@ -23,12 +25,14 @@ interface Props {
   others?: FileRow[];
   sample?: boolean;
   tourOpen?: boolean;
+  /** Pinned rows: name and location on one line when the window is short (styles.css). */
+  compact?: boolean;
   renaming?: boolean;
   onRenamed?(): void;
   onCancelRename?(): void;
 }
 
-export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, renaming, onRenamed, onCancelRename }: Props) {
+export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, compact, renaming, onRenamed, onCancelRename }: Props) {
   const toast = useApp((s) => s.toast);
   const fail = useApp((s) => s.fail);
   const selected = useFind((s) => s.selected.includes(file.path));
@@ -60,11 +64,13 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
       return;
     }
     try {
-      await ipc.renameFile(file.path, stem.trim());
+      const renamed = await ipc.renameFile(file.path, stem.trim());
       setRenameError(null);
       onRenamed?.();
       await refresh();
       toast(`Renamed to ${stem.trim()}${extOf(file.name)}`);
+      // The field is gone; the same file, under its new name, keeps the focus.
+      focusSoon(rowTarget(renamed));
     } catch (error) {
       // The same plain sentence a toast would show, under the field instead.
       setRenameError(describeError(error));
@@ -88,10 +94,15 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
 
   const previewed = previewPath === file.path;
   const where = locationLine(file.parent, roots);
+  const program = isProgram(file.ext);
+  // Latest and Sample are part of what a screen reader says first; the row's
+  // description says where it came from, where it is, and why it matched.
+  const name = [file.name, latest && others.length > 0 ? "Latest" : null, sample ? "Sample" : null].filter(Boolean).join(", ");
+  const matched = file.snippet ? `. Inside the file: ${snippetText(file.snippet)}` : "";
 
   return (
     <div>
-      <div className={`row${selected ? " is-selected" : ""}${previewed ? " is-previewed" : ""}${touring ? " is-revealed" : ""}`} data-testid="file-row" data-path={file.path}>
+      <div className={`row${selected ? " is-selected" : ""}${previewed ? " is-previewed" : ""}${touring ? " is-revealed" : ""}${compact ? " is-compact" : ""}`} data-testid="file-row" data-path={file.path} data-tour={tourOpen ? "recent" : undefined}>
         <label className="row-check">
           <input type="checkbox" checked={selected} onChange={() => toggleSelected(file.path)} aria-label={`Select ${file.name}`} disabled={sample} />
         </label>
@@ -124,7 +135,7 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
             onDoubleClick={open}
             onKeyDown={onRowKey}
             disabled={sample}
-            aria-label={file.name}
+            aria-label={name}
             aria-describedby={metaId}
             aria-expanded={previewed}
             title={sample ? undefined : "Click to preview, double-click to open"}
@@ -136,17 +147,22 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
             </span>
             <span id={metaId} className="visually-hidden">
               {originLine(file)}, {where}
+              {matched}
             </span>
             <span className="row-meta" aria-hidden>
               {file.originLabel && file.downloadedAt && <span className="tone" data-tone={file.originLabel} />}
               <span>{originLine(file)}</span>
             </span>
-            {file.snippet ? <span className="row-snippet" aria-hidden dangerouslySetInnerHTML={{ __html: snippetHtml(file.snippet) }} /> : <span className="row-where" aria-hidden>{where}</span>}
+            {/* A content match still says where the file is; the matched words come under it. */}
+            <span className="row-where" aria-hidden>
+              {where}
+            </span>
+            {file.snippet && <span className="row-snippet" aria-hidden dangerouslySetInnerHTML={{ __html: snippetHtml(file.snippet) }} />}
           </button>
         )}
         <div className="row-actions">
-          <button type="button" className="button button-subtle row-open" onClick={open} data-tour={tourOpen ? "open" : undefined}>
-            Open
+          <button type="button" className="button button-subtle row-open" onClick={open} data-tour={tourOpen ? "open" : undefined} aria-label={`${program ? "Open the program" : "Open"} ${file.name}`}>
+            {program ? "Open the program" : "Open"}
           </button>
           <span className="row-tools">
             <button type="button" className="icon-button row-reveal" onClick={() => void run(() => ipc.reveal(file.path))} aria-label={`Show ${file.name} in its folder`} title="Show in folder">
@@ -161,6 +177,8 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
               onClick={() => void run(async () => {
                 await ipc.setPinned(file.path, !file.pinned);
                 await refresh();
+                // Unpinned from the Pinned list, the row is gone: the same file's pin in Recent, or the search box.
+                refocusIfLost(`[data-testid="main"] [data-testid="file-row"][data-path="${CSS.escape(file.path)}"] [aria-pressed]`);
               }, file.pinned ? "Unpinned." : "Pinned to the top of Find.")}
               aria-label={file.pinned ? `Unpin ${file.name}` : `Pin ${file.name}`}
               aria-pressed={file.pinned}
@@ -191,4 +209,11 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
 export function snippetHtml(snippet: string): string {
   const escaped = snippet.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return escaped.replace(/\uE000([^\uE000\uE001]*)\uE001/g, "<mark>$1</mark>").replace(/[\uE000\uE001]/g, "");
+}
+
+/** The snippet in plain words for a screen reader: the private-use marks dropped, the text kept. */
+const SNIPPET_MARKS = new RegExp(`[${String.fromCharCode(0xe000, 0xe001)}]`, "g");
+
+export function snippetText(snippet: string): string {
+  return snippet.replace(SNIPPET_MARKS, "");
 }

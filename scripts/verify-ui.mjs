@@ -124,8 +124,8 @@ function watchToasts(page) {
 const toastAudit = (page) => page.evaluate((pattern) => ({ seen: window.__toteToasts.length, raw: window.__toteToasts.filter((text) => new RegExp(pattern).test(text)) }), PROGRAM_TEXT.source);
 
 /** A bare page with the error hooks and the toast watcher, before any navigation. */
-async function openPage(browser, viewport = VIEWPORT) {
-  const context = await browser.newContext({ viewport });
+async function openPage(browser, viewport = VIEWPORT, options = {}) {
+  const context = await browser.newContext({ viewport, ...options });
   const page = await context.newPage();
   page.on("crash", () => pageErrors.push("renderer crashed"));
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
@@ -135,8 +135,8 @@ async function openPage(browser, viewport = VIEWPORT) {
 }
 
 /** A fresh page on the app; `path` carries the query string the mock reads for edge states. */
-async function newPage(browser, viewport = VIEWPORT, path = "/") {
-  const { context, page } = await openPage(browser, viewport);
+async function newPage(browser, viewport = VIEWPORT, path = "/", options = {}) {
+  const { context, page } = await openPage(browser, viewport, options);
   await page.goto(`${BASE_URL}${path}`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector('[data-testid="app"]', { timeout: READY_TIMEOUT_MS });
   await page.waitForSelector('[data-testid="find-view"]', { timeout: STEP_TIMEOUT_MS });
@@ -194,7 +194,9 @@ async function drive(browser) {
   }
   const tourClosed = await hidden(page, '[data-testid="tour"]');
   const saved = await page.evaluate(() => window.__toteMock.calls.some((c) => c.command === "set_settings" && c.args.settings?.tourDone === true));
-  record("Enter walks through six steps, then the walkthrough closes and is remembered", titles.length === 6 && new Set(titles).size === 6 && tourClosed && saved, JSON.stringify({ titles, tourClosed, saved }));
+  // T-25: the walkthrough ends where she starts, in the search box.
+  const searchFocused = await page.waitForFunction(() => document.activeElement?.getAttribute("data-testid") === "search-input", null, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  record("Enter walks through six steps, then the walkthrough closes, is remembered, and leaves focus in the search box", titles.length === 6 && new Set(titles).size === 6 && tourClosed && saved && searchFocused, JSON.stringify({ titles, tourClosed, saved, searchFocused }));
 
   // 3. The Find screen shows recent downloads with source and location, and the status line.
   const rows = await page.locator('[data-testid="recent"] [data-testid="file-row"]').count();
@@ -224,8 +226,14 @@ async function drive(browser) {
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="results"] [data-testid="file-row"]').length > 0, null, { timeout: STEP_TIMEOUT_MS });
   const hitName = await page.locator('[data-testid="results"] .row-name-text').first().textContent();
   const snippet = await page.locator('[data-testid="results"] .row-snippet mark').first().textContent();
+  // T-22: a content match still says where the file is, and a screen reader hears why it matched.
+  const hitRow = page.locator('[data-testid="results"] [data-testid="file-row"]').first();
+  const hitWhere = await hitRow.locator(".row-where").textContent().catch(() => null);
+  const hitDescription = await hitRow.locator(".row-body").evaluate((el) => document.getElementById(el.getAttribute("aria-describedby") ?? "")?.textContent ?? "");
   await capture(page, "04-search-content");
-  record("Searching a student's name finds Book1.xlsx by its contents and marks the match", hitName === "Book1.xlsx" && snippet === "Santos", JSON.stringify({ hitName, snippet }));
+  record("Searching a student's name finds Book1.xlsx by its contents, marks the match, shows where the file is under it, and puts the matched words in the row's description",
+    hitName === "Book1.xlsx" && snippet === "Santos" && hitWhere === "in School Files > Excel > October 2026" && hitDescription.includes("Inside the file: Santos Reyes"),
+    JSON.stringify({ hitName, snippet, hitWhere, hitDescription }));
 
   // 4b. Punctuation alone is no search: the pinned and recent lists stay instead of "Nothing matched yet".
   await page.locator('[data-testid="search-input"]').fill("---");
@@ -250,11 +258,14 @@ async function drive(browser) {
   await page.locator('[data-testid="search-input"]').fill("lesson plan");
   await page.waitForFunction(() => document.querySelector('[data-testid="results"] .latest'), null, { timeout: STEP_TIMEOUT_MS });
   const latestName = await page.locator('[data-testid="results"] .row-name-text').first().textContent();
+  const latestLabel = await page.locator('[data-testid="results"] .row-body').first().getAttribute("aria-label");
   const copiesButton = await page.locator(".copies-toggle").first().textContent();
   await page.locator(".copies-toggle").first().click();
   const expanded = await page.locator(".copies [data-testid='file-row']").count();
   await capture(page, "05-duplicates");
-  record("Copies group under the newest one with Latest and a '2 other copies' button", latestName === "Lesson Plan final_final.docx" && copiesButton === "2 other copies" && expanded === 2, JSON.stringify({ latestName, copiesButton, expanded }));
+  record("Copies group under the newest one with Latest (also in its accessible name) and a '2 other copies' button",
+    latestName === "Lesson Plan final_final.docx" && latestLabel === "Lesson Plan final_final.docx, Latest" && copiesButton === "2 other copies" && expanded === 2,
+    JSON.stringify({ latestName, latestLabel, copiesButton, expanded }));
 
   // 6. The More filters toggle reveals type and source chips; a chip narrows results.
   await page.locator('[data-testid="search-input"]').fill("");
@@ -277,7 +288,7 @@ async function drive(browser) {
   await page.locator('[data-testid="recent"] .row-body').first().click();
   const previewOk = await visible(page, '[data-testid="preview"]');
   const previewText = await page.locator('[data-testid="preview"] .preview-text').textContent();
-  await page.locator('[data-testid="recent"] [data-testid="file-row"]').first().getByRole("button", { name: "Open", exact: true }).click();
+  await page.locator('[data-testid="recent"] [data-testid="file-row"]').first().locator(".row-open").click();
   const opened = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "open_path").at(-1)?.args.path);
   await capture(page, "07-preview");
   record("A row opens the preview with its text and Open reaches the backend", previewOk && previewText?.includes("Photosynthesis") && String(opened).endsWith("Grade 7 Quiz 2.docx"), JSON.stringify({ previewOk, opened }));
@@ -448,11 +459,16 @@ async function drive(browser) {
   const browsersCard = await visible(page, '[data-testid="browsers-card"]');
   const browserRows = await page.locator('[data-testid="browser-row"]').count();
   const flagged = await page.locator('[data-testid="browser-row"].needs-change').count();
-  await page.locator('[data-testid="browsers-card"]').scrollIntoViewIfNeeded();
+  // T-56: How to fix lands on the Browsers card, not the top of Settings, with focus on its title.
+  const landed = await page.waitForFunction(() => {
+    const card = document.querySelector('[data-testid="browsers-card"]')?.getBoundingClientRect();
+    const main = document.querySelector('[data-testid="main"]')?.getBoundingClientRect();
+    return Boolean(card && main && card.top >= main.top - 1 && card.top < main.top + 80 && document.activeElement?.closest('[data-testid="browsers-card"]'));
+  }, null, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
   await capture(page, "12a-settings-browsers");
-  record("Find warns about the browser that asks where to save; How to fix opens Settings with each browser's status",
-    noticeText?.startsWith("Edge saves some downloads outside Downloads") && browsersCard && browserRows === 2 && flagged === 1,
-    JSON.stringify({ noticeText, browsersCard, browserRows, flagged }));
+  record("Find warns about the browser that asks where to save; How to fix opens Settings scrolled to the Browsers card with each browser's status and focus on it",
+    noticeText?.startsWith("Edge saves some downloads outside Downloads") && browsersCard && browserRows === 2 && flagged === 1 && landed,
+    JSON.stringify({ noticeText, browsersCard, browserRows, flagged, landed }));
 
   // 13b. Folders: Add a folder (native picker, mocked) lists it and asks for a restart; Remove works; Documents cannot be removed.
   await page.locator('[data-testid="nav-settings"]').click();
@@ -539,15 +555,17 @@ async function drive(browser) {
   await page.locator('[data-testid="update-later"]').click();
   const hiddenAfterLater = await page.locator('[data-testid="update-banner"]').count();
   await page.locator('[data-testid="nav-settings"]').click();
+  // T-56: after Later, Settings keeps a quiet Update until the next start.
+  const quietUpdate = await page.locator('[data-testid="settings-update-now"]').textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
   const switchOn = await page.locator('[data-testid="check-updates"]').isChecked();
   await page.locator('[data-testid="check-updates"]').click();
   await page.waitForFunction(() => window.__toteMock.calls.some((c) => c.command === "set_settings" && c.args.settings.checkUpdates === false), null, { timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
   const offWhenSwitchedOff = await page.evaluate(() => window.__toteMock.invoke("check_update", {}));
   await page.locator('[data-testid="check-updates"]').click();
   await page.locator('[data-testid="nav-find"]').click();
-  record("A new version shows a banner on every screen; Update now runs the installer, Later hides it, and the Settings switch stops the offer",
-    bannerShown && bannerText === "Tote 0.3.0 is ready" && onCleanup === 1 && installed === 1 && hiddenAfterLater === 0 && switchOn && offWhenSwitchedOff === null,
-    JSON.stringify({ bannerText, onCleanup, installed, hiddenAfterLater, switchOn, offWhenSwitchedOff }));
+  record("A new version shows a banner on every screen; Update now runs the installer, Later hides it while Settings keeps a quiet Update, and the Settings switch stops the offer",
+    bannerShown && bannerText === "Tote 0.3.0 is ready" && onCleanup === 1 && installed === 1 && hiddenAfterLater === 0 && quietUpdate === "Update" && switchOn && offWhenSwitchedOff === null,
+    JSON.stringify({ bannerText, onCleanup, installed, hiddenAfterLater, quietUpdate, switchOn, offWhenSwitchedOff }));
 
   // 17. To do: the New marker, the empty list, adding with Enter and with Add,
   // a due date's group, tick with Undo, a monthly repeat, the quarter option,
@@ -696,6 +714,7 @@ async function drive(browser) {
     JSON.stringify({ unavailableNotice, unavailableText, addOff, inputOff, noSkeleton, noListCall }));
 
   await driveFailures(browser);
+  await driveAccess(browser);
 }
 
 /**
@@ -963,6 +982,458 @@ async function driveFailures(browser) {
   const failureToasts = await toastAudit(page);
   record("No toast in the failure drive carried program text", failureToasts.seen > 0 && failureToasts.raw.length === 0, JSON.stringify(failureToasts));
   await context.close();
+}
+
+/** The visible controls on screen smaller than 44 by 44 px (spec 7, audit T-27); a checkbox or switch counts by its label, which is what she aims at. */
+async function smallTargets(page) {
+  return page.evaluate(() => {
+    const small = [];
+    const seen = new Set();
+    for (const el of document.querySelectorAll('button, a[href], input:not([type="hidden"]), select, textarea')) {
+      if (el.closest(".visually-hidden")) continue;
+      const style = getComputedStyle(el);
+      if (style.visibility === "hidden" || style.display === "none") continue;
+      const target = (el.matches('input[type="checkbox"], input[type="radio"]') && el.closest("label")) || el;
+      if (seen.has(target)) continue;
+      seen.add(target);
+      const r = target.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0 || r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth) continue;
+      if (r.width < 43.5 || r.height < 43.5) {
+        const name = (target.getAttribute("aria-label") ?? target.textContent ?? "").trim().slice(0, 40);
+        small.push(`${target.tagName.toLowerCase()}.${String(target.className).split(" ").join(".")} "${name}" ${Math.round(r.width)}x${Math.round(r.height)}`);
+      }
+    }
+    return small;
+  });
+}
+
+/** What has focus, in words for the evidence: its test id, its class, or its tag. */
+const focusedOn = (page) => page.evaluate(() => {
+  const el = document.activeElement;
+  if (!el || el === document.body) return "body";
+  return el.getAttribute("data-testid") ?? `${el.tagName.toLowerCase()}.${String(el.className).split(" ").join(".")}`;
+});
+
+/** Waits until `test` (run in the page) holds; false when it never does. */
+const focusIs = (page, test) => page.waitForFunction(test, null, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+
+/**
+ * 20. Screen, keyboard and accessibility (T-09, T-22, T-24, T-25, T-26,
+ * T-27, T-29, T-41, T-56): touch targets on every screen, focus after every
+ * action, the walkthrough keys and placement, the first screen on a school
+ * laptop, small windows, High Contrast and reduced motion.
+ */
+async function driveAccess(browser) {
+  // 20a. Every visible control is at least 44 px each way, on every screen and in every state the drive can reach.
+  {
+    const { context, page } = await newPage(browser);
+    const screens = {};
+    screens.tour = await smallTargets(page);
+    await page.keyboard.press("Escape");
+    await hidden(page, '[data-testid="tour"]');
+    await page.evaluate(() => window.__toteMock.offerUpdate("0.3.0"));
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await visible(page, '[data-testid="update-banner"]');
+    screens.find = await smallTargets(page);
+    await page.locator('[data-testid="more-filters"]').click();
+    screens.filters = await smallTargets(page);
+    await page.locator('[data-testid="more-filters"]').click();
+    await page.locator('[data-testid="search-input"]').fill("lesson plan");
+    await page.waitForFunction(() => document.querySelector('[data-testid="results"] .copies-toggle'), null, { timeout: STEP_TIMEOUT_MS });
+    await page.locator(".copies-toggle").first().click();
+    screens.results = await smallTargets(page);
+    await page.locator('[data-testid="search-input"]').fill("");
+    await visible(page, '[data-testid="recent"] [data-testid="file-row"]');
+    await page.locator('[data-testid="recent"] .row-body').first().click();
+    await visible(page, '[data-testid="preview"]');
+    screens.preview = await smallTargets(page);
+    await page.locator('[aria-label="Close preview"]').click();
+    await page.locator('[data-testid="recent"] [data-testid="file-row"] input[type=checkbox]').first().check();
+    screens.actionBar = await smallTargets(page);
+    await page.getByRole("button", { name: "Rename" }).click();
+    await visible(page, '[data-testid="rename-input"]');
+    screens.rename = await smallTargets(page);
+    await page.locator('[aria-label="Cancel rename"]').click();
+    await page.locator('[data-testid="action-bar"]').getByRole("button", { name: "Pin" }).click();
+    await visible(page, ".toast");
+    screens.toast = await smallTargets(page);
+    await page.locator('[data-testid="nav-cleanup"]').click();
+    await visible(page, '[data-testid="tidy-card"]');
+    await page.locator('[data-testid="old-card-toggle"]').click();
+    screens.cleanup = await smallTargets(page);
+    await page.locator('[data-testid="nav-activity"]').click();
+    await visible(page, '[data-testid="activity-row"]');
+    screens.activity = await smallTargets(page);
+    await page.locator('[data-testid="nav-settings"]').click();
+    await visible(page, '[data-testid="settings-view"]');
+    const settings = [];
+    for (const part of await page.locator('[data-testid="settings-view"] section.card').all()) {
+      await part.scrollIntoViewIfNeeded();
+      settings.push(...(await smallTargets(page)));
+    }
+    screens.settings = [...new Set(settings)];
+    await page.locator('[data-testid="nav-todo"]').click();
+    await page.locator('[data-testid="todo-input"]').fill("Print the Grade 7 quiz");
+    await page.keyboard.press("Enter");
+    await page.locator('[data-testid="task-open"]').first().click();
+    await visible(page, '[data-testid="task-details"]');
+    screens.todo = await smallTargets(page);
+    await page.locator('[data-testid="sidebar-toggle"]').click();
+    await sleep(400);
+    screens.rail = await smallTargets(page);
+    const small = Object.entries(screens).filter(([, list]) => list.length > 0);
+    record("Every visible control is at least 44 by 44 px on Find, its filters, results, preview, action bar, rename, toasts, Clean up, Activity, Settings, To do, the rail and the walkthrough",
+      small.length === 0, JSON.stringify(small.length === 0 ? Object.keys(screens) : Object.fromEntries(small)));
+    await context.close();
+  }
+
+  // 20b. Focus after each action lands on a sensible neighbour, never the page (T-25).
+  {
+    const { context, page } = await newPage(browser);
+    await page.keyboard.press("Escape");
+    await hidden(page, '[data-testid="tour"]');
+    const focus = {};
+    const recentChecks = page.locator('[data-testid="recent"] [data-testid="file-row"] input[type=checkbox]');
+    const inRow = () => Boolean(document.activeElement?.closest('[data-testid="file-row"]'));
+
+    // The action bar from a ticked row: Shift+F10, and the Recycle Bin button is a plain one (coral is for failures).
+    await recentChecks.nth(1).check();
+    await page.keyboard.press("Shift+F10");
+    focus.shortcut = await focusIs(page, () => Boolean(document.activeElement?.closest('[data-testid="action-bar"]')));
+    focus.neutralRecycle = await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('[data-testid="action-bar"] .button')];
+      const recycle = buttons.find((b) => b.textContent?.includes("Recycle Bin"));
+      const move = buttons.find((b) => b.textContent?.includes("Move to"));
+      return Boolean(recycle && move && getComputedStyle(recycle).color === getComputedStyle(move).color);
+    });
+
+    // Move to: focus on the first folder once the list arrives; a refresh behind the dialog leaves focus where she put it.
+    await page.getByRole("button", { name: "Move to..." }).click();
+    focus.pickerFirst = await focusIs(page, () => document.activeElement === document.querySelector('[data-testid="folder-picker"] .folder-option'));
+    await page.locator('[data-testid="folder-picker"] .folder-option').nth(1).focus();
+    await page.evaluate(() => window.__toteMock.simulateDownload());
+    await sleep(600);
+    focus.dialogKept = await page.evaluate(() => document.activeElement === document.querySelectorAll('[data-testid="folder-picker"] .folder-option')[1]);
+    await page.locator(".folder-option", { hasText: "Documents > Forms" }).click();
+    await page.locator('[data-testid="move-confirm"]').click();
+    focus.afterMove = await focusIs(page, inRow);
+
+    // Rename: the same file under its new name keeps the focus.
+    await recentChecks.first().check();
+    await page.getByRole("button", { name: "Rename" }).click();
+    await page.locator('[data-testid="rename-input"]').fill("Quiz for printing");
+    await page.keyboard.press("Enter");
+    focus.afterRename = await focusIs(page, () => document.activeElement?.closest('[data-testid="file-row"]')?.getAttribute("data-path")?.split("\\").pop()?.startsWith("Quiz for printing.") ?? false);
+
+    // Recycle Bin: the next row takes the focus; the toast's Undo then leaves focus on the screen.
+    await page.locator('[aria-label="Clear selection"]').click().catch(() => undefined);
+    await recentChecks.nth(2).check();
+    await page.getByRole("button", { name: "Recycle Bin" }).click();
+    await page.getByRole("button", { name: "Move to Recycle Bin" }).click();
+    focus.afterRecycle = await focusIs(page, inRow);
+    await page.locator(".toast", { hasText: "Recycle Bin" }).locator('[data-testid="toast-undo"]').click();
+    await page.locator(".toast-text", { hasText: "Put back" }).first().waitFor({ timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
+    focus.afterToastUndo = await focusIs(page, () => document.activeElement !== null && document.activeElement !== document.body);
+
+    // Clean up: a suggestion moved, then Organize; focus stays in the screen.
+    await page.locator('[data-testid="nav-cleanup"]').click();
+    await visible(page, '[data-testid="desktop-list"]');
+    await page.locator('[data-testid="desktop-list"]').getByRole("button", { name: "Move it there" }).first().click();
+    focus.afterSuggestion = await focusIs(page, () => Boolean(document.activeElement?.closest('[data-testid="cleanup-view"]')));
+    await page.locator('[data-testid="organize-open"]').click();
+    await visible(page, '[data-testid="organize-dialog"]');
+    await page.locator('[data-testid="organize-confirm"]').click();
+    await hidden(page, '[data-testid="organize-dialog"]');
+    focus.afterOrganize = await focusIs(page, () => Boolean(document.activeElement?.closest('[data-testid="cleanup-view"]')));
+
+    // Activity: after Undo the row that now reads Undone keeps the focus.
+    await page.locator('[data-testid="nav-activity"]').click();
+    await visible(page, '[data-testid="activity-row"] [data-testid="undo"]');
+    await page.locator('[data-testid="activity-row"] [data-testid="undo"]').first().click();
+    focus.afterUndo = await focusIs(page, () => Boolean(document.activeElement?.closest("[data-op], [data-batch]")));
+
+    // To do: ticking off and deleting move focus to the next task or the add box.
+    await page.locator('[data-testid="nav-todo"]').click();
+    for (const title of ["Print the Grade 7 quiz", "Submit SF2 for October", "Call the parents"]) {
+      await page.locator('[data-testid="todo-input"]').fill(title);
+      await page.keyboard.press("Enter");
+    }
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="task-row"]').length === 3, null, { timeout: STEP_TIMEOUT_MS });
+    await page.locator('[data-testid="todo-group"] [data-testid="task-check"]').first().click();
+    focus.afterTick = await focusIs(page, () => ["task-check", "todo-input"].includes(document.activeElement?.getAttribute("data-testid") ?? ""));
+    await page.locator('[data-testid="todo-group"] [data-testid="task-open"]').first().click();
+    await page.locator('[data-testid="task-delete"]').click();
+    focus.afterDelete = await focusIs(page, () => ["task-open", "todo-input"].includes(document.activeElement?.getAttribute("data-testid") ?? ""));
+    const lastFocus = await focusedOn(page);
+    record("Focus after each action: Shift+F10 reaches the action bar, Move to starts on the first folder and keeps focus through a refresh, and Move, Rename, Recycle Bin, toast Undo, Clean up, Organize, Activity Undo, tick and delete each leave focus on a neighbour, never the page; the Recycle Bin button is a plain one",
+      Object.values(focus).every(Boolean), JSON.stringify({ ...focus, lastFocus }));
+    await context.close();
+  }
+
+  // 20c. Walkthrough keys: Enter on a focused Skip skips, Enter on a focused Back goes back (T-25).
+  {
+    const { context, page } = await newPage(browser);
+    await visible(page, '[data-testid="tour"]');
+    await page.keyboard.press("Shift+Tab");
+    const onSkip = (await page.evaluate(() => document.activeElement?.textContent?.trim())) === "Skip";
+    await page.keyboard.press("Enter");
+    const skipped = await hidden(page, '[data-testid="tour"]');
+    await page.locator('[data-testid="nav-settings"]').click();
+    await page.locator('[data-testid="replay-tour"]').click();
+    await visible(page, '[data-testid="tour"]');
+    await page.keyboard.press("Enter");
+    const second = await page.locator("#tour-title").textContent();
+    await page.locator('.tour-card button[aria-label="Back"]').focus();
+    await page.keyboard.press("Enter");
+    const backTo = await page.locator("#tour-title").textContent();
+    await page.keyboard.press("Escape");
+    record("Walkthrough keys: Enter on a focused Skip skips, and Enter on a focused Back goes back instead of forward",
+      onSkip && skipped && second === "Your downloads land here" && backTo === "Type what you remember", JSON.stringify({ onSkip, skipped, second, backTo }));
+    await context.close();
+  }
+
+  // 20d. The walkthrough card never covers its ring, on all six steps, on small windows (T-26).
+  for (const size of [{ width: 640, height: 480 }, { width: 1093, height: 566 }]) {
+    const { context, page } = await newPage(browser, size);
+    await visible(page, '[data-testid="tour"]');
+    const steps = [];
+    for (let i = 0; i < 6; i += 1) {
+      await sleep(500);
+      steps.push(await page.evaluate(() => {
+        const card = document.querySelector(".tour-card")?.getBoundingClientRect();
+        const ring = document.querySelector(".tour-ring")?.getBoundingClientRect();
+        const title = document.querySelector("#tour-title")?.textContent;
+        if (!card || !ring) return { title, ring: Boolean(ring), overlap: -1 };
+        const x = Math.min(card.right, ring.right) - Math.max(card.left, ring.left);
+        const y = Math.min(card.bottom, ring.bottom) - Math.max(card.top, ring.top);
+        const inside = card.left >= 0 && card.top >= 0 && card.right <= window.innerWidth && card.bottom <= window.innerHeight;
+        const ringOnScreen = ring.top >= 0 && ring.bottom <= window.innerHeight + 1;
+        return { title, overlap: x > 0 && y > 0 ? Math.round(x * y) : 0, inside, ringOnScreen };
+      }));
+      await capture(page, `20d-tour-${size.width}x${size.height}-step${i + 1}`);
+      await page.locator('[data-testid="tour-next"]').click();
+    }
+    record(`${size.width}x${size.height}: the walkthrough card sits beside its ring on all six steps, never over it, and stays on screen`,
+      steps.length === 6 && steps.every((s) => s.overlap === 0 && s.inside && s.ringOnScreen), JSON.stringify(steps));
+    await context.close();
+  }
+
+  // 20e. A school laptop at 125 percent (1093x566) with one pin and one template: the first recent download is on the first screen (T-24).
+  {
+    const { context, page } = await newPage(browser, { width: 1093, height: 566 });
+    await page.keyboard.press("Escape");
+    await hidden(page, '[data-testid="tour"]');
+    await sleep(400);
+    const fold = await page.evaluate(() => {
+      const row = document.querySelector('[data-testid="recent"] [data-testid="file-row"]')?.getBoundingClientRect();
+      return {
+        pins: document.querySelectorAll('[data-testid="pinned"] [data-testid="file-row"]').length,
+        templates: document.querySelectorAll('[data-testid="templates"] .shelf button').length,
+        rowTop: Math.round(row?.top ?? -1),
+        rowBottom: Math.round(row?.bottom ?? -1),
+        height: window.innerHeight,
+      };
+    });
+    await capture(page, "20e-fold-1093x566");
+    record("1093x566 with one pin and one template: the first recent download is whole on the first screen", fold.pins === 1 && fold.templates === 1 && fold.rowTop > 0 && fold.rowBottom <= fold.height, JSON.stringify(fold));
+    await context.close();
+  }
+
+  // 20f. A program from the web offers "Open the program" and its tile says program (T-41).
+  {
+    const { context, page } = await newPage(browser);
+    await page.keyboard.press("Escape");
+    await page.locator('[data-testid="search-input"]').fill("setup");
+    const row = page.locator('[data-testid="results"] [data-testid="file-row"]', { hasText: "setup-printer.exe" }).first();
+    const openText = await row.locator(".row-open").textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+    const tile = await row.locator(".kind-tile-ext").textContent().catch(() => null);
+    await row.locator(".row-body").click();
+    const previewOpen = await page.locator('[data-testid="preview"] .preview-actions .button-primary').textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+    await capture(page, "20f-program-row");
+    record("A program from the web says Open the program on its row and in the preview, and its tile says program",
+      openText === "Open the program" && tile === "program" && previewOpen === "Open the program", JSON.stringify({ openText, tile, previewOpen }));
+    await context.close();
+  }
+
+  // 20g. Small windows (T-29): the Organize plan scrolls with its buttons in view, the menu reaches Settings, the action bar wraps.
+  for (const size of [{ width: 640, height: 480 }, { width: 683, height: 360 }]) {
+    const { context, page } = await newPage(browser, size);
+    await page.keyboard.press("Escape");
+    await hidden(page, '[data-testid="tour"]');
+    const checks = {};
+    await page.locator('[data-testid="recent"] [data-testid="file-row"] input[type=checkbox]').nth(0).check();
+    await page.locator('[data-testid="recent"] [data-testid="file-row"] input[type=checkbox]').nth(1).check();
+    await visible(page, '[data-testid="action-bar"]');
+    await page.locator('[data-testid="action-bar"]').scrollIntoViewIfNeeded();
+    checks.bar = await page.evaluate(() => {
+      const bar = document.querySelector('[data-testid="action-bar"]');
+      const box = bar.getBoundingClientRect();
+      const inside = [...bar.querySelectorAll("button")].every((b) => {
+        const r = b.getBoundingClientRect();
+        return r.left >= box.left - 1 && r.right <= box.right + 1 && r.right <= window.innerWidth;
+      });
+      return inside && bar.scrollWidth <= bar.clientWidth + 1;
+    });
+    await capture(page, `20g-action-bar-${size.width}x${size.height}`);
+    await page.locator('[aria-label="Clear selection"]').click();
+    await page.locator('[data-testid="nav-cleanup"]').click();
+    await visible(page, '[data-testid="organize-open"]');
+    await page.locator('[data-testid="organize-open"]').click();
+    await visible(page, '[data-testid="organize-dialog"]');
+    await sleep(200);
+    checks.plan = await page.evaluate(() => {
+      const dialog = document.querySelector('[data-testid="organize-dialog"]');
+      const list = dialog.querySelector(".organize-folders");
+      const confirm = dialog.querySelector('[data-testid="organize-confirm"]').getBoundingClientRect();
+      const buttonsInView = confirm.top >= 0 && confirm.bottom <= window.innerHeight;
+      const listWhole = list.scrollHeight <= list.clientHeight + 1 && list.clientHeight > 0;
+      dialog.scrollTop = dialog.scrollHeight;
+      const actions = dialog.querySelector(".dialog-actions").getBoundingClientRect();
+      const folders = [...dialog.querySelectorAll(".organize-folder")].map((f) => f.getBoundingClientRect());
+      // Scrolled to the end, the last folder sits above the fixed buttons, so every folder can be read.
+      const reachable = folders.length > 0 && folders.every((r) => r.height > 0) && (folders.at(-1)?.bottom ?? 0) <= actions.top + 1;
+      const stillInView = dialog.querySelector('[data-testid="organize-confirm"]').getBoundingClientRect().bottom <= window.innerHeight;
+      return { buttonsInView, listWhole, reachable, stillInView, folders: folders.length };
+    });
+    await capture(page, `20g-organize-${size.width}x${size.height}`);
+    await page.keyboard.press("Escape");
+    await hidden(page, '[data-testid="organize-dialog"]');
+    await page.locator('[data-testid="nav-settings"]').scrollIntoViewIfNeeded();
+    checks.menu = await page.evaluate(() => {
+      const r = document.querySelector('[data-testid="nav-settings"]').getBoundingClientRect();
+      return r.top >= 0 && r.bottom <= window.innerHeight;
+    });
+    await page.locator('[data-testid="nav-settings"]').click();
+    checks.settings = await visible(page, '[data-testid="settings-view"]');
+    // The plan's body scrolls on a short window; every folder being reachable above the fixed buttons is what counts.
+    const ok = checks.bar && checks.plan.buttonsInView && checks.plan.reachable && checks.plan.stillInView && checks.menu && checks.settings;
+    record(`${size.width}x${size.height}: the action bar wraps inside the window, the Organize plan scrolls with every folder reachable and its buttons in view, and the menu reaches Settings`, ok, JSON.stringify(checks));
+    await context.close();
+  }
+
+  // 20h. Windows High Contrast (forced colours, T-09) and reduced motion (T-56).
+  {
+    const { context, page } = await newPage(browser, VIEWPORT, "/", { forcedColors: "active", reducedMotion: "reduce" });
+    await visible(page, ".tour-ring");
+    const ring = await page.evaluate(() => {
+      const el = document.querySelector(".tour-ring");
+      return el ? getComputedStyle(el).borderTopStyle !== "none" && parseFloat(getComputedStyle(el).borderTopWidth) >= 2 : false;
+    });
+    await page.keyboard.press("Escape");
+    await hidden(page, '[data-testid="tour"]');
+    await page.locator('[data-testid="more-filters"]').click();
+    await page.locator('[aria-label="File type"] .chip', { hasText: "Excel" }).click();
+    const chips = await page.evaluate(() => {
+      const all = [...document.querySelectorAll('[aria-label="File type"] .chip')];
+      const on = all.find((c) => c.getAttribute("aria-pressed") === "true");
+      const off = all.find((c) => c.getAttribute("aria-pressed") !== "true");
+      return Boolean(on && off && getComputedStyle(on).backgroundColor !== getComputedStyle(off).backgroundColor);
+    });
+    await capture(page, "20h-forced-colors-chips");
+    await page.locator('[aria-label="File type"] .chip', { hasText: "Excel" }).click();
+    await page.locator('[data-testid="more-filters"]').click();
+    await visible(page, '[data-testid="recent"] [data-testid="file-row"]');
+    await page.locator('[data-testid="recent"] [data-testid="file-row"] input[type=checkbox]').first().check();
+    await page.locator('[data-testid="recent"] .row-body').nth(1).click();
+    await visible(page, '[data-testid="preview"]');
+    const rows = await page.evaluate(() => ({
+      selected: getComputedStyle(document.querySelector(".row.is-selected")).outlineStyle,
+      previewed: getComputedStyle(document.querySelector(".row.is-previewed")).outlineStyle,
+      nav: getComputedStyle(document.querySelector('.nav-button[aria-current="page"]')).outlineStyle,
+      marker: document.querySelector(".nav-new") ? getComputedStyle(document.querySelector(".nav-new")).borderTopStyle : "none",
+    }));
+    await capture(page, "20h-forced-colors-find");
+    await page.locator('[aria-label="Close preview"]').click();
+    await page.locator('[aria-label="Clear selection"]').click();
+    await page.locator('[data-testid="nav-settings"]').click();
+    await visible(page, '[data-testid="settings-view"]');
+    // Measure one switch off: in the mock every switch starts on, so turn the update check off first and back on after.
+    await page.locator('[data-testid="check-updates"]').click();
+    await sleep(300);
+    const switches = await page.evaluate(() => {
+      const all = [...document.querySelectorAll('[data-testid="settings-view"] .switch')];
+      const style = (el) => ({ border: `${getComputedStyle(el).borderTopStyle} ${getComputedStyle(el).borderTopWidth}`, background: getComputedStyle(el).backgroundColor, knob: getComputedStyle(el, "::after").backgroundColor });
+      const on = all.find((s) => s.checked);
+      const off = all.find((s) => !s.checked);
+      return { count: all.length, on: on ? style(on) : null, off: off ? style(off) : null };
+    });
+    await page.locator('[data-testid="check-updates"]').scrollIntoViewIfNeeded();
+    await capture(page, "20h-forced-colors-settings-switches");
+    await page.locator('[data-testid="check-updates"]').click();
+    const bordered = (s) => Boolean(s && s.border.startsWith("solid") && parseFloat(s.border.split(" ")[1]) >= 2);
+    const switchesOk = switches.count >= 3 && bordered(switches.on) && bordered(switches.off) && switches.on.background !== switches.off.background && switches.on.knob !== switches.off.knob;
+    record("High Contrast: switches have a system-colour border and on looks unlike off; a pressed chip, the ticked row, the previewed row, the active menu item, the New marker and the walkthrough ring each keep a visible mark",
+      switchesOk && chips && ring && rows.selected === "dashed" && rows.previewed === "solid" && rows.nav === "solid" && rows.marker === "solid",
+      JSON.stringify({ switches, chips, ring, rows }));
+    await page.locator('[data-testid="nav-find"]').click();
+    await visible(page, '[data-testid="recent"] .row-reveal');
+    const motion = await page.evaluate(() => ({
+      knob: getComputedStyle(document.querySelector(".switch") ?? document.body, "::after").transitionDuration,
+      reveal: getComputedStyle(document.querySelector('[data-testid="recent"] .row-reveal')).transitionDuration,
+    }));
+    await page.locator('[data-testid="nav-settings"]').click();
+    await visible(page, '[data-testid="settings-view"] .switch');
+    const switchMotion = await page.evaluate(() => ({ knob: getComputedStyle(document.querySelector(".switch"), "::after").transitionDuration, track: getComputedStyle(document.querySelector(".switch")).transitionDuration }));
+    const still = [motion.reveal, switchMotion.knob, switchMotion.track].every((d) => d.split(",").every((x) => parseFloat(x) === 0));
+    record("Reduced motion: the switch does not slide and the row actions do not fade", still, JSON.stringify({ reveal: motion.reveal, ...switchMotion }));
+    await context.close();
+  }
+
+  // 20i. 360 px: Activity titles wrap between words instead of one word per line (T-56).
+  {
+    const { context, page } = await newPage(browser, { width: 360, height: 640 });
+    await page.keyboard.press("Escape");
+    await page.locator('[data-testid="nav-activity"]').click();
+    await visible(page, '[data-testid="activity-row"]');
+    const titles = await page.evaluate(() => [...document.querySelectorAll(".activity-text")].map((el) => Math.round(el.getBoundingClientRect().width)));
+    const layout = await layoutReport(page);
+    await capture(page, "20i-activity-360");
+    record("360 px: Activity titles get the row's width and wrap by word, with nothing sideways", titles.length > 0 && Math.min(...titles) >= 150 && !layout.docOverflow, JSON.stringify({ narrowest: Math.min(...titles), docOverflow: layout.docOverflow }));
+    await context.close();
+  }
+
+  // 20j. A failed install says the same sentence in the toast and on the banner, which offers Try again (T-56).
+  {
+    const { context, page } = await newPage(browser);
+    await page.keyboard.press("Escape");
+    const sentence = "The update could not be installed. Try again later.";
+    await page.evaluate(() => window.__toteMock.offerUpdate("0.3.0"));
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await visible(page, '[data-testid="update-banner"]');
+    await planFail(page, "install_update", { code: "updateInstall", message: sentence });
+    await page.locator('[data-testid="update-now"]').click();
+    const toastText = await page.locator(".toast-error .toast-text").first().textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+    const note = await page.locator('[data-testid="update-note"]').textContent();
+    const button = await page.locator('[data-testid="update-now"]').textContent();
+    await capture(page, "20j-update-failed");
+    record("A failed install shows the same sentence in its toast and on the banner, and the banner offers Try again", toastText === sentence && note === sentence && button === "Try again", JSON.stringify({ toastText, note, button }));
+    await context.close();
+  }
+
+  // 20k. The quarter note in a task opens Settings at the School year card (T-56).
+  {
+    const { context, page } = await newPage(browser);
+    await page.keyboard.press("Escape");
+    await page.locator('[data-testid="nav-todo"]').click();
+    const today = await page.evaluate(() => {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    });
+    await page.locator('[data-testid="todo-input"]').fill("Submit SF2 for October");
+    await page.locator('[data-testid="todo-due"]').fill(today);
+    await page.locator('[data-testid="todo-add"]').click();
+    await page.locator('[data-testid="task-open"]').first().click();
+    const noteShown = await visible(page, '[data-testid="quarter-note"]');
+    await page.locator('[data-testid="quarter-settings"]').click();
+    const landed = await page.waitForFunction(() => {
+      const card = document.querySelector('[data-testid="school-year-card"]')?.getBoundingClientRect();
+      const main = document.querySelector('[data-testid="main"]')?.getBoundingClientRect();
+      return Boolean(card && main && card.top >= main.top - 1 && card.top < main.top + 80 && document.activeElement?.closest('[data-testid="school-year-card"]'));
+    }, null, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+    await capture(page, "20k-quarter-note-settings");
+    record("The quarter note in a task has Open Settings, which lands on the School year card with focus on it", noteShown && landed, JSON.stringify({ noteShown, landed }));
+    await context.close();
+  }
 }
 
 async function main() {

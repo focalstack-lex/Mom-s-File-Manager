@@ -72,6 +72,46 @@ describe("app store", () => {
   });
 });
 
+describe("toasts", () => {
+  // Audit T-56: a toast's Undo used to vanish after 10 s even under the pointer.
+  it("waits while the pointer is over a toast or focus is in it, then runs out the rest of its time", () => {
+    vi.useFakeTimers();
+    try {
+      useApp.getState().toast("Moved to School Files.", "info", [7]);
+      const id = useApp.getState().toasts[0].id;
+      vi.advanceTimersByTime(4000);
+      useApp.getState().holdToast(id);
+      useApp.getState().holdToast(id); // pointer and focus both
+      vi.advanceTimersByTime(60_000);
+      expect(useApp.getState().toasts.map((t) => t.id)).toEqual([id]);
+      useApp.getState().releaseToast(id);
+      vi.advanceTimersByTime(60_000);
+      expect(useApp.getState().toasts).toHaveLength(1);
+      useApp.getState().releaseToast(id);
+      vi.advanceTimersByTime(5900);
+      expect(useApp.getState().toasts).toHaveLength(1);
+      vi.advanceTimersByTime(200);
+      expect(useApp.getState().toasts).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a failed install's sentence for the banner and Settings, the same words as its toast", async () => {
+    const sentence = "The update could not be installed. Try again later.";
+    answers.set("install_update", () => {
+      throw { code: "updateInstall", message: sentence } satisfies ToteError;
+    });
+    await useApp.getState().installUpdate();
+    expect(useApp.getState()).toMatchObject({ updating: false, updateError: sentence });
+    expect(errorToasts()).toEqual([sentence]);
+    answers.set("install_update", () => undefined);
+    const again = useApp.getState().installUpdate();
+    expect(useApp.getState().updateError).toBeNull();
+    await again;
+  });
+});
+
 describe("find store", () => {
   it("keeps the last answer when a search fails and says so without a toast", async () => {
     const answer = { groups: [], pinned: [], orphanPins: [], recent: [], index: { scanning: false, scanned: 1, total: 1, files: 1 } };

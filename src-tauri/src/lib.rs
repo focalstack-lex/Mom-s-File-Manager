@@ -136,6 +136,19 @@ pub fn run() {
                     (None, true)
                 }
             };
+            // What a closed or crashed Tote left half done is settled before
+            // anything else runs: pending changes are finished or marked
+            // failed so Activity shows them, copies cut short are removed,
+            // and rows left without their search text go back into search
+            // (audit T-14, T-48). After the To do store, so attachments follow.
+            if let Err(error) = ops::resolve_pending(&opened.connection) {
+                log::warn!("start: unfinished changes could not be settled: {error}");
+            }
+            match index::repair_unsearchable(&opened.connection) {
+                Ok(0) => {}
+                Ok(repaired) => log::info!("start: {repaired} files a crash had left out of search are back in it"),
+                Err(error) => log::warn!("start: files left out of search could not be repaired: {error}"),
+            }
             let roots = paths::Roots::detect(&commands::root_choices(&opened.connection));
             if paths::Roots::test_mode() {
                 log::info!("test mode: roots {:?}, data in {}", roots.all(), data_dir.display());

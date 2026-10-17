@@ -429,20 +429,22 @@ fn sort_one(core: &Arc<Core>, app: &AppHandle, path: &Path, run_marker: i64) {
     // Settings are read before the database lock is taken: the mutex is not
     // reentrant, and reading them inside the locked block deadlocked the worker.
     let notifications = crate::commands::settings_of(core).notifications;
-    let moved = {
-        let Ok(conn) = core.db() else { return };
-        // The registry forgets a path after ten minutes and a restart empties
-        // it; the Activity rows still say whether she put the file there.
-        if put_there_for_her(&conn, path, entry.created) {
-            return;
+    // The registry forgets a path after ten minutes and a restart empties
+    // it; the Activity rows still say whether she put the file there. Asked
+    // right before the move, which then takes the lock itself, to record
+    // and to finish, and moves the file with no lock held, so a search
+    // answers while a download is copied to School Files on another drive
+    // (audit T-12).
+    match core.db() {
+        Ok(conn) if !put_there_for_her(&conn, path, entry.created) => {}
+        _ => return,
+    }
+    let moved = ops::move_file(&**core, &core.roots, &core.placed, path, &dest, ops::OpKind::AutoSort).inspect(|new_path| {
+        if let Err(error) = core.db().and_then(|conn| index::set_origin(&conn, new_path, &origin, crate::db::now())) {
+            log::warn!("origin of {} not saved: {error}", kind.words());
+            log::debug!("origin not saved for {}", new_path.display());
         }
-        ops::move_file(&conn, &core.roots, &core.placed, path, &dest, ops::OpKind::AutoSort).inspect(|new_path| {
-            if let Err(error) = index::set_origin(&conn, new_path, &origin, crate::db::now()) {
-                log::warn!("origin of {} not saved: {error}", kind.words());
-                log::debug!("origin not saved for {}", new_path.display());
-            }
-        })
-    };
+    });
     match moved {
         Ok(new_path) => {
             let name = new_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -470,41 +472,31 @@ fn notify(app: &AppHandle, name: &str, folder: &str) {
     }
 }
 
-/// Indexes one file while holding the database lock only for two short
-/// lookups: the slow part (reading the words inside the file) runs with no
-/// lock, so a search never waits on a PDF. The 18,000-file scan on Lex's
-/// machine kept the Find screen on "Searching" because the old upsert held
-/// the lock across extraction (2026-10-12).
-fn index_entry(core: &Arc<Core>, entry: &index::Entry) -> crate::error::Result<i64> {
-    let change = {
-        let conn = core.db()?;
-        index::change_for(&conn, entry)?
-    };
-    if let index::Change::Unchanged(id) = change {
-        return Ok(id);
-    }
-    let content = index::content_for(entry);
-    let conn = core.db()?;
-    index::write(&conn, entry, change, content)
-}
-
-/// `index::refresh_path` with the same short-lock discipline, for live changes.
+/// `index::refresh_path` for live changes, with the database lock held only
+/// for short lookups and writes: the slow parts (walking a folder, reading
+/// the words inside each file) run with no lock, so a search never waits
+/// on a PDF or on a folder copied in. The 18,000-file scan on Lex's machine
+/// kept the Find screen on "Searching" because the old upsert held the lock
+/// across extraction (2026-10-12), and a folder that appeared in a root was
+/// walked and read whole under one lock until 2026-10-17 (audit T-12): it
+/// now goes in chunk by chunk through the scan's own routine.
 fn refresh_unlocked(core: &Arc<Core>, path: &Path) -> crate::error::Result<()> {
     if path.is_dir() {
-        let conn = core.db()?;
-        return index::refresh_path(&conn, path).or_else(|e| {
-            log::warn!("index refresh of a folder: {e}");
-            log::debug!("index refresh failed for the folder {}", path.display());
-            Ok(())
-        });
-    }
-    match index::entry_for(path) {
-        Some(entry) => index_entry(core, &entry).map(|_| ()),
-        None => {
-            let conn = core.db()?;
-            index::remove(&conn, path)
+        let Some(entries) = index::walk_folder(path) else {
+            // A folder the scanner skips (build output, a hidden folder) keeps nothing in the index.
+            return index::remove(&*core.db()?, path);
+        };
+        let now = crate::db::now();
+        for (at, chunk) in entries.chunks(SCAN_CHUNK).enumerate() {
+            if at > 0 {
+                // A search that waited gets its turn before the next chunk.
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            scan_chunk(core, chunk, now, LIVE_DOWNLOAD_WINDOW_SECS);
         }
+        return Ok(());
     }
+    index::refresh_file(&**core, path)
 }
 
 /// Files per scan chunk: one lookup under the lock, extraction with no lock
@@ -519,10 +511,11 @@ struct Chunked {
     noticed: usize,
 }
 
-/// Indexes one chunk of the scan: a short lock to learn which files
-/// changed, extraction with no lock held, then one lock for the chunk's
-/// transaction and the download check.
-fn scan_chunk(core: &Arc<Core>, chunk: &[index::Entry], now: i64) -> Chunked {
+/// Indexes one chunk of the scan, or of a folder that appeared while Tote
+/// runs: a short lock to learn which files changed, extraction with no lock
+/// held, then one lock for the chunk's transaction and the download check,
+/// which marks a stamped file created within `window` seconds of `now`.
+fn scan_chunk(core: &Arc<Core>, chunk: &[index::Entry], now: i64, window: i64) -> Chunked {
     let changes: Vec<Option<index::Change>> = match core.db() {
         Ok(conn) => chunk
             .iter()
@@ -562,8 +555,8 @@ fn scan_chunk(core: &Arc<Core>, chunk: &[index::Entry], now: i64) -> Chunked {
             Err(error) => log::warn!("index of a chunk of {} files: {error}", chunk.len()),
         }
     }
-    for entry in chunk.iter().filter(|entry| now - entry.created <= SCAN_DOWNLOAD_WINDOW_SECS) {
-        match index::note_if_downloaded(&conn, &entry.path, SCAN_DOWNLOAD_WINDOW_SECS) {
+    for entry in chunk.iter().filter(|entry| now - entry.created <= window) {
+        match index::note_if_downloaded(&conn, &entry.path, window) {
             Ok(true) => done.noticed += 1,
             Ok(false) => {}
             Err(error) => {
@@ -667,7 +660,7 @@ pub fn start_scan(core: Arc<Core>, app: AppHandle) {
         let mut written = 0;
         let now = crate::db::now();
         for chunk in entries.chunks(SCAN_CHUNK) {
-            let chunked = scan_chunk(&core, chunk, now);
+            let chunked = scan_chunk(&core, chunk, now, SCAN_DOWNLOAD_WINDOW_SECS);
             noticed += chunked.noticed;
             written += chunked.written;
             scanned += chunk.len();
@@ -795,6 +788,35 @@ mod tests {
         let conn = core.db().unwrap();
         assert_eq!(index::search(&conn, "santos", &index::Filters::default(), 10).unwrap().len(), 10, "the lock is free and the index answers");
         assert!(!index::merge_step(&conn, false).unwrap(), "nothing was left to merge");
+    }
+
+    /// A folder that appears in a root (copied in, or moved from outside
+    /// Tote's folders) is walked and read with no lock held and written
+    /// chunk by chunk, the scan's own routine (audit T-12): every file in it
+    /// is found, by name and by its words; a folder the scanner skips keeps
+    /// nothing in the index.
+    #[test]
+    fn a_folder_moved_in_is_indexed_chunk_by_chunk() {
+        let (_dir, core) = core_with_downloads();
+        let core = Arc::new(core);
+        let folder = core.roots.documents.clone().unwrap().join("Grade 7 Quizzes");
+        std::fs::create_dir_all(folder.join("Week 2")).unwrap();
+        let files = SCAN_CHUNK * 2 + 3;
+        for i in 0..files {
+            let inside = if i % 2 == 0 { folder.clone() } else { folder.join("Week 2") };
+            std::fs::write(inside.join(format!("Quiz {i}.txt")), format!("Santos attendance {i}")).unwrap();
+        }
+        refresh_unlocked(&core, &folder).unwrap();
+        let conn = core.db().unwrap();
+        assert_eq!(index::count(&conn).unwrap(), files);
+        assert_eq!(index::search(&conn, "santos", &index::Filters::default(), 100).unwrap().len(), files, "every file's words are in");
+        assert_eq!(index::search(&conn, "quiz 52", &index::Filters::default(), 10).unwrap().len(), 1, "and its name");
+        drop(conn);
+        let skipped = core.roots.documents.clone().unwrap().join("node_modules");
+        std::fs::create_dir_all(&skipped).unwrap();
+        std::fs::write(skipped.join("index.txt"), "Santos").unwrap();
+        refresh_unlocked(&core, &skipped).unwrap();
+        assert_eq!(index::count(&core.db().unwrap()).unwrap(), files, "nothing under a skipped folder");
     }
 
     /// The first run writes the marker as now and reports now, so nothing

@@ -219,8 +219,9 @@ pub fn plan(roots: &Roots, rules: &[SubjectRule]) -> Result<Plan> {
 }
 
 /// Carries out the plan for the files she confirmed. Destinations are worked
-/// out again here from the rules, never taken from the renderer. The lock is
-/// taken per file, so searches keep answering during a long run.
+/// out again here from the rules, never taken from the renderer. Each move
+/// takes the lock only to record itself and to finish, never while its file
+/// is copied, so searches keep answering during a long run (audit T-12).
 pub fn run(core: &crate::state::Core, rules: &[SubjectRule], wanted: &[String]) -> Result<RunResult> {
     let roots = &core.roots;
     let plan = plan(roots, rules)?;
@@ -233,8 +234,7 @@ pub fn run(core: &crate::state::Core, rules: &[SubjectRule], wanted: &[String]) 
     let mut failed = Vec::new();
     let mut folders = std::collections::HashSet::new();
     for m in plan.moves.iter().filter(|m| wanted.iter().any(|w| paths::same_path(w, Path::new(&m.path)))) {
-        let conn = core.db()?;
-        match ops::move_file_in_batch(&conn, roots, &core.placed, Path::new(&m.path), Path::new(&m.dest_dir), &batch) {
+        match ops::move_file_in_batch(core, roots, &core.placed, Path::new(&m.path), Path::new(&m.dest_dir), &batch) {
             Ok(_) => {
                 moved += 1;
                 folders.insert(m.dest_dir.clone());

@@ -243,24 +243,38 @@ fn run(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<us
 
 /// Writes a new or changed row and its searchable text, together or not at
 /// all. Returns the row id. A savepoint rather than a transaction, so it
-/// nests inside `write_batch`'s chunk transaction.
+/// works inside a caller's transaction too; the scan's chunks go through
+/// `write_batch`, which leaves the savepoint out on purpose.
 pub fn write(conn: &Connection, entry: &Entry, change: Change, content: Option<String>) -> Result<i64> {
+    write_then(conn, entry, change, content, |_| Ok(()))
+}
+
+/// `write` with one more step between the row and the release; a test
+/// makes the release itself fail through it.
+fn write_then(conn: &Connection, entry: &Entry, change: Change, content: Option<String>, before_release: impl FnOnce(&Connection) -> Result<()>) -> Result<i64> {
     if let Change::Unchanged(id) = change {
         return Ok(id);
     }
     run(conn, "SAVEPOINT index_write", [])?;
-    match write_inner(conn, entry, change, content) {
-        Ok(id) => {
-            run(conn, "RELEASE index_write", [])?;
-            Ok(id)
-        }
-        Err(error) => {
-            if let Err(undo) = conn.execute_batch("ROLLBACK TO index_write; RELEASE index_write") {
+    let written = write_inner(conn, entry, change, content.as_deref())
+        .and_then(|id| before_release(conn).map(|()| id))
+        .and_then(|id| run(conn, "RELEASE index_write", []).map(|_| id));
+    if written.is_err() {
+        // The release can fail too (a full disk, a constraint checked at
+        // commit), and a savepoint left open would make every later
+        // transaction fail at BEGIN and swallow every later write until
+        // exit, so the undo runs on any failure. SQLite rolls back on its
+        // own after some errors; the savepoint is then already gone and the
+        // undo says so, which is no failure.
+        if let Err(undo) = conn.execute_batch("ROLLBACK TO index_write; RELEASE index_write") {
+            if conn.is_autocommit() {
+                log::debug!("index: the failed write was already rolled back: {undo}");
+            } else {
                 log::warn!("index: a half-written row could not be undone: {undo}");
             }
-            Err(error)
         }
     }
+    written
 }
 
 /// One scanned file with what the lookup and the extraction found, ready
@@ -272,37 +286,82 @@ pub struct Prepared<'a> {
 }
 
 /// Writes a chunk of scanned files in one transaction, so the scan commits
-/// once per chunk instead of once per file and FTS5 has fewer small
-/// segments to merge (audit T-11). A file whose write fails costs only
-/// itself: it is logged and the rest of the chunk still goes in. Returns
-/// how many files were written.
+/// once per chunk instead of once per file and FTS5 flushes the chunk's
+/// words into one segment instead of one per file (audit T-11). The files
+/// go in without `write`'s savepoint: FTS5 flushes a segment at every
+/// savepoint too (its xSavepoint method), which left one segment per file
+/// however the chunk was committed. A file whose write fails costs only
+/// itself: the chunk is rolled back, the file is logged and left out (the
+/// watcher's next event or the next scan picks it up; writing it again
+/// here could loop), and the rest goes in on the next pass with their
+/// lookups refreshed, since the usual cause is the watcher indexing files
+/// of the chunk meanwhile (a New row that is suddenly there). Returns how
+/// many files were written.
 pub fn write_batch(conn: &Connection, prepared: Vec<Prepared<'_>>) -> Result<usize> {
-    let tx = conn.unchecked_transaction().map_err(ToteError::db_write)?;
-    let mut written = 0;
-    for file in prepared {
-        if matches!(file.change, Change::Unchanged(_)) {
-            continue;
-        }
-        match write(&tx, file.entry, file.change, file.content) {
-            Ok(_) => written += 1,
-            Err(error) => {
+    let mut files: Vec<Prepared<'_>> = prepared.into_iter().filter(|file| !matches!(file.change, Change::Unchanged(_))).collect();
+    loop {
+        let tx = conn.unchecked_transaction().map_err(ToteError::db_write)?;
+        let mut failed = None;
+        for (at, file) in files.iter().enumerate() {
+            if let Err(error) = write_inner(&tx, file.entry, file.change, file.content.as_deref()) {
                 log::warn!("index of {}: {error}", sorter::describe(&file.entry.path));
                 log::debug!("index failed for {}", file.entry.path.display());
+                failed = Some(at);
+                break;
+            }
+        }
+        match failed {
+            Some(at) => {
+                // SQLite rolls back on its own after some errors; then
+                // there is nothing left to roll back, which is fine.
+                if let Err(error) = tx.rollback() {
+                    log::debug!("index: the chunk was already rolled back: {error}");
+                }
+                files.remove(at);
+                files.retain_mut(|file| match change_for(conn, file.entry) {
+                    Ok(Change::Unchanged(_)) => false,
+                    Ok(change) => {
+                        file.change = change;
+                        true
+                    }
+                    Err(error) => {
+                        log::warn!("index of {}: {error}", sorter::describe(&file.entry.path));
+                        false
+                    }
+                });
+            }
+            None => {
+                tx.commit().map_err(ToteError::db_write)?;
+                return Ok(files.len());
             }
         }
     }
-    tx.commit().map_err(ToteError::db_write)?;
-    Ok(written)
 }
 
-/// Merges the search index's segments into one, so later searches read as
-/// little as they can; run once when the scan ends (audit T-11).
-pub fn optimize(conn: &Connection) -> Result<()> {
-    run(conn, "INSERT INTO files_fts(files_fts) VALUES('optimize')", [])?;
-    Ok(())
+/// Leaf pages one merge step writes before it gives the lock back: about a
+/// quarter of a megabyte at FTS5's page size. A step of 256 pages held the
+/// lock for 3.9 s on a slow drive in the fix-up probe of 2026-10-17 (a
+/// 20,000-file index on E:), so the step is a quarter of that and a search
+/// between two steps waits about a second there, less on a faster disk
+/// (audit T-11).
+pub const MERGE_STEP_PAGES: i64 = 64;
+
+/// One step of the merge that FTS5's 'optimize' does in one go, bounded to
+/// `MERGE_STEP_PAGES`; the scan runs the steps under separate locks. The
+/// first step of a run gathers every segment (a negative count) and the
+/// later steps carry that merge on (a positive count), as the FTS5
+/// documentation prescribes, so segments a watcher adds meanwhile do not
+/// restart it. Returns whether the step found segments to merge, read the
+/// way the documentation says: total_changes() grows by two or more when
+/// work was done and by less when there was none, so a loop ends here.
+pub fn merge_step(conn: &Connection, first: bool) -> Result<bool> {
+    let before = conn.total_changes();
+    let pages = if first { -MERGE_STEP_PAGES } else { MERGE_STEP_PAGES };
+    run(conn, "INSERT INTO files_fts(files_fts, rank) VALUES('merge', ?1)", [pages])?;
+    Ok(conn.total_changes() - before >= 2)
 }
 
-fn write_inner(conn: &Connection, entry: &Entry, change: Change, content: Option<String>) -> Result<i64> {
+fn write_inner(conn: &Connection, entry: &Entry, change: Change, content: Option<&str>) -> Result<i64> {
     let path_text = entry.path.to_string_lossy().into_owned();
     let name = entry.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let stem = entry.path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -332,11 +391,15 @@ fn write_inner(conn: &Connection, entry: &Entry, change: Change, content: Option
         }
     };
     // A document that happens to hold the snippet marks must not light up.
-    let content = content.map(|c| if c.contains([MARK_START, MARK_END]) { c.replace([MARK_START, MARK_END], " ") } else { c });
+    let content = match content {
+        Some(text) if text.contains([MARK_START, MARK_END]) => std::borrow::Cow::Owned(text.replace([MARK_START, MARK_END], " ")),
+        Some(text) => std::borrow::Cow::Borrowed(text),
+        None => std::borrow::Cow::Borrowed(""),
+    };
     run(
         conn,
         "INSERT INTO files_fts(rowid, name, content) VALUES(?1, ?2, ?3)",
-        params![id, indexed_name(&name), content.unwrap_or_default()],
+        params![id, indexed_name(&name), content.as_ref()],
     )?;
     Ok(id)
 }
@@ -1022,5 +1085,148 @@ mod tests {
         assert_eq!(write_batch(&chunked, prepared).unwrap(), 0);
         chunked.pragma_update(None, "query_only", "OFF").unwrap();
         assert_eq!(rows(&chunked), before);
+        // A file whose write fails costs only itself. Here the race the
+        // watcher can cause: a chunk holds two files as New, the watcher
+        // indexed both meanwhile, and the first clashes. The chunk is
+        // written again without it and with the lookups refreshed, so the
+        // second is skipped as up to date and the others go in; the
+        // clashing file keeps its row (edited since, it is the next scan's).
+        std::fs::write(dir.path().join("Grade 8 Quiz.docx"), b"new").unwrap();
+        std::fs::write(dir.path().join("Grade 7 Quiz.docx"), b"edited since").unwrap();
+        let mut entries = Vec::new();
+        walk(dir.path(), &mut entries);
+        let stale = |e: &Entry| if e.path.ends_with("Grade 7 Quiz.docx") || e.path.ends_with("notes.txt") { Change::New } else { change_for(&chunked, e).unwrap() };
+        let prepared = entries.iter().map(|e| Prepared { entry: e, change: stale(e), content: content_for(e) }).collect();
+        assert_eq!(write_batch(&chunked, prepared).unwrap(), 2, "the changed list and the new quiz; the clashing quiz is left out and the up-to-date notes are skipped");
+        assert_eq!(rows(&chunked).len(), 4);
+        assert_eq!(rows(&chunked).iter().find(|row| row.1 == "Grade 7 Quiz.docx").unwrap().2, 1, "the clashing file keeps the row the watcher wrote");
+        assert!(chunked.is_autocommit());
+    }
+
+    /// A release that fails (here a constraint SQLite checks at commit; on
+    /// her laptop a full disk) must not leave the savepoint open, or every
+    /// later chunk would fail at BEGIN and every watcher write would nest
+    /// inside the open transaction and be lost at exit: the row is undone,
+    /// the connection is back in autocommit, and the next writes commit.
+    #[test]
+    fn a_failed_release_leaves_the_connection_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Grade 7 Quiz.docx"), b"x").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "Santos Reyes attendance").unwrap();
+        let conn = db::open_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE parent(id INTEGER PRIMARY KEY);
+             CREATE TABLE child(parent INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);",
+        )
+        .unwrap();
+        let mut entries = Vec::new();
+        walk(dir.path(), &mut entries);
+        let quiz = entries.iter().find(|e| e.path.ends_with("Grade 7 Quiz.docx")).unwrap();
+        let notes = entries.iter().find(|e| e.path.ends_with("notes.txt")).unwrap();
+        let error = write_then(&conn, quiz, Change::New, None, |conn| run(conn, "INSERT INTO child(parent) VALUES(99)", []).map(|_| ())).unwrap_err();
+        assert_eq!(error.message, crate::error::DB_WRITE, "the failed release says not saved");
+        assert!(conn.is_autocommit(), "the savepoint is not left open");
+        assert!(by_path(&conn, &quiz.path.to_string_lossy()).unwrap().is_none(), "the half-written row was undone");
+        let later: i64 = conn.query_row("SELECT count(*) FROM child", [], |r| r.get(0)).unwrap();
+        assert_eq!(later, 0, "the step that broke the release was undone with it");
+        let prepared = vec![Prepared { entry: notes, change: Change::New, content: content_for(notes) }];
+        assert_eq!(write_batch(&conn, prepared).unwrap(), 1, "the next chunk still begins and commits");
+        assert!(write(&conn, quiz, Change::New, None).is_ok(), "a plain write after it commits too");
+        assert_eq!(count(&conn).unwrap(), 2);
+        assert_eq!(search(&conn, "santos", &Filters::default(), 10).unwrap().len(), 1);
+    }
+
+    /// The scan's merge runs in bounded steps between locks, not in one
+    /// 'optimize' that rewrites the whole index while every search waits
+    /// (audit T-11): the first step gathers the segments the chunks left,
+    /// the later steps carry that merge on, a step says when nothing is
+    /// left so the loop ends, and the index answers the same after. One
+    /// new segment is left to FTS5 unless a first step asks for it.
+    #[test]
+    fn the_merge_runs_in_steps_and_says_when_it_is_done() {
+        let conn = db::open_memory().unwrap();
+        // FTS5's own merging switched off for this table, so the chunks
+        // leave exactly one segment each and the steps are predictable.
+        conn.execute_batch(
+            "INSERT INTO files_fts(files_fts, rank) VALUES('automerge', 0);
+             INSERT INTO files_fts(files_fts, rank) VALUES('crisismerge', 1000);",
+        )
+        .unwrap();
+        let entry = |i: i64| Entry { path: PathBuf::from(format!(r"C:\Lab\Grade {} Quiz {i}.docx", i % 12)), size: 10, modified: i, created: i, content_available: true };
+        // Forty words of its own per file, so the index is many pages and
+        // the merge takes more than one step.
+        let words = |i: i64| (0..40).fold(String::from("Santos Reyes attendance"), |mut text, k| {
+            text.push_str(&format!(" word{}", i * 40 + k));
+            text
+        });
+        let write_files = |from: i64, to: i64| {
+            let entries: Vec<Entry> = (from..to).map(entry).collect();
+            for chunk in entries.chunks(25) {
+                let prepared = chunk.iter().map(|e| Prepared { entry: e, change: Change::New, content: Some(words(e.modified)) }).collect();
+                assert_eq!(write_batch(&conn, prepared).unwrap(), chunk.len());
+            }
+        };
+        write_files(0, 8_000);
+        assert_eq!(fts_levels(&conn), vec![(320, 0)], "one segment per chunk of 25, not one per file");
+        let segments = |conn: &Connection| fts_levels(conn).iter().map(|(segments, _)| segments).sum::<u64>();
+        let names = |conn: &Connection| -> Vec<String> { search(conn, "quiz 7", &Filters::default(), 50).unwrap().into_iter().map(|h| h.name).collect() };
+        let before = names(&conn);
+        assert_eq!(before.len(), 50);
+        assert!(merge_step(&conn, true).unwrap(), "the chunks left segments to merge");
+        let mut steps = 1;
+        while merge_step(&conn, false).unwrap() {
+            steps += 1;
+            assert!(steps <= 200, "the merge of 8,000 small files ends");
+        }
+        assert!(steps >= 2, "an index of many pages takes more than one bounded step ({steps})");
+        assert_eq!(segments(&conn), 1, "one segment, as 'optimize' leaves");
+        assert!(!merge_step(&conn, false).unwrap(), "nothing left: one more step is a no-op, so a loop ends");
+        assert_eq!(names(&conn), before, "the merged index answers the same");
+        assert_eq!(search(&conn, "word80001", &Filters::default(), 10).unwrap().len(), 1);
+        write_files(8_000, 8_025);
+        assert_eq!(segments(&conn), 2);
+        assert!(!merge_step(&conn, false).unwrap(), "one new segment beside the merged one is left to FTS5");
+        assert!(merge_step(&conn, true).unwrap(), "a first step gathers it in");
+        while merge_step(&conn, false).unwrap() {}
+        assert_eq!(segments(&conn), 1);
+        assert_eq!(search(&conn, "word320001", &Filters::default(), 10).unwrap().len(), 1);
+    }
+
+    /// The segments of the search index per level, as (segments, of which
+    /// inputs to a merge in progress), read from FTS5's structure record
+    /// (fts5_index.c, "structure record": a cookie, then varints).
+    fn fts_levels(conn: &Connection) -> Vec<(u64, u64)> {
+        let blob: Vec<u8> = conn.query_row("SELECT block FROM files_fts_data WHERE id = 10", [], |r| r.get(0)).unwrap();
+        // After the cookie, a V2 record (origin counters in use) carries a
+        // mark and five more varints per segment.
+        let v2 = blob[4..8] == [0xff, 0x00, 0x00, 0x01];
+        let mut pos = if v2 { 8 } else { 4 };
+        let mut varint = || {
+            let mut value: u64 = 0;
+            loop {
+                let byte = blob[pos];
+                pos += 1;
+                value = (value << 7) | u64::from(byte & 0x7f);
+                if byte < 0x80 {
+                    return value;
+                }
+            }
+        };
+        let levels = varint();
+        let _segments = varint();
+        let _write_counter = varint();
+        (0..levels)
+            .map(|_| {
+                let merging = varint();
+                let segments = varint();
+                for _ in 0..segments {
+                    for _ in 0..(if v2 { 8 } else { 3 }) {
+                        varint();
+                    }
+                }
+                (segments, merging)
+            })
+            .collect()
     }
 }

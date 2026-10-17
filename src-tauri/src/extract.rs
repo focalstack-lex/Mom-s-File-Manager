@@ -1,9 +1,13 @@
 //! Text inside documents (spec 5.2), so a search for a student's name finds
 //! `Book1.xlsx`. Office files are zip archives of XML; the text is what is
 //! left after the tags are removed. Every failure degrades to "name only".
-//! Every reader is bounded: a part of an Office file streams through a byte
-//! limit and tag stripping stops at the text cap, so one strange file cannot
-//! take memory a laptop does not have (audit T-04).
+//! The Office and text readers are bounded: a part of an Office file
+//! streams through a byte limit and tag stripping stops at the text cap, so
+//! one strange file cannot take memory a laptop does not have (audit T-04).
+//! The PDF reader is bounded by the file's size on disk only: pdf-extract
+//! reads the whole file and unpacks its streams in memory with no cap and
+//! no streaming interface, so a small PDF that unpacks to a great deal can
+//! still cost that much memory (a leftover for the final batch).
 
 use std::io::Read;
 use std::path::Path;
@@ -144,7 +148,9 @@ fn read_part(part: impl Read, declared: u64, text: &mut Stripper) {
 fn pdf_text(path: &Path) -> Option<String> {
     // Panics are caught one level up, in extract_text. The old version also
     // swapped the global panic hook per call, which raced with other threads.
-    // The file is at most MAX_FILE_BYTES, checked by raw_text.
+    // The file is at most MAX_FILE_BYTES, checked by raw_text, and that is
+    // the only bound here: pdf-extract unpacks every stream in memory with
+    // no cap on what comes out (a leftover for the final batch).
     let bytes = std::fs::read(path).ok()?;
     match pdf_extract::extract_text_from_mem(&bytes) {
         Ok(text) if !text.trim().is_empty() => Some(text),

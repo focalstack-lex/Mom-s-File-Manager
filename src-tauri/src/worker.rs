@@ -511,11 +511,18 @@ fn refresh_unlocked(core: &Arc<Core>, path: &Path) -> crate::error::Result<()> {
 /// held, one transaction for the writes (audit T-11).
 const SCAN_CHUNK: usize = 25;
 
+/// What one scan chunk did: the files it wrote to the index and the recent
+/// downloads it noticed outside Downloads.
+#[derive(Default)]
+struct Chunked {
+    written: usize,
+    noticed: usize,
+}
+
 /// Indexes one chunk of the scan: a short lock to learn which files
 /// changed, extraction with no lock held, then one lock for the chunk's
-/// transaction and the download check. Returns how many recent downloads
-/// it noticed outside Downloads.
-fn scan_chunk(core: &Arc<Core>, chunk: &[index::Entry], now: i64) -> usize {
+/// transaction and the download check.
+fn scan_chunk(core: &Arc<Core>, chunk: &[index::Entry], now: i64) -> Chunked {
     let changes: Vec<Option<index::Change>> = match core.db() {
         Ok(conn) => chunk
             .iter()
@@ -530,7 +537,7 @@ fn scan_chunk(core: &Arc<Core>, chunk: &[index::Entry], now: i64) -> usize {
             .collect(),
         Err(error) => {
             log::warn!("scan: {error}");
-            return 0;
+            return Chunked::default();
         }
     };
     let prepared: Vec<index::Prepared<'_>> = chunk
@@ -545,18 +552,19 @@ fn scan_chunk(core: &Arc<Core>, chunk: &[index::Entry], now: i64) -> usize {
         Ok(conn) => conn,
         Err(error) => {
             log::warn!("scan: {error}");
-            return 0;
+            return Chunked::default();
         }
     };
+    let mut done = Chunked::default();
     if !prepared.is_empty() {
-        if let Err(error) = index::write_batch(&conn, prepared) {
-            log::warn!("index of a chunk of {} files: {error}", chunk.len());
+        match index::write_batch(&conn, prepared) {
+            Ok(written) => done.written = written,
+            Err(error) => log::warn!("index of a chunk of {} files: {error}", chunk.len()),
         }
     }
-    let mut noticed = 0;
     for entry in chunk.iter().filter(|entry| now - entry.created <= SCAN_DOWNLOAD_WINDOW_SECS) {
         match index::note_if_downloaded(&conn, &entry.path, SCAN_DOWNLOAD_WINDOW_SECS) {
-            Ok(true) => noticed += 1,
+            Ok(true) => done.noticed += 1,
             Ok(false) => {}
             Err(error) => {
                 log::warn!("download check of {}: {error}", sorter::describe(&entry.path));
@@ -564,7 +572,59 @@ fn scan_chunk(core: &Arc<Core>, chunk: &[index::Entry], now: i64) -> usize {
             }
         }
     }
-    noticed
+    done
+}
+
+/// A scan that wrote at least this many files (the first scan, a big folder
+/// added) is followed by the merge; after a smaller one FTS5's own merging
+/// is enough (audit T-11).
+const MERGE_AFTER_FILES: usize = 500;
+/// The most merge steps one scan runs, so the loop ends whatever the
+/// index says: at `index::MERGE_STEP_PAGES` a step, far more index than
+/// her laptop holds.
+const MERGE_MAX_STEPS: usize = 4_096;
+/// A merge step that held the lock this long is worth a warning: a search
+/// may have waited for it.
+const MERGE_STEP_WARN: Duration = Duration::from_secs(2);
+
+/// Merges the search index in bounded steps (`index::merge_step`), taking
+/// and giving back the database lock for each, so a search between two
+/// steps waits for one step at most; the one-shot 'optimize' it replaces
+/// rewrote the whole index under one lock at the moment the walkthrough
+/// says to type (audit T-11). Returns the steps run and the longest hold.
+fn merge_index(core: &Core) -> (usize, Duration) {
+    let started = Instant::now();
+    let mut steps = 0;
+    let mut longest = Duration::ZERO;
+    for step in 0..MERGE_MAX_STEPS {
+        let outcome = core.db().and_then(|conn| {
+            let held = Instant::now();
+            index::merge_step(&conn, step == 0).map(|more| (more, held.elapsed()))
+        });
+        let more = match outcome {
+            Ok((more, held)) => {
+                steps += 1;
+                longest = longest.max(held);
+                more
+            }
+            Err(error) => {
+                log::warn!("search index merge stopped at step {}: {error}", step + 1);
+                break;
+            }
+        };
+        if !more {
+            break;
+        }
+        // A search that waited gets its turn before the next step.
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (total, hold) = (started.elapsed().as_millis(), longest.as_millis());
+    if longest >= MERGE_STEP_WARN {
+        log::warn!("search index merged in {steps} steps, {total} ms; the longest step held the lock {hold} ms");
+    } else {
+        log::info!("search index merged in {steps} steps, {total} ms (longest step {hold} ms)");
+    }
+    (steps, longest)
 }
 
 /// The full integrity check reads the whole file, so it runs here, once the
@@ -586,7 +646,8 @@ fn full_check(core: &Core) {
 
 /// Walks every root, newest files first, and fills the index chunk by
 /// chunk (`scan_chunk`) so the database lock is never held long, merges
-/// the search index when it is done, then runs the full integrity check.
+/// the search index in steps when a big scan is done, then runs the full
+/// integrity check.
 pub fn start_scan(core: Arc<Core>, app: AppHandle) {
     let spawned = std::thread::Builder::new().name("tote-scan".into()).spawn(move || {
         core.set_status(|s| {
@@ -603,9 +664,12 @@ pub fn start_scan(core: Arc<Core>, app: AppHandle) {
         core.set_status(|s| s.total = total);
         let mut scanned = 0;
         let mut noticed = 0;
+        let mut written = 0;
         let now = crate::db::now();
         for chunk in entries.chunks(SCAN_CHUNK) {
-            noticed += scan_chunk(&core, chunk, now);
+            let chunked = scan_chunk(&core, chunk, now);
+            noticed += chunked.noticed;
+            written += chunked.written;
             scanned += chunk.len();
             // Progress every chunk; the row count and the event every 200 files,
             // so the renderer is not asked to refresh on every batch.
@@ -632,13 +696,15 @@ pub fn start_scan(core: Arc<Core>, app: AppHandle) {
                     Err(error) => log::warn!("prune {}: {error}", root.display()),
                 }
             }
-            // The chunks left the search index in many small segments; one
-            // merge now keeps every later search quick (audit T-11).
-            let started = Instant::now();
-            match index::optimize(&conn) {
-                Ok(()) => log::info!("search index merged in {} ms", started.elapsed().as_millis()),
-                Err(error) => log::warn!("search index merge: {error}"),
-            }
+        }
+        // The chunks left the search index in segments. After a scan that
+        // wrote many files they are merged here in bounded steps, the lock
+        // given back between them; after a smaller scan FTS5 merges on its
+        // own as files are written (audit T-11).
+        if written >= MERGE_AFTER_FILES {
+            merge_index(&core);
+        } else {
+            log::debug!("search index: {written} files written this scan, no merge needed");
         }
         if noticed > 0 {
             log::info!("first scan found {noticed} recent downloads saved outside Downloads or before Tote ran");
@@ -705,6 +771,30 @@ mod tests {
             placed: Default::default(),
         };
         (dir, core)
+    }
+
+    /// The merge after a big scan runs step by step under separate locks
+    /// and ends on its own; the lock is free after it (audit T-11).
+    #[test]
+    fn the_merge_after_a_scan_runs_in_steps_and_ends() {
+        let (_dir, core) = core_with_downloads();
+        {
+            let conn = core.db().unwrap();
+            conn.execute_batch("INSERT INTO files_fts(files_fts, rank) VALUES('automerge', 0)").unwrap();
+            let entries: Vec<index::Entry> = (0..MERGE_AFTER_FILES as i64)
+                .map(|i| index::Entry { path: PathBuf::from(format!(r"C:\Lab\Quiz {i}.docx")), size: 10, modified: i, created: i, content_available: true })
+                .collect();
+            for chunk in entries.chunks(SCAN_CHUNK) {
+                let prepared = chunk.iter().map(|e| index::Prepared { entry: e, change: index::Change::New, content: Some(format!("Santos attendance {}", e.modified)) }).collect();
+                assert_eq!(index::write_batch(&conn, prepared).unwrap(), chunk.len());
+            }
+        }
+        let (steps, longest) = merge_index(&core);
+        assert!((2..MERGE_MAX_STEPS).contains(&steps), "the segments the chunks left take a first step and at least the one that says it is done ({steps})");
+        assert!(longest < MERGE_STEP_WARN, "a step on a small index is quick");
+        let conn = core.db().unwrap();
+        assert_eq!(index::search(&conn, "santos", &index::Filters::default(), 10).unwrap().len(), 10, "the lock is free and the index answers");
+        assert!(!index::merge_step(&conn, false).unwrap(), "nothing was left to merge");
     }
 
     /// The first run writes the marker as now and reports now, so nothing

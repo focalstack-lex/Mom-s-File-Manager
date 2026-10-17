@@ -432,8 +432,8 @@ pub async fn move_files(state: State<'_, AppState>, paths: Vec<String>, destinat
         let mut moved = Vec::new();
         for p in paths {
             let new_path = match &batch {
-                Some(batch) => ops::move_file_in_batch(&conn, &core.roots, Path::new(&p), dest, batch)?,
-                None => ops::move_file(&conn, &core.roots, Path::new(&p), dest, ops::OpKind::Move)?,
+                Some(batch) => ops::move_file_in_batch(&conn, &core.roots, &core.placed, Path::new(&p), dest, batch)?,
+                None => ops::move_file(&conn, &core.roots, &core.placed, Path::new(&p), dest, ops::OpKind::Move)?,
             };
             moved.push(paths::display(&new_path));
         }

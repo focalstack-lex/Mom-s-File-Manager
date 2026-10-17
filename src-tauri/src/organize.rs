@@ -234,7 +234,7 @@ pub fn run(core: &crate::state::Core, rules: &[SubjectRule], wanted: &[String]) 
     let mut folders = std::collections::HashSet::new();
     for m in plan.moves.iter().filter(|m| wanted.iter().any(|w| paths::same_path(w, Path::new(&m.path)))) {
         let conn = core.db()?;
-        match ops::move_file_in_batch(&conn, roots, Path::new(&m.path), Path::new(&m.dest_dir), &batch) {
+        match ops::move_file_in_batch(&conn, roots, &core.placed, Path::new(&m.path), Path::new(&m.dest_dir), &batch) {
             Ok(_) => {
                 moved += 1;
                 folders.insert(m.dest_dir.clone());

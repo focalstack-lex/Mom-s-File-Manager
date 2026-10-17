@@ -121,16 +121,18 @@ pub fn transfer(src: &Path, dst: &Path) -> Result<()> {
 }
 
 /// Moves one file into `dst_dir`, clash rule applied. Returns the new path.
-pub fn move_file(conn: &Connection, roots: &Roots, src: &Path, dst_dir: &Path, kind: OpKind) -> Result<PathBuf> {
-    move_inner(conn, roots, src, dst_dir, kind, None)
+/// A landing in Downloads (a Move to she asked for) is noted in `placed`
+/// first, so the watcher does not file it.
+pub fn move_file(conn: &Connection, roots: &Roots, placed: &Placed, src: &Path, dst_dir: &Path, kind: OpKind) -> Result<PathBuf> {
+    move_inner(conn, roots, placed, src, dst_dir, kind, None)
 }
 
-/// A move that belongs to an Organize run (spec 5.11).
-pub fn move_file_in_batch(conn: &Connection, roots: &Roots, src: &Path, dst_dir: &Path, batch: &str) -> Result<PathBuf> {
-    move_inner(conn, roots, src, dst_dir, OpKind::Move, Some(batch))
+/// A move that belongs to an Organize run (spec 5.11) or to a Move to of several files.
+pub fn move_file_in_batch(conn: &Connection, roots: &Roots, placed: &Placed, src: &Path, dst_dir: &Path, batch: &str) -> Result<PathBuf> {
+    move_inner(conn, roots, placed, src, dst_dir, OpKind::Move, Some(batch))
 }
 
-fn move_inner(conn: &Connection, roots: &Roots, src: &Path, dst_dir: &Path, kind: OpKind, batch: Option<&str>) -> Result<PathBuf> {
+fn move_inner(conn: &Connection, roots: &Roots, placed: &Placed, src: &Path, dst_dir: &Path, kind: OpKind, batch: Option<&str>) -> Result<PathBuf> {
     let src = roots.confine(src)?;
     let dst_dir = roots.confine(dst_dir)?;
     if !src.is_file() {
@@ -143,6 +145,7 @@ fn move_inner(conn: &Connection, roots: &Roots, src: &Path, dst_dir: &Path, kind
     }
     let dst = sorter::unique_path(&wanted);
     let id = record_in(conn, kind, &src, Some(&dst), kind == OpKind::AutoSort, batch)?;
+    note_placed(roots, placed, &dst);
     let result = transfer(&src, &dst).map(|_| dst.clone());
     finish(conn, id, &result)?;
     let dst = result?;
@@ -395,12 +398,22 @@ fn note_placed(roots: &Roots, placed: &Placed, path: &Path) {
     }
 }
 
-/// True when an Undo once put a file back at `path`: the watcher's start-up
-/// sweep leaves such a file alone, since the in-memory registry does not
-/// survive a restart and a Windows shutdown skips the exit mark.
-pub fn was_put_back(conn: &Connection, path: &Path) -> Result<bool> {
+/// True when Tote put a file at `path` for her after that file was created:
+/// an Undo, restore or Undo all (an undone filing, move or Recycle Bin row
+/// naming the path) or a Move to Downloads she asked for (a done move
+/// landing there), recorded after the file's created time. A move on the
+/// same drive keeps the created time, so the file that is back is older
+/// than its row, while a later download at the same path is newer than
+/// every row and is filed. The watcher asks here in its start-up sweep and
+/// again before every filing, because the in-memory registry forgets a path
+/// after ten minutes and does not survive a restart (audit T-06).
+pub fn was_put_back(conn: &Connection, path: &Path, created: i64) -> Result<bool> {
     let found: Option<i64> = conn
-        .query_row("SELECT id FROM ops WHERE src = ?1 AND status = 'undone' LIMIT 1", [path.to_string_lossy().into_owned()], |r| r.get(0))
+        .query_row(
+            "SELECT id FROM ops WHERE created_at >= ?2 AND ((status = 'undone' AND kind IN ('autoSort', 'move', 'recycle') AND src = ?1) OR (status = 'done' AND kind = 'move' AND automatic = 0 AND dst = ?1)) LIMIT 1",
+            params![path.to_string_lossy().into_owned(), created],
+            |r| r.get(0),
+        )
         .optional()?;
     Ok(found.is_some())
 }
@@ -657,21 +670,24 @@ mod tests {
         std::fs::write(&src, b"q").unwrap();
         index::refresh_path(&conn, &src).unwrap();
         let dest = roots.documents.clone().unwrap().join("School Files").join("Word");
-        let moved = move_file(&conn, &roots, &src, &dest, OpKind::Move).unwrap();
+        let created = index::entry_for(&src).unwrap().created;
+        let placed = Placed::default();
+        let moved = move_file(&conn, &roots, &placed, &src, &dest, OpKind::Move).unwrap();
         assert!(moved.is_file());
         assert!(!src.exists());
+        assert!(!placed.covers(&moved, std::time::Instant::now()), "a landing outside Downloads is not noted");
         assert!(index::by_path(&conn, &moved.to_string_lossy()).unwrap().is_some());
         let ops = list(&conn, 10).unwrap();
         assert_eq!(ops[0].status, "done");
-        let placed = Placed::default();
-        assert!(!was_put_back(&conn, &src).unwrap());
+        assert!(!was_put_back(&conn, &src, created).unwrap(), "a done move away from Downloads is not a put-back");
         undo(&conn, &roots, &placed, ops[0].id).unwrap();
         assert!(src.is_file());
         assert_eq!(get(&conn, ops[0].id).unwrap().unwrap().status, "undone");
         // The watcher is told before the file moves back, so it is not filed again (audit T-06).
         assert!(placed.covers(&src, std::time::Instant::now()), "the path Undo put back in Downloads is noted");
-        assert!(was_put_back(&conn, &src).unwrap(), "and the start-up sweep will know it was put back");
-        assert!(!was_put_back(&conn, &roots.downloads.clone().unwrap().join("Other.docx")).unwrap());
+        assert!(was_put_back(&conn, &src, created).unwrap(), "and the Activity row says it was put back, for the sweep and for every later filing");
+        assert!(!was_put_back(&conn, &src, ops[0].created_at + 1).unwrap(), "a later download at the same path is newer than the row and is still filed");
+        assert!(!was_put_back(&conn, &roots.downloads.clone().unwrap().join("Other.docx"), created).unwrap());
     }
 
     /// Undo of a move that did not land in Downloads notes nothing: the
@@ -682,11 +698,37 @@ mod tests {
         let src = roots.desktop.clone().unwrap().join("Quiz.docx");
         std::fs::write(&src, b"q").unwrap();
         let dest = roots.documents.clone().unwrap().join("Forms");
-        move_file(&conn, &roots, &src, &dest, OpKind::Move).unwrap();
         let placed = Placed::default();
+        move_file(&conn, &roots, &placed, &src, &dest, OpKind::Move).unwrap();
         undo(&conn, &roots, &placed, list(&conn, 1).unwrap()[0].id).unwrap();
         assert!(src.is_file());
         assert!(!placed.covers(&src, std::time::Instant::now()));
+    }
+
+    /// A Move to Downloads she asked for is the other door into Downloads:
+    /// the landing is noted for the watcher before the file moves, and the
+    /// done row says she put it there, so it is never filed (audit T-06).
+    #[test]
+    fn a_move_into_downloads_is_noted_and_remembered() {
+        let (_dir, roots, conn) = fixture();
+        let src = roots.documents.clone().unwrap().join("School Files").join("Word").join("Quiz.docx");
+        std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+        std::fs::write(&src, b"q").unwrap();
+        let created = index::entry_for(&src).unwrap().created;
+        let downloads = roots.downloads.clone().unwrap();
+        let placed = Placed::default();
+        let landing = move_file(&conn, &roots, &placed, &src, &downloads, OpKind::Move).unwrap();
+        assert_eq!(landing, downloads.join("Quiz.docx"));
+        assert!(placed.covers(&landing, std::time::Instant::now()), "the landing in Downloads is noted before the file moves");
+        assert!(was_put_back(&conn, &landing, created).unwrap(), "the done move row says she put it there");
+        assert!(!was_put_back(&conn, &landing, list(&conn, 1).unwrap()[0].created_at + 1).unwrap(), "a later download at that path is still filed");
+        // The same through a batch of several files.
+        let other = roots.desktop.clone().unwrap().join("Form.pdf");
+        std::fs::write(&other, b"f").unwrap();
+        let batch = new_batch("move");
+        let beside = move_file_in_batch(&conn, &roots, &placed, &other, &downloads, &batch).unwrap();
+        assert!(placed.covers(&beside, std::time::Instant::now()));
+        assert!(was_put_back(&conn, &beside, index::entry_for(&beside).unwrap().created).unwrap());
     }
 
     #[test]
@@ -707,7 +749,7 @@ mod tests {
         let outside = dir.path().join("x.txt");
         std::fs::write(&outside, b"x").unwrap();
         let dest = roots.documents.clone().unwrap();
-        assert_eq!(move_file(&conn, &roots, &outside, &dest, OpKind::Move).unwrap_err().code, ErrorCode::OutsideRoots);
+        assert_eq!(move_file(&conn, &roots, &Placed::default(), &outside, &dest, OpKind::Move).unwrap_err().code, ErrorCode::OutsideRoots);
         let folder = create_folder(&conn, &roots, &dest, "Grade 7").unwrap();
         assert!(folder.is_dir());
         assert_eq!(create_folder(&conn, &roots, &dest, "Grade 7").unwrap_err().code, ErrorCode::AlreadyExists);
@@ -728,12 +770,12 @@ mod tests {
         let dest = roots.documents.clone().unwrap().join("School Files").join("Quizzes");
         std::fs::create_dir_all(&dest).unwrap();
         let batch = new_batch("move");
-        move_file_in_batch(&conn, &roots, &a, &dest, &batch).unwrap();
-        move_file_in_batch(&conn, &roots, &b, &dest, &batch).unwrap();
+        let placed = Placed::default();
+        move_file_in_batch(&conn, &roots, &placed, &a, &dest, &batch).unwrap();
+        move_file_in_batch(&conn, &roots, &placed, &b, &dest, &batch).unwrap();
         let logged = list(&conn, 10).unwrap();
         assert_eq!(logged.iter().filter(|o| o.batch.as_deref() == Some(batch.as_str())).count(), 2);
 
-        let placed = Placed::default();
         let undone = undo_batch(&conn, &roots, &placed, &batch).unwrap();
         assert_eq!(undone.undone, 2);
         assert!(a.is_file() && b.is_file());
@@ -761,7 +803,7 @@ mod tests {
         let row = list(&conn, 1).unwrap().remove(0);
         assert_eq!(row.status, "failed");
         assert_eq!(row.message.as_deref(), Some(IN_USE), "Activity carries the same sentence");
-        let error = move_file(&conn, &roots, &src, &roots.documents.clone().unwrap(), OpKind::Move).unwrap_err();
+        let error = move_file(&conn, &roots, &Placed::default(), &src, &roots.documents.clone().unwrap(), OpKind::Move).unwrap_err();
         assert_eq!(error.code, ErrorCode::InUse, "{}", error.message);
         assert!(src.is_file(), "the file stays where it was");
     }

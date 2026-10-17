@@ -260,11 +260,14 @@ fn migrate(conn: &Connection) -> Result<()> {
         log::info!("database: added ops.batch");
     }
     // Since 2026-10-16 a Recycle Bin row records the file's size and the
-    // moment of the delete, so Undo restores that item and no other.
-    for column in ["size", "recycled_at"] {
+    // moment of the delete, so Undo restores that item and no other. Since
+    // 2026-10-17 an undone row records the moment of the Undo and where the
+    // file landed, so the Downloads watcher still knows a put-back file when
+    // the put-back was a copy or landed beside a namesake as "Name (2)".
+    for (column, kind) in [("size", "INTEGER"), ("recycled_at", "INTEGER"), ("undone_at", "INTEGER"), ("undone_to", "TEXT")] {
         let present = conn.prepare("SELECT 1 FROM pragma_table_info('ops') WHERE name = ?1")?.exists([column])?;
         if !present {
-            conn.execute_batch(&format!("ALTER TABLE ops ADD COLUMN {column} INTEGER"))?;
+            conn.execute_batch(&format!("ALTER TABLE ops ADD COLUMN {column} {kind}"))?;
             log::info!("database: added ops.{column}");
         }
     }
@@ -344,6 +347,8 @@ mod tests {
         assert_eq!(batch, None, "old rows keep working");
         let recorded: (Option<i64>, Option<i64>) = conn.query_row("SELECT size, recycled_at FROM ops", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(recorded, (None, None), "the recycle columns are added too");
+        let undone: (Option<i64>, Option<String>) = conn.query_row("SELECT undone_at, undone_to FROM ops", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(undone, (None, None), "and the Undo columns");
     }
 
     #[test]

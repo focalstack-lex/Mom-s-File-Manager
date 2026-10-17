@@ -247,10 +247,19 @@ async fn blocking<T: Send + 'static>(name: &'static str, work: impl FnOnce() -> 
 }
 
 /// Logs a failed command under its name; the commands that stay on the
-/// async runtime (the update check and install) use it directly.
+/// async runtime (the update check and install) use it directly. The Warn
+/// line names the kind of file, never its name, which often carries a
+/// student's; the path is at Debug (audit T-52).
 fn log_failure<T>(name: &str, result: Result<T>) -> Result<T> {
     if let Err(error) = &result {
-        log::warn!("{name}: {} ({:?}){}", error.message, error.code, error.path.as_ref().map(|p| format!(" at {p}")).unwrap_or_default());
+        match &error.path {
+            Some(path) => {
+                let what = if Path::new(path).is_dir() { "a folder" } else { sorter::describe(Path::new(path)) };
+                log::warn!("{name}: {} ({:?}) for {what}", error.message, error.code);
+                log::debug!("{name}: the path is {path}");
+            }
+            None => log::warn!("{name}: {} ({:?})", error.message, error.code),
+        }
     }
     result
 }

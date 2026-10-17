@@ -372,19 +372,24 @@ fn tick(core: &Arc<Core>, app: &AppHandle, pending: &mut HashMap<PathBuf, Pendin
 
 /// A file still busy after a day is dropped from the watch. Only one Tote
 /// would have filed gets a failure row in Activity; an old file she keeps
-/// open in Word, or an empty placeholder whose download never finished, is
-/// not hers to hear about (audit T-07, T-15).
+/// open in Word, an empty placeholder whose download never finished, or a
+/// file an Undo or a Move put in Downloads for her (the guard `sort_one`
+/// applies) is not hers to hear about (audit T-06, T-07, T-15).
 fn give_up(core: &Core, path: &Path, in_progress: bool, run_marker: i64) {
     if in_progress {
         log::info!("giving up on {} in Downloads: still empty or being downloaded after a day", sorter::describe(path));
-    } else if new_download_at(path, run_marker).is_none() {
+    } else if let Some((entry, _)) = new_download_at(path, run_marker) {
+        let Ok(conn) = core.db() else { return };
+        if put_there_for_her(&conn, path, entry.created) {
+            return;
+        }
+        log::info!("giving up on {} in Downloads: still busy after a day", sorter::describe(path));
+        if let Err(error) = ops::note_failure(&conn, path, "The file stayed open in another program for a day, so it was left in Downloads.") {
+            log::warn!("the row for {} left in Downloads was not saved: {}", sorter::describe(path), error.message);
+        }
+    } else {
         log::debug!("gave up waiting on {}, which Tote would not have filed; no row", path.display());
         return;
-    } else {
-        log::info!("giving up on {} in Downloads: still busy after a day", sorter::describe(path));
-        if let Ok(conn) = core.db() {
-            let _ = ops::note_failure(&conn, path, "The file stayed open in another program for a day, so it was left in Downloads.");
-        }
     }
     log::debug!("gave up on {}", path.display());
 }
@@ -488,7 +493,8 @@ fn refresh_unlocked(core: &Arc<Core>, path: &Path) -> crate::error::Result<()> {
     if path.is_dir() {
         let conn = core.db()?;
         return index::refresh_path(&conn, path).or_else(|e| {
-            log::warn!("refresh folder {}: {e}", path.display());
+            log::warn!("index refresh of a folder: {e}");
+            log::debug!("index refresh failed for the folder {}", path.display());
             Ok(())
         });
     }
@@ -705,18 +711,24 @@ mod tests {
             row
         };
         assert!(src.is_file(), "Undo put it back");
+        // What sort_one reads after the put-back: on the same drive the move kept the created time.
+        let back = index::entry_for(&src).unwrap().created;
+        assert_eq!(back, created, "a same-drive move keeps the created time");
         let now = Instant::now();
         assert!(core.placed.covers(&src, now), "the registry covers it at first");
         assert!(!core.placed.covers(&src, now + PLACED_FOR), "and forgets it after its time: the registry alone is not the guard");
         let conn = core.db().unwrap();
-        assert!(put_there_for_her(&conn, &src, created), "the Activity row still says she put it back");
-        assert!(!put_there_for_her(&conn, &src, row.created_at + 1), "a download that lands at the same path later is newer than the row and is filed");
-        assert!(!put_there_for_her(&conn, &core.roots.downloads.clone().unwrap().join("Quiz B.docx"), created), "another path is not covered");
+        let undone_at: i64 = conn.query_row("SELECT undone_at FROM ops WHERE id = ?1", [row.id], |r| r.get(0)).unwrap();
+        assert!(undone_at >= row.created_at, "the row recorded the moment of the Undo");
+        assert!(put_there_for_her(&conn, &src, back), "the Activity row still says she put it back");
+        assert!(!put_there_for_her(&conn, &src, undone_at + 1), "a download that lands at the same path after the Undo is newer than it and is filed");
+        assert!(!put_there_for_her(&conn, &core.roots.downloads.clone().unwrap().join("Quiz B.docx"), back), "another path is not covered");
     }
 
     /// Giving up on a busy file writes a failure row only when Tote would
     /// have filed it: an old file she keeps open all day gets no row, and
-    /// neither does an empty placeholder (audit T-07, T-15).
+    /// neither does an empty placeholder or a file an Undo put back for her
+    /// (audit T-06, T-07, T-15).
     #[test]
     fn giving_up_writes_a_failure_row_only_for_a_new_download() {
         let (_dir, core) = core_with_downloads();
@@ -738,5 +750,23 @@ mod tests {
         assert_eq!(rows.len(), 1, "a new download still busy after a day is reported");
         assert_eq!((rows[0].kind.as_str(), rows[0].status.as_str()), ("autoSort", "failed"));
         assert_eq!(rows[0].message.as_deref(), Some("The file stayed open in another program for a day, so it was left in Downloads."));
+        // A file Undo put back in Downloads, created in this run, that she then keeps open all day:
+        // Tote was never going to file it, so the undone filing stays the only row about it (audit T-06).
+        let put_back = downloads.join("Quiz A.docx");
+        std::fs::write(&put_back, b"quiz").unwrap();
+        let created = index::entry_for(&put_back).unwrap().created;
+        {
+            let conn = core.db().unwrap();
+            let dest = core.roots.documents.clone().unwrap().join("School Files").join("Word");
+            ops::move_file(&conn, &core.roots, &core.placed, &put_back, &dest, ops::OpKind::AutoSort).unwrap();
+            let row = ops::list(&conn, 1).unwrap().remove(0);
+            ops::undo(&conn, &core.roots, &core.placed, row.id).unwrap();
+        }
+        give_up(&core, &put_back, false, created - 1);
+        let wanted = put_back.to_string_lossy().into_owned();
+        let rows = ops::list(&core.db().unwrap(), 10).unwrap();
+        let about_it: Vec<&ops::OpRow> = rows.iter().filter(|r| r.src == wanted).collect();
+        assert_eq!(about_it.len(), 1, "only the undone filing names it: no failure row");
+        assert_eq!(about_it[0].status, "undone");
     }
 }

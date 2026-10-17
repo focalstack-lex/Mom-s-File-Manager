@@ -398,20 +398,32 @@ fn note_placed(roots: &Roots, placed: &Placed, path: &Path) {
     }
 }
 
+/// How long a Move to Downloads may take before the file lands: the row is
+/// written before the transfer, and a copy from another drive gives the
+/// copy a fresh created time, so the row may be a little older than the
+/// file it put there.
+const MOVE_COPY_SLACK_SECS: i64 = 60;
+
 /// True when Tote put a file at `path` for her after that file was created:
 /// an Undo, restore or Undo all (an undone filing, move or Recycle Bin row
-/// naming the path) or a Move to Downloads she asked for (a done move
-/// landing there), recorded after the file's created time. A move on the
-/// same drive keeps the created time, so the file that is back is older
-/// than its row, while a later download at the same path is newer than
-/// every row and is filed. The watcher asks here in its start-up sweep and
-/// again before every filing, because the in-memory registry forgets a path
-/// after ten minutes and does not survive a restart (audit T-06).
+/// whose landing, `undone_to`, is the path; the recorded `src` for rows
+/// from before the column) or a Move to Downloads she asked for (a done
+/// move landing there). The undone row's moment is the Undo itself
+/// (`undone_at`, the row's own time for older rows), taken after the file
+/// landed, so it is later than the created time a copy from another drive
+/// gave the file as much as the one a same-drive move kept; the done row
+/// is given `MOVE_COPY_SLACK_SECS` for the same reason. A later download
+/// at the same path is newer than every row and is filed; a download that
+/// took the name before an Undo landed beside it as "Name (2)" is not the
+/// undone row's landing and is filed too. The watcher asks here in its
+/// start-up sweep and again before every filing, because the in-memory
+/// registry forgets a path after ten minutes and does not survive a
+/// restart (audit T-06).
 pub fn was_put_back(conn: &Connection, path: &Path, created: i64) -> Result<bool> {
     let found: Option<i64> = conn
         .query_row(
-            "SELECT id FROM ops WHERE created_at >= ?2 AND ((status = 'undone' AND kind IN ('autoSort', 'move', 'recycle') AND src = ?1) OR (status = 'done' AND kind = 'move' AND automatic = 0 AND dst = ?1)) LIMIT 1",
-            params![path.to_string_lossy().into_owned(), created],
+            "SELECT id FROM ops WHERE (status = 'undone' AND kind IN ('autoSort', 'move', 'recycle') AND COALESCE(undone_to, src) = ?1 AND COALESCE(undone_at, created_at) >= ?2) OR (status = 'done' AND kind = 'move' AND automatic = 0 AND dst = ?1 AND created_at >= ?3) LIMIT 1",
+            params![path.to_string_lossy().into_owned(), created, created - MOVE_COPY_SLACK_SECS],
             |r| r.get(0),
         )
         .optional()?;
@@ -420,14 +432,17 @@ pub fn was_put_back(conn: &Connection, path: &Path, created: i64) -> Result<bool
 
 /// Reverses a completed operation. Moves and renames go back to their original
 /// path (clash rule applied); a recycled file is restored from the Recycle Bin.
-/// A file that comes back into Downloads is noted in `placed` first.
+/// A file that comes back into Downloads is noted in `placed` first. The row
+/// then records the moment and where the file landed (`undone_at`,
+/// `undone_to`), which `was_put_back` reads; Undo all and a restore come
+/// through here, so they record it too.
 pub fn undo(conn: &Connection, roots: &Roots, placed: &Placed, id: i64) -> Result<()> {
     let row = get(conn, id)?.ok_or_else(|| ToteError::new(ErrorCode::NotFound, "That change is no longer in the list. Open Activity to see what is there."))?;
     if row.status != "done" {
         return Err(ToteError::validation("Only completed changes can be undone. Open Activity to check it."));
     }
     let src = PathBuf::from(&row.src);
-    match row.kind.as_str() {
+    let landing = match row.kind.as_str() {
         "autoSort" | "move" | "rename" | "copy" => {
             let current = PathBuf::from(row.dst.as_deref().unwrap_or_default());
             let current = roots.confine(&current)?;
@@ -438,11 +453,13 @@ pub fn undo(conn: &Connection, roots: &Roots, placed: &Placed, id: i64) -> Resul
                 }
                 trash::delete(&current).map_err(|e| recycle_failed(&current, e))?;
                 index::remove(conn, &current)?;
+                None
             } else {
                 let back = sorter::unique_path(&roots.confine(&src)?);
                 note_placed(roots, placed, &back);
                 transfer(&current, &back)?;
                 index::relocate(conn, &current, &back)?;
+                Some(back)
             }
         }
         "newFolder" => {
@@ -451,17 +468,23 @@ pub fn undo(conn: &Connection, roots: &Roots, placed: &Placed, id: i64) -> Resul
                 return Err(ToteError::validation("That folder has files in it now, so it stays. Empty it in File Explorer first if you want it gone."));
             }
             std::fs::remove_dir(&folder)?;
+            None
         }
         "recycle" => {
             let back = restore_from_recycle_bin(&src, recorded_recycle(conn, id)?, roots, placed)?;
             index::refresh_path(conn, &back)?;
+            Some(back)
         }
         other => {
             log::warn!("undo: change {id} is a {other}, which cannot be undone");
             return Err(ToteError::new(ErrorCode::Unsupported, "That kind of change cannot be undone. Move the file back by hand in File Explorer."));
         }
-    }
-    write(conn, "UPDATE ops SET status = 'undone' WHERE id = ?1", [id])?;
+    };
+    write(
+        conn,
+        "UPDATE ops SET status = 'undone', undone_at = ?2, undone_to = ?3 WHERE id = ?1",
+        params![id, crate::db::now(), landing.map(|back| back.to_string_lossy().into_owned())],
+    )?;
     Ok(())
 }
 
@@ -680,14 +703,78 @@ mod tests {
         let ops = list(&conn, 10).unwrap();
         assert_eq!(ops[0].status, "done");
         assert!(!was_put_back(&conn, &src, created).unwrap(), "a done move away from Downloads is not a put-back");
+        let before_undo = db::now();
         undo(&conn, &roots, &placed, ops[0].id).unwrap();
         assert!(src.is_file());
         assert_eq!(get(&conn, ops[0].id).unwrap().unwrap().status, "undone");
+        let (undone_at, undone_to) = undone(&conn, ops[0].id);
+        let undone_at = undone_at.expect("the moment of the Undo is recorded");
+        assert!(undone_at >= before_undo && undone_at <= db::now());
+        assert_eq!(undone_to, Some(src.to_string_lossy().into_owned()), "and where the file landed");
+        // What the watcher reads after the put-back: on the same drive the move kept the created time.
+        let back = index::entry_for(&src).unwrap().created;
+        assert_eq!(back, created, "a same-drive move keeps the created time");
         // The watcher is told before the file moves back, so it is not filed again (audit T-06).
         assert!(placed.covers(&src, std::time::Instant::now()), "the path Undo put back in Downloads is noted");
-        assert!(was_put_back(&conn, &src, created).unwrap(), "and the Activity row says it was put back, for the sweep and for every later filing");
-        assert!(!was_put_back(&conn, &src, ops[0].created_at + 1).unwrap(), "a later download at the same path is newer than the row and is still filed");
-        assert!(!was_put_back(&conn, &roots.downloads.clone().unwrap().join("Other.docx"), created).unwrap());
+        assert!(was_put_back(&conn, &src, back).unwrap(), "and the Activity row says it was put back, for the sweep and for every later filing");
+        assert!(!was_put_back(&conn, &src, undone_at + 1).unwrap(), "a later download at the same path is newer than the Undo and is still filed");
+        assert!(!was_put_back(&conn, &roots.downloads.clone().unwrap().join("Other.docx"), back).unwrap());
+    }
+
+    /// The moment and the landing an undone row recorded.
+    fn undone(conn: &Connection, id: i64) -> (Option<i64>, Option<String>) {
+        conn.query_row("SELECT undone_at, undone_to FROM ops WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+    }
+
+    /// The put-back guard where a same-drive rename is not what happened
+    /// (audit T-06): a put-back from another drive is a copy with a fresh
+    /// created time, so the file is measured against the moment of the Undo
+    /// (or, for a Move to Downloads, the row's time plus the copy's slack);
+    /// a row from before the column falls back to its own time; and an Undo
+    /// beside a file that took the name lands at "Name (2)", which is the
+    /// path the row then covers, while the namesake is filed as the download
+    /// it is.
+    #[test]
+    fn a_put_back_by_copy_or_beside_a_namesake_is_still_known() {
+        let (_dir, roots, conn) = fixture();
+        let downloads = roots.downloads.clone().unwrap();
+        let school = roots.documents.clone().unwrap().join("School Files");
+        let created = 1_700_000_000;
+        // Undo across drives: the copy in Downloads was created after the filing and just before the Undo finished.
+        let copied = downloads.join("Memo.pdf");
+        conn.execute(
+            "INSERT INTO ops(kind, src, dst, status, automatic, created_at, undone_at, undone_to) VALUES('autoSort', ?1, ?2, 'undone', 1, ?3, ?4, ?1)",
+            params![copied.to_string_lossy().into_owned(), school.join("PDF").join("Memo.pdf").to_string_lossy().into_owned(), created - 3_600, created + 2],
+        )
+        .unwrap();
+        assert!(was_put_back(&conn, &copied, created).unwrap(), "the Undo finished after the copy was created");
+        assert!(!was_put_back(&conn, &copied, created + 3).unwrap(), "a download after the Undo is newer than it");
+        // A row from before the columns existed: its own time stands in for the Undo.
+        let older = downloads.join("Old Memo.pdf");
+        conn.execute("INSERT INTO ops(kind, src, dst, status, automatic, created_at) VALUES('autoSort', ?1, ?2, 'undone', 1, ?3)", params![older.to_string_lossy().into_owned(), school.join("PDF").join("Old Memo.pdf").to_string_lossy().into_owned(), created + 1]).unwrap();
+        assert!(was_put_back(&conn, &older, created).unwrap(), "an older undone row still counts by its own time");
+        // A Move to Downloads from another drive: the row is written before the copy lands.
+        let moved = downloads.join("Form.pdf");
+        conn.execute("INSERT INTO ops(kind, src, dst, status, automatic, created_at) VALUES('move', 'D:\\Forms\\Form.pdf', ?1, 'done', 0, ?2)", params![moved.to_string_lossy().into_owned(), created - 30]).unwrap();
+        assert!(was_put_back(&conn, &moved, created).unwrap(), "a copy that took half a minute is still the move she asked for");
+        assert!(!was_put_back(&conn, &moved, created + MOVE_COPY_SLACK_SECS + 1).unwrap(), "a download well after the move is not");
+        // Undo beside a namesake: a second download took "Quiz.docx" while the first was filed.
+        let placed = Placed::default();
+        let src = downloads.join("Quiz.docx");
+        std::fs::write(&src, b"first").unwrap();
+        move_file(&conn, &roots, &placed, &src, &school.join("Word"), OpKind::AutoSort).unwrap();
+        std::fs::write(&src, b"second download").unwrap();
+        let namesake = index::entry_for(&src).unwrap().created;
+        let row = list(&conn, 1).unwrap().remove(0);
+        undo(&conn, &roots, &placed, row.id).unwrap();
+        let landing = downloads.join("Quiz (2).docx");
+        assert!(landing.is_file(), "the first file came back beside the namesake");
+        assert_eq!(std::fs::read(&src).unwrap(), b"second download", "which is untouched");
+        let (_, undone_to) = undone(&conn, row.id);
+        assert_eq!(undone_to, Some(landing.to_string_lossy().into_owned()), "the row names the real landing");
+        assert!(placed.covers(&landing, std::time::Instant::now()), "which the registry was told");
+        assert!(was_put_back(&conn, &landing, index::entry_for(&landing).unwrap().created).unwrap(), "the file that came back is known at its landing");
+        assert!(!was_put_back(&conn, &src, namesake).unwrap(), "the download that took the name is still the new download it is");
     }
 
     /// Undo of a move that did not land in Downloads notes nothing: the
@@ -721,7 +808,9 @@ mod tests {
         assert_eq!(landing, downloads.join("Quiz.docx"));
         assert!(placed.covers(&landing, std::time::Instant::now()), "the landing in Downloads is noted before the file moves");
         assert!(was_put_back(&conn, &landing, created).unwrap(), "the done move row says she put it there");
-        assert!(!was_put_back(&conn, &landing, list(&conn, 1).unwrap()[0].created_at + 1).unwrap(), "a later download at that path is still filed");
+        let row_at = list(&conn, 1).unwrap()[0].created_at;
+        assert!(was_put_back(&conn, &landing, row_at + MOVE_COPY_SLACK_SECS).unwrap(), "a copy from another drive that landed within the slack is still her move");
+        assert!(!was_put_back(&conn, &landing, row_at + MOVE_COPY_SLACK_SECS + 1).unwrap(), "a download at that path past the slack is newer than the move and is still filed");
         // The same through a batch of several files.
         let other = roots.desktop.clone().unwrap().join("Form.pdf");
         std::fs::write(&other, b"f").unwrap();

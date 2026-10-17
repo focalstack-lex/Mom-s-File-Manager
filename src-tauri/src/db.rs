@@ -102,6 +102,11 @@ pub fn open(data_dir: &Path) -> Result<Opened> {
             };
             // With no file to set aside nothing was lost.
             let kept = damaged.as_deref().is_none_or(|damaged| salvage(&connection, damaged));
+            // The salvage copies the settings table whole, the marker of a
+            // failed full check with it; this rebuild is the answer to it.
+            if let Err(error) = connection.execute("DELETE FROM settings WHERE key = ?1", [CHECK_FAILED_KEY]) {
+                log::warn!("database rebuild: the failed-check marker could not be cleared ({error}); the next start rebuilds again");
+            }
             Ok(Opened { connection, recovered: true, rebuilt: Some(Rebuilt { kept }) })
         }
     }
@@ -242,12 +247,20 @@ fn open_at(file: &Path) -> Result<Connection> {
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
-    let ok: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    // The quick check reads every page's structure but not each index
+    // against its table, so a 100 MB index no longer holds the window back
+    // by the full check's second (audit T-50). The full check runs after
+    // the first scan (worker::start_scan) and leaves CHECK_FAILED_KEY when
+    // it finds damage; this start answers that marker with a rebuild.
+    let ok: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
     if ok != "ok" {
-        return Err(ToteError::db(format!("integrity check: {ok}")));
+        return Err(ToteError::db(format!("quick check: {ok}")));
     }
     connection.execute_batch(SCHEMA)?;
     migrate(&connection)?;
+    if let Some(at) = get_setting(&connection, CHECK_FAILED_KEY)? {
+        return Err(ToteError::db(format!("the full check found damage (recorded at {at})")));
+    }
     Ok(connection)
 }
 
@@ -320,6 +333,27 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
 
 pub fn now() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+/// The setting the background check leaves when it finds damage, holding
+/// the moment; `open_at` answers it with a rebuild (audit T-50).
+pub const CHECK_FAILED_KEY: &str = "db_check_failed";
+
+/// `PRAGMA integrity_check` over the whole of tote.sqlite on a connection
+/// of its own, so the database lock stays free while it reads the file.
+/// Ok(false) when the check lists damage; Err when it could not run.
+pub fn full_check(data_dir: &Path) -> Result<bool> {
+    let connection = Connection::open(data_dir.join("tote.sqlite"))?;
+    let ok: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    if ok != "ok" {
+        log::warn!("database: integrity check: {ok}");
+    }
+    Ok(ok == "ok")
+}
+
+/// Records that the full check found damage; the next start rebuilds.
+pub fn mark_check_failed(conn: &Connection) -> Result<()> {
+    set_setting(conn, CHECK_FAILED_KEY, &now().to_string()).map_err(ToteError::as_write)
 }
 
 #[cfg(test)]
@@ -549,5 +583,34 @@ mod tests {
         put_back(dir.path(), &dir.path().join("tote.damaged-7.sqlite"), 7);
         assert_eq!(names_in(dir.path()), vec!["tote.sqlite".to_string(), "tote.sqlite-wal".to_string()], "put back leaves the copy out and the damaged file home");
         assert_eq!(std::fs::read(dir.path().join("tote.sqlite")).unwrap(), b"main");
+    }
+
+    /// The start runs only the quick check; the full check runs later on a
+    /// connection of its own and leaves a marker that makes the next start
+    /// rebuild, which the salvaged settings do not bring back (audit T-50).
+    #[test]
+    fn a_failed_full_check_marks_the_next_start_for_a_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let conn = open(dir.path()).unwrap().connection;
+            set_setting(&conn, "settings", "{\"startAtLogin\":false}").unwrap();
+            conn.execute("INSERT INTO pins(path, created_at) VALUES('C:\\a\\Quiz.docx', 1)", []).unwrap();
+            assert!(full_check(dir.path()).unwrap(), "a healthy file passes while the app holds it open");
+            mark_check_failed(&conn).unwrap();
+        }
+        let opened = open(dir.path()).unwrap();
+        assert!(opened.recovered, "the marker alone makes the start rebuild");
+        assert_eq!(opened.rebuilt, Some(Rebuilt { kept: true }));
+        let conn = opened.connection;
+        assert_eq!(get_setting(&conn, "settings").unwrap().as_deref(), Some("{\"startAtLogin\":false}"));
+        assert_eq!(conn.query_row("SELECT count(*) FROM pins", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(get_setting(&conn, CHECK_FAILED_KEY).unwrap(), None, "the marker does not come back with the settings");
+        drop(conn);
+        assert!(!open(dir.path()).unwrap().recovered, "one rebuild answers the marker");
+        // What the full check is for: damage inside an index page.
+        let damaged = tempfile::tempdir().unwrap();
+        seed_then_damage_an_index_page(damaged.path());
+        let found = full_check(damaged.path());
+        assert!(matches!(found, Ok(false)), "the damage is listed: {found:?}");
     }
 }

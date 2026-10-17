@@ -507,8 +507,86 @@ fn refresh_unlocked(core: &Arc<Core>, path: &Path) -> crate::error::Result<()> {
     }
 }
 
-/// Walks every root, newest files first, and fills the index in small
-/// batches so the database lock is never held long.
+/// Files per scan chunk: one lookup under the lock, extraction with no lock
+/// held, one transaction for the writes (audit T-11).
+const SCAN_CHUNK: usize = 25;
+
+/// Indexes one chunk of the scan: a short lock to learn which files
+/// changed, extraction with no lock held, then one lock for the chunk's
+/// transaction and the download check. Returns how many recent downloads
+/// it noticed outside Downloads.
+fn scan_chunk(core: &Arc<Core>, chunk: &[index::Entry], now: i64) -> usize {
+    let changes: Vec<Option<index::Change>> = match core.db() {
+        Ok(conn) => chunk
+            .iter()
+            .map(|entry| match index::change_for(&conn, entry) {
+                Ok(change) => Some(change),
+                Err(error) => {
+                    log::warn!("index of {}: {error}", sorter::describe(&entry.path));
+                    log::debug!("index failed for {}", entry.path.display());
+                    None
+                }
+            })
+            .collect(),
+        Err(error) => {
+            log::warn!("scan: {error}");
+            return 0;
+        }
+    };
+    let prepared: Vec<index::Prepared<'_>> = chunk
+        .iter()
+        .zip(changes)
+        .filter_map(|(entry, change)| match change? {
+            index::Change::Unchanged(_) => None,
+            change => Some(index::Prepared { entry, change, content: index::content_for(entry) }),
+        })
+        .collect();
+    let conn = match core.db() {
+        Ok(conn) => conn,
+        Err(error) => {
+            log::warn!("scan: {error}");
+            return 0;
+        }
+    };
+    if !prepared.is_empty() {
+        if let Err(error) = index::write_batch(&conn, prepared) {
+            log::warn!("index of a chunk of {} files: {error}", chunk.len());
+        }
+    }
+    let mut noticed = 0;
+    for entry in chunk.iter().filter(|entry| now - entry.created <= SCAN_DOWNLOAD_WINDOW_SECS) {
+        match index::note_if_downloaded(&conn, &entry.path, SCAN_DOWNLOAD_WINDOW_SECS) {
+            Ok(true) => noticed += 1,
+            Ok(false) => {}
+            Err(error) => {
+                log::warn!("download check of {}: {error}", sorter::describe(&entry.path));
+                log::debug!("download check failed for {}", entry.path.display());
+            }
+        }
+    }
+    noticed
+}
+
+/// The full integrity check reads the whole file, so it runs here, once the
+/// window is up and the scan is done, on its own connection: the lock stays
+/// free for searches. Damage leaves a marker that makes the next start
+/// rebuild (audit T-50).
+fn full_check(core: &Core) {
+    match crate::db::full_check(&core.data_dir) {
+        Ok(true) => log::debug!("database: the full check passed"),
+        Ok(false) => {
+            log::error!("database: the full check found damage; the next start rebuilds the index");
+            if let Err(error) = core.db().and_then(|conn| crate::db::mark_check_failed(&conn)) {
+                log::warn!("database: the failed check could not be recorded: {error}");
+            }
+        }
+        Err(error) => log::warn!("database: the full check could not run: {error}"),
+    }
+}
+
+/// Walks every root, newest files first, and fills the index chunk by
+/// chunk (`scan_chunk`) so the database lock is never held long, merges
+/// the search index when it is done, then runs the full integrity check.
 pub fn start_scan(core: Arc<Core>, app: AppHandle) {
     let spawned = std::thread::Builder::new().name("tote-scan".into()).spawn(move || {
         core.set_status(|s| {
@@ -526,25 +604,8 @@ pub fn start_scan(core: Arc<Core>, app: AppHandle) {
         let mut scanned = 0;
         let mut noticed = 0;
         let now = crate::db::now();
-        for chunk in entries.chunks(25) {
-            for entry in chunk {
-                if let Err(error) = index_entry(&core, entry) {
-                    log::warn!("index of {}: {error}", sorter::describe(&entry.path));
-                    log::debug!("index failed for {}", entry.path.display());
-                    continue;
-                }
-                if now - entry.created <= SCAN_DOWNLOAD_WINDOW_SECS {
-                    let checked = core.db().and_then(|conn| index::note_if_downloaded(&conn, &entry.path, SCAN_DOWNLOAD_WINDOW_SECS));
-                    match checked {
-                        Ok(true) => noticed += 1,
-                        Ok(false) => {}
-                        Err(error) => {
-                            log::warn!("download check of {}: {error}", sorter::describe(&entry.path));
-                            log::debug!("download check failed for {}", entry.path.display());
-                        }
-                    }
-                }
-            }
+        for chunk in entries.chunks(SCAN_CHUNK) {
+            noticed += scan_chunk(&core, chunk, now);
             scanned += chunk.len();
             // Progress every chunk; the row count and the event every 200 files,
             // so the renderer is not asked to refresh on every batch.
@@ -571,6 +632,13 @@ pub fn start_scan(core: Arc<Core>, app: AppHandle) {
                     Err(error) => log::warn!("prune {}: {error}", root.display()),
                 }
             }
+            // The chunks left the search index in many small segments; one
+            // merge now keeps every later search quick (audit T-11).
+            let started = Instant::now();
+            match index::optimize(&conn) {
+                Ok(()) => log::info!("search index merged in {} ms", started.elapsed().as_millis()),
+                Err(error) => log::warn!("search index merge: {error}"),
+            }
         }
         if noticed > 0 {
             log::info!("first scan found {noticed} recent downloads saved outside Downloads or before Tote ran");
@@ -582,6 +650,7 @@ pub fn start_scan(core: Arc<Core>, app: AppHandle) {
         });
         log::info!("initial scan done: {files} files");
         let _ = app.emit(CHANGED_EVENT, ());
+        full_check(&core);
     });
     if let Err(error) = spawned {
         log::error!("could not start the scan thread: {error}");

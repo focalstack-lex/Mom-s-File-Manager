@@ -420,8 +420,9 @@ pub async fn preview(state: State<'_, AppState>, path: String) -> Result<Preview
         let (kind_text, text) = if kind == sorter::Kind::Images {
             ("image".to_string(), None)
         } else {
-            match extract::extract_text(&confined, &ext, meta.len()) {
-                Some(t) => ("text".to_string(), Some(t.chars().take(4000).collect())),
+            // The first lines with their breaks, not one run of text (audit T-46).
+            match extract::extract_preview(&confined, &ext, meta.len()) {
+                Some(t) => ("text".to_string(), Some(t)),
                 None => ("details".to_string(), None),
             }
         };

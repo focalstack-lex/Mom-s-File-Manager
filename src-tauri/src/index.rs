@@ -241,8 +241,68 @@ fn run(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<us
     conn.execute(sql, params).map_err(ToteError::db_write)
 }
 
-/// Writes a new or changed row and its searchable text. Returns the row id.
+/// Writes a new or changed row and its searchable text, together or not at
+/// all. Returns the row id. A savepoint rather than a transaction, so it
+/// nests inside `write_batch`'s chunk transaction.
 pub fn write(conn: &Connection, entry: &Entry, change: Change, content: Option<String>) -> Result<i64> {
+    if let Change::Unchanged(id) = change {
+        return Ok(id);
+    }
+    run(conn, "SAVEPOINT index_write", [])?;
+    match write_inner(conn, entry, change, content) {
+        Ok(id) => {
+            run(conn, "RELEASE index_write", [])?;
+            Ok(id)
+        }
+        Err(error) => {
+            if let Err(undo) = conn.execute_batch("ROLLBACK TO index_write; RELEASE index_write") {
+                log::warn!("index: a half-written row could not be undone: {undo}");
+            }
+            Err(error)
+        }
+    }
+}
+
+/// One scanned file with what the lookup and the extraction found, ready
+/// for `write_batch`.
+pub struct Prepared<'a> {
+    pub entry: &'a Entry,
+    pub change: Change,
+    pub content: Option<String>,
+}
+
+/// Writes a chunk of scanned files in one transaction, so the scan commits
+/// once per chunk instead of once per file and FTS5 has fewer small
+/// segments to merge (audit T-11). A file whose write fails costs only
+/// itself: it is logged and the rest of the chunk still goes in. Returns
+/// how many files were written.
+pub fn write_batch(conn: &Connection, prepared: Vec<Prepared<'_>>) -> Result<usize> {
+    let tx = conn.unchecked_transaction().map_err(ToteError::db_write)?;
+    let mut written = 0;
+    for file in prepared {
+        if matches!(file.change, Change::Unchanged(_)) {
+            continue;
+        }
+        match write(&tx, file.entry, file.change, file.content) {
+            Ok(_) => written += 1,
+            Err(error) => {
+                log::warn!("index of {}: {error}", sorter::describe(&file.entry.path));
+                log::debug!("index failed for {}", file.entry.path.display());
+            }
+        }
+    }
+    tx.commit().map_err(ToteError::db_write)?;
+    Ok(written)
+}
+
+/// Merges the search index's segments into one, so later searches read as
+/// little as they can; run once when the scan ends (audit T-11).
+pub fn optimize(conn: &Connection) -> Result<()> {
+    run(conn, "INSERT INTO files_fts(files_fts) VALUES('optimize')", [])?;
+    Ok(())
+}
+
+fn write_inner(conn: &Connection, entry: &Entry, change: Change, content: Option<String>) -> Result<i64> {
     let path_text = entry.path.to_string_lossy().into_owned();
     let name = entry.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let stem = entry.path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -406,7 +466,9 @@ pub fn note_if_downloaded(conn: &Connection, path: &Path, max_age_secs: i64) -> 
     Ok(true)
 }
 
-const SELECT: &str = "SELECT f.id, f.path, f.parent, f.name, f.ext, f.kind, f.size, f.modified, f.origin_label, f.downloaded_at, f.group_key, (p.path IS NOT NULL) FROM files f LEFT JOIN pins p ON p.path = f.path";
+/// The columns every `FileRow` reads, in `row_from` order, and where they come from.
+const COLUMNS: &str = "f.id, f.path, f.parent, f.name, f.ext, f.kind, f.size, f.modified, f.origin_label, f.downloaded_at, f.group_key, (p.path IS NOT NULL)";
+const FROM: &str = "FROM files f LEFT JOIN pins p ON p.path = f.path";
 
 fn row_from(row: &rusqlite::Row<'_>, snippet: Option<String>) -> rusqlite::Result<FileRow> {
     Ok(FileRow {
@@ -533,24 +595,35 @@ pub fn search(conn: &Connection, input: &str, filters: &Filters, limit: usize) -
             args.push(Box::new(query));
             let extra = filter_sql(filters, &mut args);
             args.push(Box::new(limit as i64));
+            // One query: the ranked ids first, then the rows and their
+            // snippets for those ids only. snippet() in a plain select list
+            // would run for every match before the limit cut them, reading
+            // a whole document each time (audit T-11).
             let sql = format!(
-                "{SELECT} JOIN files_fts t ON t.rowid = f.id WHERE files_fts MATCH ?2{extra} ORDER BY (f.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?1)) DESC, bm25(files_fts, 20.0, 1.0), f.modified DESC LIMIT ?{}",
+                "WITH hits AS (SELECT f.id AS id, (f.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?1)) AS named, bm25(files_fts, 20.0, 1.0) AS score, f.modified AS modified \
+                 FROM files f JOIN files_fts ON files_fts.rowid = f.id WHERE files_fts MATCH ?2{extra} ORDER BY named DESC, score, modified DESC LIMIT ?{}) \
+                 SELECT {COLUMNS}, snippet(files_fts, 1, '{MARK_START}', '{MARK_END}', ' ... ', 12) {FROM} \
+                 JOIN hits ON hits.id = f.id JOIN files_fts ON files_fts.rowid = f.id AND files_fts MATCH ?2 ORDER BY hits.named DESC, hits.score, hits.modified DESC",
                 args.len()
             );
             let mut stmt = conn.prepare(&sql)?;
             let params = rusqlite::params_from_iter(args.iter().map(|a| a.as_ref()));
             let mapped = stmt.query_map(params, |r| {
-                // snippet() needs the fts table in scope; computed in a second query only for content hits.
-                row_from(r, None)
+                let snippet: Option<String> = r.get(12)?;
+                row_from(r, snippet)
             })?;
             let mut out = mapped.collect::<std::result::Result<Vec<FileRow>, _>>()?;
-            attach_snippets(conn, input, &mut out)?;
+            // A name that explains the hit needs no snippet.
+            let query_words = words(input);
+            for row in &mut out {
+                row.snippet = row.snippet.take().filter(|s| !s.trim().is_empty() && !name_matches(&row.name, &query_words));
+            }
             out
         }
         None => {
             let extra = filter_sql(filters, &mut args);
             args.push(Box::new(limit as i64));
-            let sql = format!("{SELECT} WHERE 1 = 1{extra} ORDER BY COALESCE(f.downloaded_at, f.modified) DESC LIMIT ?{}", args.len());
+            let sql = format!("SELECT {COLUMNS} {FROM} WHERE 1 = 1{extra} ORDER BY COALESCE(f.downloaded_at, f.modified) DESC LIMIT ?{}", args.len());
             let mut stmt = conn.prepare(&sql)?;
             let params = rusqlite::params_from_iter(args.iter().map(|a| a.as_ref()));
             let mapped = stmt.query_map(params, |r| row_from(r, None))?;
@@ -560,33 +633,17 @@ pub fn search(conn: &Connection, input: &str, filters: &Filters, limit: usize) -
     Ok(rows)
 }
 
-/// Adds a content snippet to rows whose name does not already explain the hit.
-fn attach_snippets(conn: &Connection, input: &str, rows: &mut [FileRow]) -> Result<()> {
-    let Some(query) = fts_query(input) else { return Ok(()) };
-    let query_words = words(input);
-    let sql = format!("SELECT snippet(files_fts, 1, '{MARK_START}', '{MARK_END}', ' ... ', 12) FROM files_fts WHERE rowid = ?1 AND files_fts MATCH ?2");
-    let mut stmt = conn.prepare(&sql)?;
-    for row in rows.iter_mut() {
-        if name_matches(&row.name, &query_words) {
-            continue;
-        }
-        let snippet: Option<String> = stmt.query_row(params![row.id, query], |r| r.get(0)).optional()?;
-        row.snippet = snippet.filter(|s| !s.trim().is_empty());
-    }
-    Ok(())
-}
-
 /// Files that arrived through the sorter, newest first, within `days`.
 pub fn recent_downloads(conn: &Connection, days: i64, limit: usize) -> Result<Vec<FileRow>> {
     let since = db::now() - days * 86_400;
-    let sql = format!("{SELECT} WHERE f.downloaded_at IS NOT NULL AND f.downloaded_at >= ?1 ORDER BY f.downloaded_at DESC LIMIT ?2");
+    let sql = format!("SELECT {COLUMNS} {FROM} WHERE f.downloaded_at IS NOT NULL AND f.downloaded_at >= ?1 ORDER BY f.downloaded_at DESC LIMIT ?2");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![since, limit as i64], |r| row_from(r, None))?;
     Ok(rows.collect::<std::result::Result<Vec<FileRow>, _>>()?)
 }
 
 pub fn pinned(conn: &Connection) -> Result<Vec<FileRow>> {
-    let sql = format!("{SELECT} WHERE p.path IS NOT NULL ORDER BY p.created_at DESC");
+    let sql = format!("SELECT {COLUMNS} {FROM} WHERE p.path IS NOT NULL ORDER BY p.created_at DESC");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], |r| row_from(r, None))?;
     Ok(rows.collect::<std::result::Result<Vec<FileRow>, _>>()?)
@@ -609,14 +666,14 @@ pub fn set_pinned(conn: &Connection, path: &str, pinned: bool) -> Result<()> {
 }
 
 pub fn by_path(conn: &Connection, path: &str) -> Result<Option<FileRow>> {
-    let sql = format!("{SELECT} WHERE f.path = ?1");
+    let sql = format!("SELECT {COLUMNS} {FROM} WHERE f.path = ?1");
     let mut stmt = conn.prepare(&sql)?;
     Ok(stmt.query_row([path], |r| row_from(r, None)).optional()?)
 }
 
 /// Every file with the same group key, for the "other copies" list.
 pub fn group_members(conn: &Connection, group_key: &str) -> Result<Vec<FileRow>> {
-    let sql = format!("{SELECT} WHERE f.group_key = ?1 ORDER BY f.modified DESC");
+    let sql = format!("SELECT {COLUMNS} {FROM} WHERE f.group_key = ?1 ORDER BY f.modified DESC");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([group_key], |r| row_from(r, None))?;
     Ok(rows.collect::<std::result::Result<Vec<FileRow>, _>>()?)
@@ -910,5 +967,60 @@ mod tests {
         assert_eq!(names, vec!["Santos Attendance Record Grade 7 Mabini First Quarter 2026.xlsx", "notes.txt"]);
         assert!(hits[0].snippet.is_none(), "the name explains the hit");
         assert!(hits[1].snippet.is_some(), "the content hit shows where the word is");
+    }
+
+    /// The scan writes a chunk in one transaction; its rows and search
+    /// answers match the one-step path, for new files and changed ones,
+    /// and a chunk that cannot be written leaves the index as it was
+    /// (audit T-11).
+    #[test]
+    fn the_chunked_write_matches_the_one_step_path() {
+        type Row = (String, String, i64, i64, i64, String, String);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("Grade 7 Quiz.docx"), b"x").unwrap();
+        std::fs::write(dir.path().join("sub").join("notes.txt"), "Santos Reyes attendance").unwrap();
+        std::fs::write(dir.path().join("list.csv"), "Dela Cruz, Juan").unwrap();
+        let one_step = db::open_memory().unwrap();
+        let chunked = db::open_memory().unwrap();
+        let both = |entries: &[Entry]| {
+            for e in entries {
+                upsert(&one_step, e).unwrap();
+            }
+            let prepared = entries.iter().map(|e| Prepared { entry: e, change: change_for(&chunked, e).unwrap(), content: content_for(e) }).collect();
+            write_batch(&chunked, prepared).unwrap()
+        };
+        let rows = |conn: &Connection| -> Vec<Row> {
+            let mut stmt = conn
+                .prepare("SELECT f.path, f.name, f.size, f.modified, f.content_indexed, t.name, t.content FROM files f JOIN files_fts t ON t.rowid = f.id ORDER BY f.path")
+                .unwrap();
+            let found = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))).unwrap();
+            found.collect::<std::result::Result<Vec<Row>, _>>().unwrap()
+        };
+        let mut entries = Vec::new();
+        walk(dir.path(), &mut entries);
+        assert_eq!(both(&entries), 3, "every file of a new chunk is written");
+        assert_eq!(rows(&one_step), rows(&chunked));
+        assert_eq!(rows(&chunked).len(), 3);
+        std::fs::write(dir.path().join("sub").join("notes.txt"), "Reyes attendance, longer now").unwrap();
+        let mut entries = Vec::new();
+        walk(dir.path(), &mut entries);
+        assert_eq!(both(&entries), 1, "only the changed file is written again");
+        assert_eq!(rows(&one_step), rows(&chunked));
+        for typed in ["reyes", "santos", "quiz", "juan"] {
+            let names = |conn: &Connection| -> Vec<String> { search(conn, typed, &Filters::default(), 10).unwrap().into_iter().map(|h| h.name).collect() };
+            assert_eq!(names(&one_step), names(&chunked), "typed {typed:?}");
+        }
+        // A chunk the database refuses (here read-only) is logged, not
+        // half-written: the rows are as they were.
+        let before = rows(&chunked);
+        chunked.pragma_update(None, "query_only", "ON").unwrap();
+        std::fs::write(dir.path().join("list.csv"), "Dela Cruz, Juan, Mabini").unwrap();
+        let mut entries = Vec::new();
+        walk(dir.path(), &mut entries);
+        let prepared = entries.iter().map(|e| Prepared { entry: e, change: change_for(&chunked, e).unwrap(), content: content_for(e) }).collect();
+        assert_eq!(write_batch(&chunked, prepared).unwrap(), 0);
+        chunked.pragma_update(None, "query_only", "OFF").unwrap();
+        assert_eq!(rows(&chunked), before);
     }
 }

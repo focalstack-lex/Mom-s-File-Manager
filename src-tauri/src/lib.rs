@@ -154,6 +154,7 @@ pub fn run() {
                 data_dir: data_dir.clone(),
                 tasks_restored,
                 tasks_unavailable,
+                placed: state::Placed::default(),
             });
             app.manage(state::AppState(core.clone()));
 
@@ -264,8 +265,21 @@ pub fn run() {
             commands::detach_file,
         ]);
 
-    if let Err(error) = builder.run(tauri::generate_context!()) {
-        log::error!("Tote could not start: {error}");
-        std::process::exit(1);
-    }
+    let app = match builder.build(tauri::generate_context!()) {
+        Ok(app) => app,
+        Err(error) => {
+            log::error!("Tote could not start: {error}");
+            std::process::exit(1);
+        }
+    };
+    app.run(|handle, event| {
+        // The run marker says when Tote was last awake, so the next start
+        // knows which files in Downloads arrived while it was closed; the
+        // worker refreshes it every 15 minutes and Quit writes it last.
+        if let tauri::RunEvent::Exit = event {
+            if let Some(state) = handle.try_state::<state::AppState>() {
+                worker::mark_run(&state.0);
+            }
+        }
+    });
 }

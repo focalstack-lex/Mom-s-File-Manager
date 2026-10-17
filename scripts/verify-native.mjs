@@ -13,7 +13,7 @@
  * Usage: node scripts/verify-native.mjs   (needs src-tauri/target/release/tote.exe)
  */
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -71,14 +71,22 @@ function seedLab() {
   writeFileSync(old, "old");
   const past = new Date(Date.now() - 90 * 86_400_000);
   utimesSync(old, past, past);
+  // Files she keeps in Downloads on purpose, there before Tote starts (audit T-07).
+  writeFileSync(join(LAB, "Downloads", "Old Lesson.docx"), "a lesson she keeps in Downloads");
+  writeFileSync(join(LAB, "Downloads", "Existing Form.pdf"), "%PDF-1.4 a form she keeps in Downloads");
+}
+
+/** Writes the Zone.Identifier stream a browser leaves on a finished download. */
+function stampDownload(path, hostUrl, referrer) {
+  const zone = `[ZoneTransfer]\r\nZoneId=3\r\n${referrer ? `ReferrerUrl=${referrer}\r\n` : ""}HostUrl=${hostUrl}\r\n`;
+  execFileSync("powershell", ["-NoProfile", "-Command", `Set-Content -LiteralPath '${path.replace(/'/g, "''")}' -Stream Zone.Identifier -Value '${zone.replace(/'/g, "''")}'`]);
 }
 
 /** Writes a file plus the Zone.Identifier stream a browser would leave. */
 function fakeDownload(name, body, hostUrl, referrer, folder = join(LAB, "Downloads")) {
   const path = join(folder, name);
   writeFileSync(path, body);
-  const zone = `[ZoneTransfer]\r\nZoneId=3\r\n${referrer ? `ReferrerUrl=${referrer}\r\n` : ""}HostUrl=${hostUrl}\r\n`;
-  execFileSync("powershell", ["-NoProfile", "-Command", `Set-Content -LiteralPath '${path.replace(/'/g, "''")}' -Stream Zone.Identifier -Value '${zone.replace(/'/g, "''")}'`]);
+  stampDownload(path, hostUrl, referrer);
   return path;
 }
 
@@ -190,6 +198,51 @@ async function main() {
     }, 20_000);
     await capture("03-filed");
     record("Two downloads are filed by type and month with Messenger and DepEd sources and the rows show their new place; the installer stays in Downloads", quizFiled && orderFiled && exeStayed && recentOk, JSON.stringify({ quizFiled, orderFiled, exeStayed, recentOk }));
+
+    // 3b. The Downloads promise (audit T-06, T-07, T-15), three scenarios side
+    // by side: Undo of a filing leaves the file in Downloads with no second
+    // Filed row; an old file that is edited and another that is renamed stay;
+    // an empty Firefox placeholder beside its .part file waits, and is filed
+    // once when the real download takes its name.
+    const dataDir = join(LAB, "data");
+    const sql = (statement) => execFileSync("python", ["-I", "-c", "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);r=c.execute(sys.argv[2]).fetchall();c.commit();print(r)", join(dataDir, "tote.sqlite"), statement], { encoding: "utf8" }).trim();
+    const reading = fakeDownload("Reading List.docx", "reading list", "https://drive.google.com/file/d/abc/view");
+    const readingFiled = await until(() => filed("Word", "Reading List.docx"), 40_000);
+    const memo = join(LAB, "Downloads", "DepEd Memo 123.pdf");
+    const memoPart = `${memo}.part`;
+    writeFileSync(memo, "");
+    writeFileSync(memoPart, "%PDF-1.4 half");
+    const memoStarted = Date.now();
+    const oldLesson = join(LAB, "Downloads", "Old Lesson.docx");
+    const signedForm = join(LAB, "Downloads", "Existing Form signed.pdf");
+    appendFileSync(oldLesson, " plus an edit saved from Word");
+    renameSync(join(LAB, "Downloads", "Existing Form.pdf"), signedForm);
+    const oldChanged = Date.now();
+    await page.locator('[data-testid="nav-activity"]').click();
+    await page.waitForSelector('[data-testid="activity-row"]', { timeout: STEP_TIMEOUT_MS });
+    await page.locator('[data-testid="activity-row"]', { hasText: "Reading List.docx" }).first().locator('[data-testid="undo"]').click();
+    const readingBack = await until(() => existsSync(reading), 15_000);
+    const undoneAt = Date.now();
+    await page.locator('[data-testid="nav-find"]').click();
+    // 15 s after the placeholder appeared it is still empty, beside its part file, and not filed.
+    await sleep(Math.max(0, memoStarted + 15_000 - Date.now()));
+    const memoWaited = existsSync(memo) && existsSync(memoPart) && !filed("PDF", "DepEd Memo 123.pdf");
+    // Firefox finishes: the part file gets the rest, takes the real name, then the stamp.
+    writeFileSync(memoPart, "%PDF-1.4 the whole memo");
+    renameSync(memoPart, memo);
+    stampDownload(memo, "https://www.deped.gov.ph/wp-content/uploads/memo-123.pdf");
+    // 25 s after the edit and the rename, and 15 s after the Undo, everything that is hers is still in Downloads.
+    await sleep(Math.max(0, oldChanged + 25_000 - Date.now(), undoneAt + 15_000 - Date.now()));
+    const readingStayed = existsSync(reading) && !filed("Word", "Reading List.docx");
+    const readingRows = sql("SELECT status FROM ops WHERE kind = 'autoSort' AND src LIKE '%Reading List.docx' ORDER BY id");
+    const oldStayed = existsSync(oldLesson) && existsSync(signedForm) && !filed("Word", "Old Lesson.docx") && !filed("PDF", "Existing Form signed.pdf");
+    const memoFiled = await until(() => filed("PDF", "DepEd Memo 123.pdf"), 40_000);
+    const memoOnce = memoFiled && !existsSync(memo) && !existsSync(memoPart) && !filed("PDF", "DepEd Memo 123 (2).pdf");
+    const memoRows = sql("SELECT status FROM ops WHERE kind = 'autoSort' AND src LIKE '%DepEd Memo 123.pdf' ORDER BY id");
+    await capture("03d-downloads-promise");
+    record("Undo of a filing leaves the file in Downloads with no second Filed row; an old file edited and another renamed stay; an empty placeholder beside its .part file waits and is filed once",
+      readingFiled && readingBack && readingStayed && readingRows === "[('undone',)]" && oldStayed && memoWaited && memoOnce && memoRows === "[('done',)]",
+      JSON.stringify({ readingFiled, readingBack, readingStayed, readingRows, oldStayed, memoWaited, memoFiled, memoOnce, memoRows }));
 
     // 4. Move the quiz to Documents > Forms through the real folder picker and command.
     const quizRow = page.locator('[data-testid="recent"] [data-testid="file-row"]', { hasText: "Grade 7 Quiz 2.docx" });
@@ -336,8 +389,6 @@ async function main() {
 
     // 11. A restart keeps the task; the start-up check saves the day's snapshot
     // and, from 07:00, shows the morning reminder and remembers the day.
-    const dataDir = join(LAB, "data");
-    const sql = (statement) => execFileSync("python", ["-I", "-c", "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);r=c.execute(sys.argv[2]).fetchall();c.commit();print(r)", join(dataDir, "tote.sqlite"), statement], { encoding: "utf8" }).trim();
     const testLog = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.tote", "logs", "tote-test.log");
     const logSize = () => (existsSync(testLog) ? readFileSync(testLog, "utf8").length : 0);
     const logSince = (offset) => (existsSync(testLog) ? readFileSync(testLog, "utf8").slice(offset) : "");

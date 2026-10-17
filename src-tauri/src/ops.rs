@@ -6,6 +6,7 @@ use crate::error::{ToteError, ErrorCode, Result, FILE_GONE, IN_USE, NAME_TAKEN};
 use crate::index;
 use crate::paths::{self, Roots};
 use crate::sorter;
+use crate::state::Placed;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -253,7 +254,8 @@ const REMOVED_BY_WINDOWS: &str = "Windows removed it without putting it in the R
 /// aborted operation rather than a sharing violation, so the file is also
 /// tried for exclusive access to word that case as `inUse`.
 fn recycle_failed(path: &Path, error: trash::Error) -> ToteError {
-    log::warn!("recycle: {} could not be sent to the Recycle Bin ({error})", path.display());
+    log::warn!("recycle: {} could not be sent to the Recycle Bin ({error})", sorter::describe(path));
+    log::debug!("recycle: the file was {}", path.display());
     let held_open = matches!(error, trash::Error::Os { code: 32 | 33, .. }) || (path.is_file() && !crate::stability::can_open_exclusively(path));
     let error = if held_open {
         ToteError::new(ErrorCode::InUse, IN_USE)
@@ -302,7 +304,8 @@ pub fn recycle(conn: &Connection, roots: &Roots, targets: &[PathBuf]) -> Result<
         for (id, src, recycled_at) in &taken {
             let listed = items.iter().any(|item| is_same_original(item, src) && (item.time_deleted - *recycled_at).abs() <= RESTORE_TIME_SLACK_SECS);
             if !listed {
-                log::warn!("recycle: Windows removed {} without putting it in the Recycle Bin", src.display());
+                log::warn!("recycle: Windows removed {} without putting it in the Recycle Bin", sorter::describe(src));
+                log::debug!("recycle: the file was {}", src.display());
                 write(conn, "UPDATE ops SET status = 'failed', message = ?2, size = NULL, recycled_at = NULL WHERE id = ?1", params![id, REMOVED_BY_WINDOWS])?;
             }
         }
@@ -383,9 +386,29 @@ fn recorded_recycle(conn: &Connection, id: i64) -> Result<Option<(i64, u64)>> {
     Ok(row.and_then(|(at, size)| Some((at?, u64::try_from(size?).ok()?))))
 }
 
+/// Tells the Downloads watcher that Tote is about to put a file at `path`
+/// when that is in Downloads, so it is not filed again (audit T-06). Done
+/// before the file moves, so the event cannot arrive first.
+fn note_placed(roots: &Roots, placed: &Placed, path: &Path) {
+    if roots.downloads.as_ref().is_some_and(|downloads| path.starts_with(downloads) || paths::resolve(downloads).is_ok_and(|d| path.starts_with(d))) {
+        placed.note(path);
+    }
+}
+
+/// True when an Undo once put a file back at `path`: the watcher's start-up
+/// sweep leaves such a file alone, since the in-memory registry does not
+/// survive a restart and a Windows shutdown skips the exit mark.
+pub fn was_put_back(conn: &Connection, path: &Path) -> Result<bool> {
+    let found: Option<i64> = conn
+        .query_row("SELECT id FROM ops WHERE src = ?1 AND status = 'undone' LIMIT 1", [path.to_string_lossy().into_owned()], |r| r.get(0))
+        .optional()?;
+    Ok(found.is_some())
+}
+
 /// Reverses a completed operation. Moves and renames go back to their original
 /// path (clash rule applied); a recycled file is restored from the Recycle Bin.
-pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
+/// A file that comes back into Downloads is noted in `placed` first.
+pub fn undo(conn: &Connection, roots: &Roots, placed: &Placed, id: i64) -> Result<()> {
     let row = get(conn, id)?.ok_or_else(|| ToteError::new(ErrorCode::NotFound, "That change is no longer in the list. Open Activity to see what is there."))?;
     if row.status != "done" {
         return Err(ToteError::validation("Only completed changes can be undone. Open Activity to check it."));
@@ -404,6 +427,7 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
                 index::remove(conn, &current)?;
             } else {
                 let back = sorter::unique_path(&roots.confine(&src)?);
+                note_placed(roots, placed, &back);
                 transfer(&current, &back)?;
                 index::relocate(conn, &current, &back)?;
             }
@@ -416,7 +440,7 @@ pub fn undo(conn: &Connection, roots: &Roots, id: i64) -> Result<()> {
             std::fs::remove_dir(&folder)?;
         }
         "recycle" => {
-            let back = restore_from_recycle_bin(&src, recorded_recycle(conn, id)?)?;
+            let back = restore_from_recycle_bin(&src, recorded_recycle(conn, id)?, roots, placed)?;
             index::refresh_path(conn, &back)?;
         }
         other => {
@@ -445,12 +469,14 @@ fn landing_for(original: &Path) -> PathBuf {
 /// the landing means nothing came back, whatever Windows reported.
 fn check_restored(landing: &Path, recorded: Option<(i64, u64)>, send_back: impl FnOnce(&Path)) -> Result<()> {
     let Ok(back) = std::fs::metadata(landing).map(|m| m.len()) else {
-        log::warn!("restore: Windows reported the restore done but nothing is at {}", landing.display());
+        log::warn!("restore: Windows reported the restore done but nothing came back ({})", sorter::describe(landing));
+        log::debug!("restore: nothing is at {}", landing.display());
         return Err(not_in_recycle_bin());
     };
     if let Some((_, size)) = recorded {
         if back != size {
-            log::warn!("restore: the item brought back to {} has {back} bytes, not the recorded {size}; sending it back", landing.display());
+            log::warn!("restore: the item brought back ({}) has {back} bytes, not the recorded {size}; sending it back", sorter::describe(landing));
+            log::debug!("restore: the item landed at {}", landing.display());
             send_back(landing);
             return Err(not_in_recycle_bin());
         }
@@ -463,9 +489,10 @@ fn check_restored(landing: &Path, recorded: Option<(i64, u64)>, send_back: impl 
 /// an item under the name it is given, and the name it lists is the bare
 /// stem when Explorer hides extensions, so it is given the full name at the
 /// landing path instead; the file that lands there is then checked against
-/// the recorded size. Returns where the file came back.
+/// the recorded size. Returns where the file came back; a landing in
+/// Downloads is noted in `placed` before the shell is asked.
 #[cfg(any(windows, target_os = "linux"))]
-fn restore_from_recycle_bin(original: &Path, recorded: Option<(i64, u64)>) -> Result<PathBuf> {
+fn restore_from_recycle_bin(original: &Path, recorded: Option<(i64, u64)>, roots: &Roots, placed: &Placed) -> Result<PathBuf> {
     use trash::os_limited;
     let items = os_limited::list().map_err(|error| {
         log::warn!("restore: the Recycle Bin could not be listed ({error})");
@@ -482,19 +509,24 @@ fn restore_from_recycle_bin(original: &Path, recorded: Option<(i64, u64)>) -> Re
     }
     let wanted = paths::display(original);
     let Some(chosen) = pick_restore(&bin, original, recorded) else {
-        log::warn!("restore: nothing in the Recycle Bin is the file recycled from {wanted}");
+        log::warn!("restore: nothing in the Recycle Bin is {} she recycled", sorter::describe(original));
+        log::debug!("restore: the file was recycled from {wanted}");
         return Err(not_in_recycle_bin());
     };
     let mut latest = items.into_iter().nth(chosen).ok_or_else(not_in_recycle_bin)?;
     let landing = landing_for(original);
     let name = landing.file_name().ok_or_else(|| ToteError::new(ErrorCode::InvalidPath, "That file has no name Tote can use. Pick another file."))?;
     if landing != original {
-        log::info!("restore: another file is at {wanted} now; the recycled one comes back beside it as {}", landing.display());
+        log::info!("restore: another file has taken the recorded path; the recycled one comes back beside it as (2)");
+        log::debug!("restore: {wanted} is taken; landing at {}", landing.display());
     }
-    log::info!("restoring {} from the Recycle Bin to {}", latest.id.to_string_lossy(), landing.display());
+    log::info!("restoring {} from the Recycle Bin", sorter::describe(&landing));
+    log::debug!("restoring {} from the Recycle Bin to {}", latest.id.to_string_lossy(), landing.display());
     latest.name = name.to_os_string();
+    note_placed(roots, placed, &landing);
     os_limited::restore_all(vec![latest]).map_err(|error| {
-        log::warn!("restore: Windows could not bring back the file recycled from {wanted} ({error})");
+        log::warn!("restore: Windows could not bring back {} she recycled ({error})", sorter::describe(original));
+        log::debug!("restore: the file was recycled from {wanted}");
         ToteError::new(ErrorCode::Io, "Windows could not bring that file back. Open the Recycle Bin to restore it.")
     })?;
     check_restored(&landing, recorded, |path| {
@@ -506,7 +538,7 @@ fn restore_from_recycle_bin(original: &Path, recorded: Option<(i64, u64)>) -> Re
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-fn restore_from_recycle_bin(_original: &Path, _recorded: Option<(i64, u64)>) -> Result<PathBuf> {
+fn restore_from_recycle_bin(_original: &Path, _recorded: Option<(i64, u64)>, _roots: &Roots, _placed: &Placed) -> Result<PathBuf> {
     Err(ToteError::new(ErrorCode::Unsupported, "Restoring from the Recycle Bin is not available here. Open the Recycle Bin to bring the file back."))
 }
 
@@ -522,7 +554,7 @@ pub struct BatchUndo {
 /// empty (never a folder that still holds anything, never School Files
 /// itself). A manual Move of several files never removes a folder: it may
 /// have existed, empty, before she moved anything into it.
-pub fn undo_batch(conn: &Connection, roots: &Roots, batch: &str) -> Result<BatchUndo> {
+pub fn undo_batch(conn: &Connection, roots: &Roots, placed: &Placed, batch: &str) -> Result<BatchUndo> {
     let rows: Vec<OpRow> = {
         let mut stmt = conn.prepare("SELECT id, kind, src, dst, status, message, automatic, created_at, batch FROM ops WHERE batch = ?1 AND status = 'done' ORDER BY id DESC")?;
         let mapped = stmt.query_map([batch], map_op)?;
@@ -532,7 +564,7 @@ pub fn undo_batch(conn: &Connection, roots: &Roots, batch: &str) -> Result<Batch
     let mut failed = Vec::new();
     let mut touched: Vec<PathBuf> = Vec::new();
     for row in rows {
-        match undo(conn, roots, row.id) {
+        match undo(conn, roots, placed, row.id) {
             Ok(()) => {
                 undone += 1;
                 if let Some(parent) = row.dst.as_deref().and_then(|d| Path::new(d).parent()) {
@@ -631,9 +663,30 @@ mod tests {
         assert!(index::by_path(&conn, &moved.to_string_lossy()).unwrap().is_some());
         let ops = list(&conn, 10).unwrap();
         assert_eq!(ops[0].status, "done");
-        undo(&conn, &roots, ops[0].id).unwrap();
+        let placed = Placed::default();
+        assert!(!was_put_back(&conn, &src).unwrap());
+        undo(&conn, &roots, &placed, ops[0].id).unwrap();
         assert!(src.is_file());
         assert_eq!(get(&conn, ops[0].id).unwrap().unwrap().status, "undone");
+        // The watcher is told before the file moves back, so it is not filed again (audit T-06).
+        assert!(placed.covers(&src, std::time::Instant::now()), "the path Undo put back in Downloads is noted");
+        assert!(was_put_back(&conn, &src).unwrap(), "and the start-up sweep will know it was put back");
+        assert!(!was_put_back(&conn, &roots.downloads.clone().unwrap().join("Other.docx")).unwrap());
+    }
+
+    /// Undo of a move that did not land in Downloads notes nothing: the
+    /// registry is only for the Downloads watcher.
+    #[test]
+    fn undo_outside_downloads_notes_nothing() {
+        let (_dir, roots, conn) = fixture();
+        let src = roots.desktop.clone().unwrap().join("Quiz.docx");
+        std::fs::write(&src, b"q").unwrap();
+        let dest = roots.documents.clone().unwrap().join("Forms");
+        move_file(&conn, &roots, &src, &dest, OpKind::Move).unwrap();
+        let placed = Placed::default();
+        undo(&conn, &roots, &placed, list(&conn, 1).unwrap()[0].id).unwrap();
+        assert!(src.is_file());
+        assert!(!placed.covers(&src, std::time::Instant::now()));
     }
 
     #[test]
@@ -659,7 +712,7 @@ mod tests {
         assert!(folder.is_dir());
         assert_eq!(create_folder(&conn, &roots, &dest, "Grade 7").unwrap_err().code, ErrorCode::AlreadyExists);
         let op = list(&conn, 1).unwrap().remove(0);
-        undo(&conn, &roots, op.id).unwrap();
+        undo(&conn, &roots, &Placed::default(), op.id).unwrap();
         assert!(!folder.exists());
     }
 
@@ -680,9 +733,11 @@ mod tests {
         let logged = list(&conn, 10).unwrap();
         assert_eq!(logged.iter().filter(|o| o.batch.as_deref() == Some(batch.as_str())).count(), 2);
 
-        let undone = undo_batch(&conn, &roots, &batch).unwrap();
+        let placed = Placed::default();
+        let undone = undo_batch(&conn, &roots, &placed, &batch).unwrap();
         assert_eq!(undone.undone, 2);
         assert!(a.is_file() && b.is_file());
+        assert!(placed.covers(&a, std::time::Instant::now()) && placed.covers(&b, std::time::Instant::now()), "Undo all notes every file it puts back in Downloads");
         assert!(dest.is_dir(), "a manual batch must never remove the folder it moved into");
     }
 
@@ -794,7 +849,7 @@ mod tests {
         assert_eq!(rows[0].status, "failed");
         assert_eq!(rows[0].message.as_deref(), Some("This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first."));
         assert!(file.is_file(), "a refused file is left where it was");
-        assert_eq!(undo(&conn, &roots, rows[0].id).unwrap_err().code, ErrorCode::Validation, "a refused row has nothing to undo");
+        assert_eq!(undo(&conn, &roots, &Placed::default(), rows[0].id).unwrap_err().code, ErrorCode::Validation, "a refused row has nothing to undo");
     }
 
     /// With extensions hidden the shell lists the item as the bare stem; a
@@ -846,17 +901,20 @@ mod tests {
         assert!((crate::db::now() - at).abs() < 60);
         let recycled = PathBuf::from(&rows[0].src);
         assert!(bin_listing().unwrap().iter().any(|item| is_same_original(item, &recycled)), "the item is in the Recycle Bin");
-        undo(&conn, &roots, rows[0].id).unwrap();
+        let placed = Placed::default();
+        undo(&conn, &roots, &placed, rows[0].id).unwrap();
         assert!(file.is_file(), "Undo brings it back");
         assert_eq!(get(&conn, rows[0].id).unwrap().unwrap().status, "undone");
+        assert!(placed.covers(&file, std::time::Instant::now()), "a restore into Downloads is noted for the watcher");
 
         let rows = recycle(&conn, &roots, std::slice::from_ref(&file)).unwrap();
         assert_eq!(rows[0].status, "done", "{:?}", rows[0].message);
         std::fs::write(&file, b"another file with that name").unwrap();
-        undo(&conn, &roots, rows[0].id).unwrap();
+        undo(&conn, &roots, &placed, rows[0].id).unwrap();
         assert_eq!(std::fs::read(&file).unwrap(), b"another file with that name", "the file that took its place is never touched");
         let beside = roots.downloads.clone().unwrap().join("Tote recycle check (2).txt");
         assert_eq!(std::fs::read(&beside).unwrap(), b"recycle check", "the recycled file comes back beside it with its extension");
+        assert!(placed.covers(&beside, std::time::Instant::now()), "the landing beside the other file is the path noted");
         assert!(index::by_path(&conn, &beside.to_string_lossy()).unwrap().is_some(), "the index knows where it landed");
         assert_eq!(get(&conn, rows[0].id).unwrap().unwrap().status, "undone");
     }
@@ -884,7 +942,7 @@ mod tests {
         assert_eq!(rows.len(), 1, "the first row is finished, not left pending: {rows:?}");
         assert_eq!(rows[0].status, "done");
         assert!(recorded_recycle(&conn, rows[0].id).unwrap().is_some(), "its moment and size are recorded");
-        undo(&conn, &roots, rows[0].id).unwrap();
+        undo(&conn, &roots, &Placed::default(), rows[0].id).unwrap();
         assert!(first.is_file(), "and Undo works on it");
     }
 }

@@ -358,6 +358,7 @@ mod tests {
             data_dir: std::path::PathBuf::new(),
             tasks_restored: None,
             tasks_unavailable: false,
+            placed: Default::default(),
         };
         let rules = default_rules();
         let wanted = vec![desktop.join("Grade 7 Science Quiz.docx").to_string_lossy().into_owned(), desktop.join("notes.txt").to_string_lossy().into_owned()];
@@ -369,7 +370,7 @@ mod tests {
         assert!(school.join("Grade 7").join("Science").join("Grade 7 Science Quiz.docx").is_file());
         assert!(downloads.join("Not chosen.pdf").is_file(), "only confirmed files move");
         let conn = core.db().unwrap();
-        let undone = crate::ops::undo_batch(&conn, &core.roots, &result.batch).unwrap();
+        let undone = crate::ops::undo_batch(&conn, &core.roots, &core.placed, &result.batch).unwrap();
         assert_eq!(undone.undone, 2);
         assert!(desktop.join("Grade 7 Science Quiz.docx").is_file());
         assert!(desktop.join("notes.txt").is_file());
@@ -396,6 +397,7 @@ mod tests {
             data_dir: std::path::PathBuf::new(),
             tasks_restored: None,
             tasks_unavailable: false,
+            placed: Default::default(),
         };
         let spelled = desktop.join(".").join("Grade 7 Science Quiz.docx");
         let result = run(&core, &default_rules(), &[spelled.to_string_lossy().into_owned()]).unwrap();

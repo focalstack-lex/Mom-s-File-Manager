@@ -23,11 +23,15 @@ impl Pending {
         Self { first_seen: now, last_size: size, last_change: now, attempts: 0, next_try: now + QUIET_PERIOD }
     }
 
-    /// Records a fresh size observation; a change resets the quiet period.
+    /// Records a fresh size observation; a change resets the quiet period
+    /// and brings the next look forward to its end, so a file that was put
+    /// off for a long wait (an empty placeholder whose download has just
+    /// finished) is not left for up to fifteen minutes.
     pub fn observe(&mut self, size: u64, now: Instant) {
         if size != self.last_size {
             self.last_size = size;
             self.last_change = now;
+            self.next_try = self.next_try.min(now + QUIET_PERIOD);
         }
     }
 
@@ -58,6 +62,14 @@ pub fn next_delay(attempt: u32) -> Duration {
         6 => Duration::from_secs(120),
         _ => Duration::from_secs(15 * 60),
     }
+}
+
+/// True while a browser is still writing the download beside this file:
+/// Firefox keeps an empty `X.pdf` next to the growing `X.pdf.part` until the
+/// end, and Chrome names its part file `X.pdf.crdownload` (audit T-15).
+pub fn has_partial_sibling(path: &Path) -> bool {
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { return false };
+    ["part", "crdownload"].iter().any(|ext| path.with_file_name(format!("{name}.{ext}")).exists())
 }
 
 /// True when the file can be opened with no sharing, meaning no other program
@@ -111,5 +123,40 @@ mod tests {
         let file = dir.path().join("done.docx");
         std::fs::write(&file, b"x").unwrap();
         assert!(can_open_exclusively(&file));
+    }
+
+    /// An empty placeholder put off for a long wait is looked at again
+    /// shortly after its size changes, not fifteen minutes later.
+    #[test]
+    fn a_size_change_brings_the_next_look_forward() {
+        let start = Instant::now();
+        let mut pending = Pending::new(0, start);
+        for _ in 0..8 {
+            pending.defer(start);
+        }
+        assert_eq!(pending.next_try, start + Duration::from_secs(900));
+        pending.observe(0, start + Duration::from_secs(10));
+        assert_eq!(pending.next_try, start + Duration::from_secs(900), "the same size changes nothing");
+        pending.observe(33, start + Duration::from_secs(20));
+        assert_eq!(pending.next_try, start + Duration::from_secs(25), "the next look is at the end of the quiet period");
+        assert!(pending.is_quiet(start + Duration::from_secs(25)));
+        let mut soon = Pending::new(1, start);
+        soon.observe(2, start + Duration::from_secs(1));
+        assert_eq!(soon.next_try, start + Duration::from_secs(5), "a look already due sooner is kept");
+    }
+
+    #[test]
+    fn a_file_with_a_part_or_crdownload_sibling_is_still_downloading() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("DepEd Memo 123.pdf");
+        std::fs::write(&file, b"").unwrap();
+        assert!(!has_partial_sibling(&file));
+        std::fs::write(dir.path().join("DepEd Memo 123.pdf.part"), b"half").unwrap();
+        assert!(has_partial_sibling(&file));
+        std::fs::remove_file(dir.path().join("DepEd Memo 123.pdf.part")).unwrap();
+        assert!(!has_partial_sibling(&file));
+        std::fs::write(dir.path().join("DepEd Memo 123.pdf.crdownload"), b"half").unwrap();
+        assert!(has_partial_sibling(&file));
+        assert!(!has_partial_sibling(&dir.path().join("Other.pdf")));
     }
 }

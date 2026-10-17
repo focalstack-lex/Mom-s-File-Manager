@@ -552,7 +552,7 @@ pub async fn undo(state: State<'_, AppState>, id: i64) -> Result<()> {
     let core = core_of(&state);
     blocking("undo", move || {
         let conn = core.db()?;
-        ops::undo(&conn, &core.roots, id)
+        ops::undo(&conn, &core.roots, &core.placed, id)
     })
     .await
 }
@@ -798,7 +798,7 @@ pub async fn undo_batch(state: State<'_, AppState>, batch: String) -> Result<ops
     let core = core_of(&state);
     blocking("undo_batch", move || {
         let conn = core.db()?;
-        ops::undo_batch(&conn, &core.roots, &batch)
+        ops::undo_batch(&conn, &core.roots, &core.placed, &batch)
     })
     .await
 }

@@ -19,12 +19,6 @@ impl Origin {
     }
 }
 
-/// Reads the stream and maps it. Missing or unreadable streams are a normal
-/// case (apps that save files directly), not an error.
-pub fn read_origin(path: &Path) -> Origin {
-    read_zone(path).unwrap_or_else(Origin::unknown)
-}
-
 /// The origin when the file carries the browser's web stamp at all, None
 /// otherwise. A stamp with no URL inside still means "came from the internet".
 pub fn read_zone(path: &Path) -> Option<Origin> {
@@ -153,8 +147,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("plain.txt");
         std::fs::write(&file, b"x").unwrap();
-        assert_eq!(read_origin(&file), Origin::unknown());
+        // Missing or unreadable streams are a normal case (apps that save
+        // files directly), not an error: the worker words it as unknown.
         assert_eq!(read_zone(&file), None);
+        assert_eq!(read_zone(&file).unwrap_or_else(Origin::unknown), Origin::unknown());
     }
 
     #[cfg(windows)]

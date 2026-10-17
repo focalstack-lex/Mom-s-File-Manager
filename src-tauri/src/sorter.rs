@@ -43,6 +43,24 @@ impl Kind {
         }
     }
 
+    /// The kind in words for a log line that must not carry the file's name
+    /// (names often hold a student's name, audit T-52).
+    pub fn words(self) -> &'static str {
+        match self {
+            Kind::Word => "a Word file",
+            Kind::Pdf => "a PDF file",
+            Kind::Excel => "an Excel file",
+            Kind::PowerPoint => "a PowerPoint file",
+            Kind::Images => "an image",
+            Kind::Videos => "a video",
+            Kind::Other => "a file",
+        }
+    }
+}
+
+/// "a Word file", "an image": how a log line names a file without its name.
+pub fn describe(path: &Path) -> &'static str {
+    classify(&extension(path)).words()
 }
 
 /// Lowercase extension without the dot, or empty.
@@ -65,11 +83,37 @@ pub fn classify(ext: &str) -> Kind {
 }
 
 /// Installers, scripts and archives are run or extracted once, so sorting them
-/// only adds clutter. Partial downloads are not files yet.
+/// only adds clutter. Anything Windows would run or open as a web page
+/// (scripts, shortcuts, saved pages) stays too, so a file from the web is
+/// never filed among her school work with a plain Open (audit T-41).
+/// Partial downloads are not files yet.
 pub fn stays_in_downloads(ext: &str) -> bool {
     matches!(
         ext,
-        "exe" | "msi" | "bat" | "cmd" | "ps1" | "zip" | "rar" | "7z" | "crdownload" | "part" | "tmp" | "download"
+        "exe"
+            | "msi"
+            | "bat"
+            | "cmd"
+            | "ps1"
+            | "vbs"
+            | "js"
+            | "jse"
+            | "wsf"
+            | "hta"
+            | "lnk"
+            | "url"
+            | "scr"
+            | "com"
+            | "reg"
+            | "html"
+            | "htm"
+            | "zip"
+            | "rar"
+            | "7z"
+            | "crdownload"
+            | "part"
+            | "tmp"
+            | "download"
     )
 }
 
@@ -113,6 +157,26 @@ mod tests {
         assert!(stays_in_downloads("exe"));
         assert!(stays_in_downloads("crdownload"));
         assert!(!stays_in_downloads("docx"));
+    }
+
+    /// Scripts, shortcuts and saved web pages are runnable or open in a
+    /// browser, so they stay in Downloads beside the installers (audit T-41).
+    #[test]
+    fn runnable_files_and_web_pages_stay_in_downloads() {
+        for ext in ["vbs", "js", "jse", "wsf", "hta", "lnk", "url", "scr", "com", "cmd", "reg", "html", "htm", "bat", "ps1", "msi"] {
+            assert!(stays_in_downloads(ext), "{ext} must stay in Downloads");
+        }
+        for ext in ["docx", "pdf", "xlsx", "pptx", "jpg", "mp4", "txt", "csv"] {
+            assert!(!stays_in_downloads(ext), "{ext} is school work and is filed");
+        }
+    }
+
+    #[test]
+    fn a_log_line_names_the_kind_not_the_file() {
+        assert_eq!(describe(Path::new(r"C:\Downloads\Santos, Juan grades.xlsx")), "an Excel file");
+        assert_eq!(describe(Path::new(r"C:\Downloads\Quiz.docx")), "a Word file");
+        assert_eq!(describe(Path::new(r"C:\Downloads\photo.JPG")), "an image");
+        assert_eq!(describe(Path::new(r"C:\Downloads\notes.txt")), "a file");
     }
 
     #[test]

@@ -90,8 +90,8 @@ export function FindView({ info }: { info: AppInfo }) {
     : info.sortedThisWeek === 0
       ? null
       : info.sortedThisWeek === 1
-        ? "1 download filed for you this week."
-        : `${info.sortedThisWeek} downloads filed for you this week.`;
+        ? "1 file filed for you this week."
+        : `${info.sortedThisWeek} files filed for you this week.`;
 
   const makeFromTemplate = async (id: number, name: string) => {
     try {
@@ -216,6 +216,7 @@ export function FindView({ info }: { info: AppInfo }) {
                         roots={roots}
                         latest
                         others={group.others}
+                        sameName={group.sameName}
                         renaming={renaming === group.latest.path}
                         onRenamed={() => setRenaming(null)}
                         onCancelRename={() => setRenaming(null)}
@@ -283,7 +284,7 @@ export function FindView({ info }: { info: AppInfo }) {
                         <Inbox size={26} />
                       </span>
                       <strong>Nothing downloaded yet</strong>
-                      New downloads appear here, newest first, already filed in School Files.
+                      New downloads appear here, newest first. To file one, right-click it in File Explorer and choose Move to Tote.
                     </div>
                   )
                 ) : (

@@ -10,6 +10,7 @@ mod db;
 mod dupes;
 mod error;
 mod extract;
+mod filing;
 mod index;
 mod ops;
 mod organize;
@@ -72,16 +73,28 @@ fn show_start_failure(app: &tauri::AppHandle, sentence: &str) {
 pub fn run() {
     // Debug logging in a debug build or during a dry run (TOTE_ROOTS), Info otherwise.
     let log_level = if cfg!(debug_assertions) || paths::Roots::test_mode() { log::LevelFilter::Debug } else { log::LevelFilter::Info };
-    let minimized = std::env::args().any(|a| a == "--minimized");
+    let args: Vec<String> = std::env::args().collect();
+    // Files sent with File Explorer's Move to Tote: a start with them queues
+    // them and stays in the tray; a second Tote hands its own to this one
+    // (filing.rs). The filing thread drains the queue once the core exists.
+    let (inbox, letters) = std::sync::mpsc::channel::<std::path::PathBuf>();
+    // Files dragged onto the window join the same queue (on_window_event).
+    let dropbox = inbox.clone();
+    let sent = filing::requested(&args);
+    let minimized = args.iter().any(|a| a == "--minimized") || !sent.is_empty();
+    for file in sent {
+        let _ = inbox.send(file);
+    }
     install_panic_logger();
 
     // A dry run must be able to sit beside the installed app, so it gets its
-    // own log file and skips the single-instance rule (which would hand the
-    // launch to the running copy and exit).
+    // own log file and its own identifier (below): its single-instance lock
+    // and log folder never meet the installed Tote's, while a second dry-run
+    // Tote, the native check's Move to Tote, still hands its files to it.
     let test_mode = paths::Roots::test_mode();
     let log_file = if test_mode { "tote-test" } else { "tote" };
 
-    let mut builder = tauri::Builder::default().plugin(
+    let builder = tauri::Builder::default().plugin(
         tauri_plugin_log::Builder::new()
             .targets([tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: Some(log_file.into()) })])
             .level(log_level)
@@ -89,10 +102,18 @@ pub fn run() {
             .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
             .build(),
     );
-    if !test_mode {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show(app)));
-    }
     let builder = builder
+        .plugin(tauri_plugin_single_instance::init(move |app, args, _cwd| {
+            let files = filing::requested(&args);
+            if files.is_empty() {
+                tray::show(app);
+            }
+            for file in files {
+                if inbox.send(file).is_err() {
+                    log::warn!("Move to Tote: the filing thread has stopped; the file stays where it is");
+                }
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
@@ -167,7 +188,6 @@ pub fn run() {
                 data_dir: data_dir.clone(),
                 tasks_restored,
                 tasks_unavailable,
-                placed: state::Placed::default(),
             });
             app.manage(state::AppState(core.clone()));
 
@@ -219,18 +239,30 @@ pub fn run() {
             if let Err(error) = worker::start(core.clone(), app.handle().clone()) {
                 log::error!("watchers did not start: {error}");
             }
+            filing::start(core.clone(), app.handle().clone(), letters);
             worker::start_scan(core, app.handle().clone());
             if !minimized {
                 tray::show(app.handle());
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(move |window, event| match event {
             // Closing hides the window; Quit lives in the tray menu.
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            // Files dropped on the window are filed like Move to Tote: the
+            // filing thread gathers them into one batch and refuses folders
+            // and files outside her folders with a sentence (filing.rs).
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                for file in paths.iter().filter(|p| p.is_absolute()) {
+                    if dropbox.send(file.clone()).is_err() {
+                        log::warn!("drop: the filing thread has stopped; the file stays where it is");
+                    }
+                }
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
@@ -243,6 +275,7 @@ pub fn run() {
             commands::copy_files,
             commands::preview,
             commands::move_files,
+            commands::move_each,
             commands::rename_file,
             commands::create_folder,
             commands::recycle_files,
@@ -265,6 +298,7 @@ pub fn run() {
             commands::undo_batch,
             commands::default_subject_rules,
             commands::index_status,
+            commands::renderer_log,
             commands::check_update,
             commands::install_update,
             commands::list_tasks,
@@ -278,21 +312,17 @@ pub fn run() {
             commands::detach_file,
         ]);
 
-    let app = match builder.build(tauri::generate_context!()) {
+    let mut context = tauri::generate_context!();
+    if test_mode {
+        let identifier = format!("{}.test", context.config().identifier);
+        context.config_mut().identifier = identifier;
+    }
+    let app = match builder.build(context) {
         Ok(app) => app,
         Err(error) => {
             log::error!("Tote could not start: {error}");
             std::process::exit(1);
         }
     };
-    app.run(|handle, event| {
-        // The run marker says when Tote was last awake, so the next start
-        // knows which files in Downloads arrived while it was closed; the
-        // worker refreshes it every 15 minutes and Quit writes it last.
-        if let tauri::RunEvent::Exit = event {
-            if let Some(state) = handle.try_state::<state::AppState>() {
-                worker::mark_run(&state.0);
-            }
-        }
-    });
+    app.run(|_handle, _event| {});
 }

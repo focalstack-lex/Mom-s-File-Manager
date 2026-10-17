@@ -7,7 +7,7 @@
 import { CircleAlert, CircleCheck, Undo2, X } from "lucide-react";
 import { describeError, undoText, type UndoFailure } from "../lib/errors";
 import { refocusIfLost } from "../lib/focus";
-import { ipc } from "../lib/ipc";
+import { ipc, logRenderer } from "../lib/ipc";
 import type { OpRow } from "../lib/types";
 import { useApp, type Toast } from "../store/app";
 import { useFind } from "../store/find";
@@ -20,6 +20,7 @@ async function namesFor(stuck: { id: number; reason: string }[]): Promise<UndoFa
     ops = await ipc.activity();
   } catch (error) {
     console.warn("Tote: could not read Activity for the names", error);
+    logRenderer("warn", describeError(error));
   }
   return stuck.map(({ id, reason }) => {
     const op = ops.find((o) => o.id === id);
@@ -52,7 +53,7 @@ export function Toasts() {
       try {
         const result = await ipc.undoBatch(item.undoBatch);
         undone += result.undone;
-        failed.push(...result.failed.map((name) => ({ name, reason: null })));
+        failed.push(...result.failed.map((file) => ({ name: file.name, reason: file.message })));
       } catch (error) {
         fail(error);
         return;
@@ -67,6 +68,7 @@ export function Toasts() {
         undone += 1;
       } catch (error) {
         console.warn("Tote: undo failed", error);
+        logRenderer("warn", describeError(error));
         stuck.push({ id, reason: describeError(error) });
       }
     }

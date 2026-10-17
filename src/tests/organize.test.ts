@@ -35,6 +35,7 @@ describe("activity folding", () => {
     automatic: false,
     createdAt: 1000 - id,
     batch,
+    stampLost: false,
   });
 
   it("folds one run into one entry and keeps other changes apart", () => {
@@ -60,12 +61,21 @@ describe("activity folding", () => {
     expect(entries[0].type === "batch" && entries[0].ops.map((o) => o.status)).toEqual(["done", "failed"]);
     expect(batchTitle([went, refused])).toBe("Moved 1 of 2 files to the Recycle Bin");
     expect(batchTitle([refused, { ...refused, id: 5 }])).toBe("Could not move 2 files to the Recycle Bin");
-    // Undo all leaves the refused row as it was; the title still counts what had gone.
-    expect(batchTitle([{ ...went, status: "undone" }, refused])).toBe("Moved 1 of 2 files to the Recycle Bin");
+    // Undo all says what came back, never what had gone; the refused row
+    // keeps its own reason under the row.
+    expect(batchTitle([{ ...went, status: "undone" }, refused])).toBe("Put back 1 of 2 files");
+    expect(batchTitle([{ ...went, status: "undone" }])).toBe("Put back 1 file");
     const stuck = { ...op(4, "move-1", `${SCHOOL}\\Word\\2026-10\\b.docx`), status: "failed" as const, message: "That file is open in another program. Close it there, then try again." };
     expect(batchTitle([op(3, "move-1", `${SCHOOL}\\Word\\2026-10\\a.docx`), stuck])).toBe("Moved 1 of 2 files to October 2026");
     expect(batchTitle([stuck])).toBe("Could not move 1 file to October 2026");
     expect(batchTitle([op(6, "organize-1"), { ...op(7, "organize-1", `${SCHOOL}\\Science\\x7.docx`), status: "failed" as const }])).toBe("Organized 1 of 2 files into 1 folder");
     expect(batchTitle([{ ...op(8, "organize-1"), status: "failed" as const }])).toBe("Could not organize 1 file");
+  });
+
+  it("titles a Move to Tote of several files as filed", () => {
+    const sent = (id: number, dst: string) => ({ ...op(id, "tote-1", dst), kind: "autoSort" as const, automatic: true });
+    expect(batchTitle([sent(1, `${SCHOOL}\\Grade 7\\a.docx`), sent(2, `${SCHOOL}\\PDF\\2026-10\\b.pdf`)])).toBe("Filed 2 files into 2 folders");
+    expect(batchTitle([sent(3, `${SCHOOL}\\Grade 7\\c.docx`), { ...sent(4, `${SCHOOL}\\Grade 7\\d.docx`), status: "failed" as const }])).toBe("Filed 1 of 2 files into 1 folder");
+    expect(batchTitle([{ ...sent(5, `${SCHOOL}\\Grade 7\\e.docx`), status: "failed" as const }])).toBe("Could not file 1 file");
   });
 });

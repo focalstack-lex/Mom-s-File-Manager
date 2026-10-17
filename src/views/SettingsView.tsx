@@ -12,6 +12,7 @@ import type { AppInfo, DateRange, Settings } from "../lib/types";
 import { useApp } from "../store/app";
 import { useFind } from "../store/find";
 import { useTour } from "../store/tour";
+import { DatePicker } from "../components/DatePicker";
 
 const QUARTERS = ["Quarter 1", "Quarter 2", "Quarter 3", "Quarter 4"];
 
@@ -101,14 +102,14 @@ export function SettingsView({ info }: { info: AppInfo }) {
         <label className="toggle">
           <span className="toggle-text">
             Start when the computer starts
-            <span>So downloads are filed even before Tote is opened.</span>
+            <span>So search is up to date and reminders arrive on time.</span>
           </span>
           <input type="checkbox" role="switch" className="switch" checked={draft.startAtLogin} onChange={(e) => update({ startAtLogin: e.target.checked })} />
         </label>
         <label className="toggle">
           <span className="toggle-text">
             Windows messages
-            <span>When a download is filed, and on mornings when a task is due.</span>
+            <span>On mornings when a task is due.</span>
           </span>
           <input type="checkbox" role="switch" className="switch" checked={draft.notifications} onChange={(e) => update({ notifications: e.target.checked })} />
         </label>
@@ -154,7 +155,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
           Browsers
         </h2>
         <p className="field-note">
-          Tote files what lands in Downloads. A browser that asks where to save, or saves somewhere else, means those files stay where they were saved. Tote still lists them under Recent downloads.
+          Recent downloads lists what your browsers save, ready to send to Tote. A browser that saves straight to Downloads keeps them all in one place.
         </p>
         {browsersError ? (
           // A check that could not run is not "no browsers found": the sentence says so, and Check again tries once more.
@@ -197,8 +198,8 @@ export function SettingsView({ info }: { info: AppInfo }) {
           <span className="date-grid-label" id="sy-label">
             School year
           </span>
-          <input id="sy-start" type="date" aria-label="School year starts" value={draft.schoolYear?.start ?? ""} max={draft.schoolYear?.end || undefined} onChange={(e) => update({ schoolYear: { name: "School year", start: e.target.value, end: draft.schoolYear?.end ?? "" } })} />
-          <input id="sy-end" type="date" aria-label="School year ends" value={draft.schoolYear?.end ?? ""} min={draft.schoolYear?.start || undefined} onChange={(e) => update({ schoolYear: { name: "School year", start: draft.schoolYear?.start ?? "", end: e.target.value } })} />
+          <DatePicker compact id="sy-start" label="School year starts" value={draft.schoolYear?.start ?? null} max={draft.schoolYear?.end || undefined} onChange={(day) => update({ schoolYear: { name: "School year", start: day ?? "", end: draft.schoolYear?.end ?? "" } })} />
+          <DatePicker compact id="sy-end" label="School year ends" value={draft.schoolYear?.end ?? null} min={draft.schoolYear?.start || undefined} onChange={(day) => update({ schoolYear: { name: "School year", start: draft.schoolYear?.start ?? "", end: day ?? "" } })} />
           <span className="date-grid-divider" aria-hidden />
           {QUARTERS.map((name, i) => (
             <QuarterRow key={name} index={i} range={quarter(i)} min={draft.schoolYear?.start} max={draft.schoolYear?.end} onChange={(patch) => setQuarter(i, patch)} />
@@ -270,7 +271,7 @@ export function SettingsView({ info }: { info: AppInfo }) {
             </button>
           </div>
         )}
-        <p className="field-note">Downloads are filed into {info.schoolFiles}.{info.testMode ? " Test mode: these are the TOTE_ROOTS folders." : ""}</p>
+        <p className="field-note">Move to Tote files into {info.schoolFiles}.{info.testMode ? " Test mode: these are the TOTE_ROOTS folders." : ""}</p>
       </section>
       <p className="view-foot">Tote {info.version}</p>
     </div>
@@ -283,8 +284,8 @@ function QuarterRow({ index, range, min, max, onChange }: { index: number; range
   return (
     <>
       <input id={`q${index}-name`} className="date-grid-name" aria-label={`Name for ${QUARTERS[index]}`} value={range.name} onChange={(e) => onChange({ name: e.target.value })} />
-      <input id={`q${index}-start`} type="date" aria-label={`${label} starts`} value={range.start} min={min || undefined} max={range.end || max || undefined} onChange={(e) => onChange({ start: e.target.value })} />
-      <input id={`q${index}-end`} type="date" aria-label={`${label} ends`} value={range.end} min={range.start || min || undefined} max={max || undefined} onChange={(e) => onChange({ end: e.target.value })} />
+      <DatePicker compact id={`q${index}-start`} label={`${label} starts`} value={range.start} min={min || undefined} max={range.end || max || undefined} onChange={(day) => onChange({ start: day ?? "" })} />
+      <DatePicker compact id={`q${index}-end`} label={`${label} ends`} value={range.end} min={range.start || min || undefined} max={max || undefined} onChange={(day) => onChange({ end: day ?? "" })} />
     </>
   );
 }

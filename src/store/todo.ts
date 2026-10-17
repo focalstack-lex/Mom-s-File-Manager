@@ -3,7 +3,7 @@
 
 import { create } from "zustand";
 import { describeError } from "../lib/errors";
-import { ipc } from "../lib/ipc";
+import { ipc, logRenderer } from "../lib/ipc";
 import { dayWords } from "../lib/todo";
 import type { Repeat, Task } from "../lib/types";
 import { useApp } from "./app";
@@ -41,6 +41,7 @@ export const useTodo = create<TodoStore>((set, get) => ({
       // The screen shows the sentence in place with Try again, not a toast
       // over a skeleton that never ends.
       console.warn("Tote:", error);
+      logRenderer("error", describeError(error));
       set({ loadError: describeError(error) });
     }
   },

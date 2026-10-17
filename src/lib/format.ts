@@ -64,6 +64,11 @@ export function monthName(segment: string): string {
   return `${MONTHS[month - 1]} ${match[1]}`;
 }
 
+/** A folder label the native side built ("School Files > Word > 2026-10") with its month folders in words. */
+export function labelWords(label: string): string {
+  return label.split(" > ").map(monthName).join(" > ");
+}
+
 export function fileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -106,4 +111,37 @@ export function extOf(name: string): string {
 /** "3 other copies" or "1 other copy". */
 export function copiesLabel(count: number): string {
   return count === 1 ? "1 other copy" : `${count} other copies`;
+}
+
+/** "1 other file with the same name": different files, never called copies (audit T-16). */
+export function sameNameLabel(count: number): string {
+  return count === 1 ? "1 other file with the same name" : `${count} other files with the same name`;
+}
+
+/** Characters Windows does not allow in a name (paths.rs FORBIDDEN). */
+const FORBIDDEN = new Set(["\\", "/", ":", "*", "?", '"', "<", ">", "|"]);
+/** Names Windows keeps for devices (paths.rs RESERVED). */
+const RESERVED = new Set(["CON", "PRN", "AUX", "NUL", ...[1, 2, 3, 4, 5, 6, 7, 8, 9].flatMap((n) => [`COM${n}`, `LPT${n}`])]);
+
+/**
+ * What is wrong with a name she is typing, in the same sentence
+ * `paths::validate_name` would answer with, or null when Windows takes it.
+ * Rename checks it on every key, so she sees the problem before Enter
+ * (audit T-28). The native side checks again; this only words it sooner.
+ */
+export function nameProblem(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed === "") return "Type a name first.";
+  // The native limit counts UTF-8 bytes.
+  if (new TextEncoder().encode(trimmed).length > 200) return "That name is too long. Keep it under 200 characters.";
+  const bad = [...trimmed].find((c) => FORBIDDEN.has(c) || /\p{Cc}/u.test(c));
+  if (bad !== undefined) return `Names cannot contain ${bad}. Try a space or a hyphen instead.`;
+  if (trimmed.endsWith(".") || trimmed !== name) return "Names cannot start or end with a space or a period. Remove it and try again.";
+  if (RESERVED.has(trimmed.split(".")[0].toUpperCase())) return `${trimmed} is a name Windows reserves. Pick another.`;
+  return null;
+}
+
+/** "Lesson Plan (2).docx": the name `sorter::unique_path` tries first when the wanted one is taken. */
+export function numberedName(stem: string, ext: string, n = 2): string {
+  return `${stem} (${n})${ext}`;
 }

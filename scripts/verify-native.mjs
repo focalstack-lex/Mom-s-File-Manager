@@ -5,15 +5,16 @@
  * Builds a throwaway folder set, launches the release tote.exe in test mode
  * (TOTE_ROOTS and TOTE_DATA_DIR, so nothing real is touched and autostart is
  * left alone) with WebView2 remote debugging on, then drives the actual
- * window over CDP: drops downloads with Zone.Identifier streams and waits for
- * them to be filed, searches the real index, moves, renames, pins, recycles
- * and undoes through the real commands. Evidence lands in
+ * window over CDP: drops downloads with Zone.Identifier streams and checks
+ * they stay, sends files with Move to Tote the way File Explorer does (a
+ * second tote.exe per file), searches the real index, moves, renames, pins,
+ * recycles and undoes through the real commands. Evidence lands in
  * reports/native-check/<stamp>/.
  *
  * Usage: node scripts/verify-native.mjs   (needs src-tauri/target/release/tote.exe)
  */
 import { spawn, execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -71,9 +72,6 @@ function seedLab() {
   writeFileSync(old, "old");
   const past = new Date(Date.now() - 90 * 86_400_000);
   utimesSync(old, past, past);
-  // Files she keeps in Downloads on purpose, there before Tote starts (audit T-07).
-  writeFileSync(join(LAB, "Downloads", "Old Lesson.docx"), "a lesson she keeps in Downloads");
-  writeFileSync(join(LAB, "Downloads", "Existing Form.pdf"), "%PDF-1.4 a form she keeps in Downloads");
 }
 
 /** Writes the Zone.Identifier stream a browser leaves on a finished download. */
@@ -90,10 +88,20 @@ function fakeDownload(name, body, hostUrl, referrer, folder = join(LAB, "Downloa
   return path;
 }
 
-const filed = (kind, name) => existsSync(join(LAB, "Documents", "School Files", kind, new Date().toISOString().slice(0, 7), name));
+// The native side files a download in the month of its created time in local
+// time (worker::created_local), so the check must not use the UTC month: on
+// the first day of a month in the Philippines that is the day before.
+const monthFolder = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+const filed = (kind, name) => existsSync(join(LAB, "Documents", "School Files", kind, monthFolder(), name));
+/** A path under the lab's School Files. */
+const inSchool = (...parts) => join(LAB, "Documents", "School Files", ...parts);
 
 /** Starts the release app in test mode and attaches to its window over CDP; page is null when it never answers. */
+/** The environment of the running test app, which a Move to Tote launch shares. */
+let launchEnv = process.env;
+
 async function launch(env) {
+  launchEnv = env;
   const app = spawn(EXE, [], { env, stdio: "ignore", detached: false });
   let browser = null;
   const attached = await until(async () => {
@@ -110,6 +118,23 @@ async function launch(env) {
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.waitForSelector('[data-testid="find-view"]', { timeout: STEP_TIMEOUT_MS });
   return { app, browser, page };
+}
+
+/** What File Explorer's Move to Tote runs: a second tote.exe with the file,
+ * which hands it to the running Tote and exits. Resolves with its exit code
+ * (null when it did not exit within 15 s). */
+function sendToTote(path) {
+  return new Promise((done) => {
+    const child = spawn(EXE, ["--move-to-tote", path], { env: launchEnv, stdio: "ignore" });
+    const timer = setTimeout(() => {
+      child.kill();
+      done(null);
+    }, 15_000);
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      done(code);
+    });
+  });
 }
 
 /** Drops the CDP link and ends the app, then waits until its debugging port is closed. */
@@ -182,67 +207,73 @@ async function main() {
     const where = noticed ? await page.locator('[data-testid="recent"] [data-testid="file-row"]', { hasText: "Me at the zoo.mp3" }).locator(".row-where").textContent() : null;
     record("A download saved outside Downloads appears in Recent downloads and is not moved", noticed && existsSync(elsewhere) && String(where).includes("Saved Here"), JSON.stringify({ noticed, stayed: existsSync(elsewhere), where }));
 
-    // 3. Two downloads land (Messenger and DepEd streams) and are filed with their sources; an installer stays.
-    fakeDownload("Grade 7 Quiz 2.docx", "Grade 7 Science Quiz Photosynthesis", "https://cdn.fbsbx.com/v/t59/quiz.docx?x=1", "https://www.facebook.com/messages/t/123");
-    fakeDownload("DepEd Order 014.pdf", "%PDF-1.4 fake", "https://www.deped.gov.ph/wp-content/uploads/DO_014.pdf");
+    // 3. Nothing is filed on its own (Lex's decision, 2026-10-17): two
+    // downloads land (Messenger and DepEd streams) beside an installer, join
+    // Recent downloads with their sources, and are still in Downloads well
+    // after the old automatic filing would have moved them.
+    const quizDownload = fakeDownload("Grade 7 Quiz 2.docx", "Grade 7 Science Quiz Photosynthesis", "https://cdn.fbsbx.com/v/t59/quiz.docx?x=1", "https://www.facebook.com/messages/t/123");
+    const orderDownload = fakeDownload("DepEd Order 014.pdf", "%PDF-1.4 fake", "https://www.deped.gov.ph/wp-content/uploads/DO_014.pdf");
     writeFileSync(join(LAB, "Downloads", "printer-setup.exe"), "MZ");
-    const quizFiled = await until(() => filed("Word", "Grade 7 Quiz 2.docx"), 40_000);
+    const landed = Date.now();
+    const rowWhere = async (name) => page.locator('[data-testid="recent"] [data-testid="file-row"]', { hasText: name }).locator(".row-where").first().textContent().catch(() => "");
+    const listed = await until(async () => {
+      const metas = await page.locator('[data-testid="recent"] .row-meta').allTextContents();
+      return metas.some((m) => m.startsWith("from Messenger")) && metas.some((m) => m.startsWith("from DepEd"));
+    }, 20_000);
+    // The old filing moved a download within about 7 s (2 s of watcher, 5 s of quiet).
+    await sleep(Math.max(0, landed + 15_000 - Date.now()));
+    const downloadsStayed = existsSync(quizDownload) && existsSync(orderDownload) && !filed("PDF", "DepEd Order 014.pdf") && !existsSync(inSchool("Grade 7", "Grade 7 Quiz 2.docx"));
+    await capture("03-downloads-stay");
+    record("Two downloads join Recent downloads with Messenger and DepEd sources and stay in Downloads: nothing is filed on its own", listed && downloadsStayed, JSON.stringify({ listed, downloadsStayed }));
+
+    // 3b. Move to Tote, the way File Explorer runs it: one tote.exe per
+    // selected file, started together. Each hands its file to the running
+    // Tote and exits; the two are filed by the Organize rule as one batch.
+    const sent = await Promise.all([sendToTote(quizDownload), sendToTote(orderDownload)]);
+    const quizFiled = await until(() => existsSync(inSchool("Grade 7", "Grade 7 Quiz 2.docx")), 20_000);
     const orderFiled = await until(() => filed("PDF", "DepEd Order 014.pdf"), 20_000);
     const exeStayed = existsSync(join(LAB, "Downloads", "printer-setup.exe"));
-    // The rows first show the file where it landed (Downloads), then where it was filed.
-    const rowWhere = async (name) => page.locator('[data-testid="recent"] [data-testid="file-row"]', { hasText: name }).locator(".row-where").first().textContent().catch(() => "");
-    const recentOk = await until(async () => {
-      const metas = await page.locator('[data-testid="recent"] .row-meta').allTextContents();
-      const sources = metas.some((m) => m.startsWith("from Messenger")) && metas.some((m) => m.startsWith("from DepEd"));
-      return sources && (await rowWhere("Grade 7 Quiz 2.docx")).includes("School Files") && (await rowWhere("DepEd Order 014.pdf")).includes("School Files");
-    }, 20_000);
-    await capture("03-filed");
-    record("Two downloads are filed by type and month with Messenger and DepEd sources and the rows show their new place; the installer stays in Downloads", quizFiled && orderFiled && exeStayed && recentOk, JSON.stringify({ quizFiled, orderFiled, exeStayed, recentOk }));
-
-    // 3b. The Downloads promise (audit T-06, T-07, T-15), three scenarios side
-    // by side: Undo of a filing leaves the file in Downloads with no second
-    // Filed row; an old file that is edited and another that is renamed stay;
-    // an empty Firefox placeholder beside its .part file waits, and is filed
-    // once when the real download takes its name.
+    const recentMoved = await until(async () => (await rowWhere("Grade 7 Quiz 2.docx")).includes("School Files") && (await rowWhere("DepEd Order 014.pdf")).includes("School Files"), 20_000);
     const dataDir = join(LAB, "data");
     const sql = (statement) => execFileSync("python", ["-I", "-c", "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);r=c.execute(sys.argv[2]).fetchall();c.commit();print(r)", join(dataDir, "tote.sqlite"), statement], { encoding: "utf8" }).trim();
+    const batches = sql("SELECT COUNT(DISTINCT batch), COUNT(*) FROM ops WHERE kind = 'autoSort' AND status = 'done' AND batch LIKE 'tote-%'");
+    await page.locator('[data-testid="nav-activity"]').click();
+    const batchRow = await until(async () => (await page.locator('[data-testid="activity-batch"] strong', { hasText: "Filed 2 files into 2 folders" }).count()) === 1);
+    await capture("03b-move-to-tote");
+    record("Move to Tote from two tote.exe launches at once: each exits, the quiz goes to School Files > Grade 7 and the order to PDF by month as one Activity batch; the installer stays",
+      sent.every((code) => code === 0) && quizFiled && orderFiled && exeStayed && recentMoved && batches === "[(1, 2)]" && batchRow,
+      JSON.stringify({ sent, quizFiled, orderFiled, exeStayed, recentMoved, batches, batchRow }));
+
+    // 3c. One file sent alone is filed and Undo puts it back in Downloads,
+    // where it then stays; a download the browser is still writing (an
+    // empty file beside its .part) and a file outside her folders are
+    // refused and stay where they are.
     const reading = fakeDownload("Reading List.docx", "reading list", "https://drive.google.com/file/d/abc/view");
-    const readingFiled = await until(() => filed("Word", "Reading List.docx"), 40_000);
     const memo = join(LAB, "Downloads", "DepEd Memo 123.pdf");
-    const memoPart = `${memo}.part`;
     writeFileSync(memo, "");
-    writeFileSync(memoPart, "%PDF-1.4 half");
-    const memoStarted = Date.now();
-    const oldLesson = join(LAB, "Downloads", "Old Lesson.docx");
-    const signedForm = join(LAB, "Downloads", "Existing Form signed.pdf");
-    appendFileSync(oldLesson, " plus an edit saved from Word");
-    renameSync(join(LAB, "Downloads", "Existing Form.pdf"), signedForm);
-    const oldChanged = Date.now();
+    writeFileSync(`${memo}.part`, "%PDF-1.4 half");
+    mkdirSync(join(LAB, "Elsewhere"), { recursive: true });
+    const outside = join(LAB, "Elsewhere", "Grade 8 Math Quiz.docx");
+    writeFileSync(outside, "outside her folders");
+    const readingSent = await sendToTote(reading);
+    const readingFiled = await until(() => existsSync(inSchool("English", "Reading List.docx")), 20_000);
+    const refusedSent = await Promise.all([sendToTote(memo), sendToTote(outside)]);
+    await page.locator('[data-testid="nav-find"]').click();
     await page.locator('[data-testid="nav-activity"]').click();
     await page.waitForSelector('[data-testid="activity-row"]', { timeout: STEP_TIMEOUT_MS });
-    await page.locator('[data-testid="activity-row"]', { hasText: "Reading List.docx" }).first().locator('[data-testid="undo"]').click();
+    const readingRow = page.locator('[data-testid="activity-row"]', { hasText: "Reading List.docx" }).first();
+    await until(async () => (await readingRow.count()) === 1);
+    await readingRow.locator('[data-testid="undo"]').click();
     const readingBack = await until(() => existsSync(reading), 15_000);
-    const undoneAt = Date.now();
-    await page.locator('[data-testid="nav-find"]').click();
-    // 15 s after the placeholder appeared it is still empty, beside its part file, and not filed.
-    await sleep(Math.max(0, memoStarted + 15_000 - Date.now()));
-    const memoWaited = existsSync(memo) && existsSync(memoPart) && !filed("PDF", "DepEd Memo 123.pdf");
-    // Firefox finishes: the part file gets the rest, takes the real name, then the stamp.
-    writeFileSync(memoPart, "%PDF-1.4 the whole memo");
-    renameSync(memoPart, memo);
-    stampDownload(memo, "https://www.deped.gov.ph/wp-content/uploads/memo-123.pdf");
-    // 25 s after the edit and the rename, and 15 s after the Undo, everything that is hers is still in Downloads.
-    await sleep(Math.max(0, oldChanged + 25_000 - Date.now(), undoneAt + 15_000 - Date.now()));
-    const readingStayed = existsSync(reading) && !filed("Word", "Reading List.docx");
+    await sleep(10_000);
+    const readingStayed = existsSync(reading) && !existsSync(inSchool("English", "Reading List.docx"));
+    const refusedStayed = existsSync(memo) && existsSync(`${memo}.part`) && existsSync(outside) && !filed("PDF", "DepEd Memo 123.pdf");
     const readingRows = sql("SELECT status FROM ops WHERE kind = 'autoSort' AND src LIKE '%Reading List.docx' ORDER BY id");
-    const oldStayed = existsSync(oldLesson) && existsSync(signedForm) && !filed("Word", "Old Lesson.docx") && !filed("PDF", "Existing Form signed.pdf");
-    const memoFiled = await until(() => filed("PDF", "DepEd Memo 123.pdf"), 40_000);
-    const memoOnce = memoFiled && !existsSync(memo) && !existsSync(memoPart) && !filed("PDF", "DepEd Memo 123 (2).pdf");
-    const memoRows = sql("SELECT status FROM ops WHERE kind = 'autoSort' AND src LIKE '%DepEd Memo 123.pdf' ORDER BY id");
-    await capture("03d-downloads-promise");
-    record("Undo of a filing leaves the file in Downloads with no second Filed row; an old file edited and another renamed stay; an empty placeholder beside its .part file waits and is filed once",
-      readingFiled && readingBack && readingStayed && readingRows === "[('undone',)]" && oldStayed && memoWaited && memoOnce && memoRows === "[('done',)]",
-      JSON.stringify({ readingFiled, readingBack, readingStayed, readingRows, oldStayed, memoWaited, memoFiled, memoOnce, memoRows }));
+    await page.locator('[data-testid="nav-find"]').click();
+    await capture("03c-undo-and-refusals");
+    record("One file sent alone is filed and Undo puts it back to stay; a download still being written and a file outside her folders are refused and stay",
+      readingSent === 0 && readingFiled && readingBack && readingStayed && readingRows === "[('undone',)]" && refusedSent.every((code) => code === 0) && refusedStayed,
+      JSON.stringify({ readingSent, readingFiled, readingBack, readingStayed, readingRows, refusedSent, refusedStayed }));
 
     // 4. Move the quiz to Documents > Forms through the real folder picker and command.
     const quizRow = page.locator('[data-testid="recent"] [data-testid="file-row"]', { hasText: "Grade 7 Quiz 2.docx" });
@@ -329,7 +360,10 @@ async function main() {
     await capture("05-cleanup");
     record("Clean up lists the duplicate lesson plans and the 90-day-old download", dupes >= 1 && old === 1, JSON.stringify({ dupes, old }));
 
-    // 8b. Organize now on real files: grade and subject folders are made, the shortcut stays, Undo all reverses it.
+    // 8b. Organize now on real files: grade and subject folders are made, the
+    // shortcut stays, Undo all reverses it and removes the folders the run
+    // made, while School Files > Grade 7, which Move to Tote made in step 3b,
+    // stays (audit T-45: never a folder that was there before).
     const school = join(LAB, "Documents", "School Files");
     await page.locator('[data-testid="organize-open"]').click();
     await page.waitForSelector('[data-testid="organize-dialog"]', { timeout: STEP_TIMEOUT_MS });
@@ -345,11 +379,12 @@ async function main() {
     await page.waitForSelector('[data-testid="activity-batch"]', { timeout: STEP_TIMEOUT_MS });
     await page.locator('[data-testid="undo-batch"]').first().click();
     const restored = await until(() => existsSync(join(LAB, "Desktop", "Grade 7 Science Quiz.docx")) && existsSync(join(LAB, "Desktop", "AP 8 Reviewer.docx")), 15_000);
-    const emptyRemoved = await until(() => !existsSync(join(school, "Grade 7")) && !existsSync(join(school, "Grade 8")), 5_000);
+    const emptyRemoved = await until(() => !existsSync(join(school, "Grade 7", "Science")) && !existsSync(join(school, "Grade 8")), 5_000);
+    const earlierKept = existsSync(join(school, "Grade 7"));
     await capture("05c-organize-undone");
-    record("Organize files real grade and subject names into new folders, leaves the shortcut, and Undo all puts every file back and removes the empty folders",
-      organized && shortcutStayed && desktopLeft.length === 0 && restored && emptyRemoved,
-      JSON.stringify({ planTitle, organized, shortcutStayed, desktopLeft, restored, emptyRemoved }));
+    record("Organize files real grade and subject names into new folders, leaves the shortcut, and Undo all puts every file back, removes the folders it made and keeps the one that was there before",
+      organized && shortcutStayed && desktopLeft.length === 0 && restored && emptyRemoved && earlierKept,
+      JSON.stringify({ planTitle, organized, shortcutStayed, desktopLeft, restored, emptyRemoved, earlierKept }));
 
     // 10. To do on the real store: a task due today, notes.txt attached through
     // the index search, then moved with Move to; the attachment follows.
@@ -360,7 +395,9 @@ async function main() {
     await page.locator('[data-testid="nav-todo"]').click();
     await page.waitForSelector('[data-testid="todo-view"]', { timeout: STEP_TIMEOUT_MS });
     await page.locator('[data-testid="todo-input"]').fill("Submit SF2 for October");
-    await page.locator('[data-testid="todo-due"]').fill(todayText);
+    // The due date through the date picker, the way she picks it.
+    await page.locator('[data-testid="todo-due"]').click();
+    await page.locator('[data-testid="date-today"]').click();
     await page.locator('[data-testid="todo-add"]').click();
     const taskSaved = await until(async () => (await page.locator('[data-testid="task-row"]', { hasText: "Submit SF2 for October" }).count()) === 1);
     await page.locator('[data-testid="task-open"]').first().click();
@@ -389,7 +426,7 @@ async function main() {
 
     // 11. A restart keeps the task; the start-up check saves the day's snapshot
     // and, from 07:00, shows the morning reminder and remembers the day.
-    const testLog = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.tote", "logs", "tote-test.log");
+    const testLog = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.tote.test", "logs", "tote-test.log");
     const logSize = () => (existsSync(testLog) ? readFileSync(testLog, "utf8").length : 0);
     const logSince = (offset) => (existsSync(testLog) ? readFileSync(testLog, "utf8").slice(offset) : "");
     await stop(session);
@@ -521,7 +558,7 @@ async function main() {
       // banner would.
       const offered = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("check_update"));
       const installed = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("install_update").then(() => "ok", (e) => JSON.stringify(e)));
-      const logPath = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.tote", "logs", "tote-test.log");
+      const logPath = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.tote.test", "logs", "tote-test.log");
       const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
       const verified = /update: \S+ downloaded \(\d+ bytes\) and its signature verified/.test(log) && log.includes("dry run, so");
       record("Update: the live manifest offers a release, its installer downloads from codewithlex.site and its signature verifies; nothing is installed in a dry run",
@@ -534,7 +571,7 @@ async function main() {
     exitCode = 1;
   } finally {
     await stop(session);
-    const logPath = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.tote", "logs", "tote-test.log");
+    const logPath = join(process.env.LOCALAPPDATA ?? "", "com.focalstack.tote.test", "logs", "tote-test.log");
     if (existsSync(logPath)) writeFileSync(join(EVIDENCE_DIR, "tote.log"), readFileSync(logPath, "utf8").split("\n").slice(-200).join("\n"));
     writeFileSync(join(EVIDENCE_DIR, "summary.json"), `${JSON.stringify({ stamp, lab: LAB, steps: results, pageErrors, downloadsLeft: readdirSync(join(LAB, "Downloads")) }, null, 2)}\n`);
   }

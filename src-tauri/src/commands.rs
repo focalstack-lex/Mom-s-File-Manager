@@ -443,8 +443,8 @@ pub async fn move_files(state: State<'_, AppState>, paths: Vec<String>, destinat
         let mut moved = Vec::new();
         for p in paths {
             let new_path = match &batch {
-                Some(batch) => ops::move_file_in_batch(&*core, &core.roots, &core.placed, Path::new(&p), dest, batch)?,
-                None => ops::move_file(&*core, &core.roots, &core.placed, Path::new(&p), dest, ops::OpKind::Move)?,
+                Some(batch) => ops::move_file_in_batch(&*core, &core.roots, Path::new(&p), dest, batch)?,
+                None => ops::move_file(&*core, &core.roots, Path::new(&p), dest, ops::OpKind::Move)?,
             };
             moved.push(paths::display(&new_path));
         }
@@ -453,12 +453,75 @@ pub async fn move_files(state: State<'_, AppState>, paths: Vec<String>, destinat
     .await
 }
 
+/// One file of a `move_each` call: the file and the folder it goes to.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveRequest {
+    pub path: String,
+    pub destination: String,
+}
+
+/// A file `move_each` left where it was, with the sentence that says why.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveFailure {
+    pub name: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveResult {
+    /// The batch for Undo all, when more than one move was asked for and at
+    /// least one file moved.
+    pub batch: Option<String>,
+    /// The new paths of the files that moved.
+    pub moved: Vec<String>,
+    pub failed: Vec<MoveFailure>,
+}
+
+/// Clean up's "Move all": each file to its own folder, as one batch, so
+/// Activity shows one row with Undo all (audit T-30). A file that cannot
+/// move stays and is named in `failed`; the others still move. The lock
+/// is taken by each move for its record and its finish only.
 #[tauri::command]
-pub async fn rename_file(state: State<'_, AppState>, path: String, new_stem: String) -> Result<String> {
+pub async fn move_each(state: State<'_, AppState>, moves: Vec<MoveRequest>) -> Result<MoveResult> {
+    let core = core_of(&state);
+    blocking("move_each", move || Ok(move_each_in(&*core, &core.roots, &moves))).await
+}
+
+fn move_each_in(db: &impl crate::state::Db, roots: &paths::Roots, moves: &[MoveRequest]) -> MoveResult {
+    let batch = (moves.len() > 1).then(|| ops::new_batch("move"));
+    let mut moved = Vec::new();
+    let mut failed = Vec::new();
+    for request in moves {
+        let (src, dest) = (Path::new(&request.path), Path::new(&request.destination));
+        let result = match &batch {
+            Some(batch) => ops::move_file_in_batch(db, roots, src, dest, batch),
+            None => ops::move_file(db, roots, src, dest, ops::OpKind::Move),
+        };
+        match result {
+            Ok(new_path) => moved.push(paths::display(&new_path)),
+            Err(error) => {
+                log::warn!("move_each: {} stays ({})", sorter::describe(src), error.message);
+                let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| request.path.clone());
+                failed.push(MoveFailure { name, message: error.message });
+            }
+        }
+    }
+    let batch = batch.filter(|_| !moved.is_empty());
+    MoveResult { batch, moved, failed }
+}
+
+/// `pick_free` (`pickFree` from the renderer) is sent as true only after
+/// she agreed to the next free name ("Name (2).docx") once the plain
+/// rename was refused as taken (audit T-28). Left out, it is false.
+#[tauri::command]
+pub async fn rename_file(state: State<'_, AppState>, path: String, new_stem: String, pick_free: Option<bool>) -> Result<String> {
     let core = core_of(&state);
     blocking("rename_file", move || {
         let conn = core.db()?;
-        Ok(paths::display(&ops::rename_file(&conn, &core.roots, Path::new(&path), &new_stem)?))
+        Ok(paths::display(&ops::rename_file(&conn, &core.roots, Path::new(&path), &new_stem, pick_free.unwrap_or(false))?))
     })
     .await
 }
@@ -561,7 +624,7 @@ pub async fn list_activity(state: State<'_, AppState>) -> Result<Vec<OpRow>> {
 #[tauri::command]
 pub async fn undo(state: State<'_, AppState>, id: i64) -> Result<()> {
     let core = core_of(&state);
-    blocking("undo", move || ops::undo(&*core, &core.roots, &core.placed, id)).await
+    blocking("undo", move || ops::undo(&*core, &core.roots, id)).await
 }
 
 #[tauri::command]
@@ -569,8 +632,7 @@ pub async fn cleanup_report(state: State<'_, AppState>) -> Result<CleanupReport>
     let core = core_of(&state);
     blocking("cleanup_report", move || {
         let rules = rules_of(&core);
-        let conn = core.db()?;
-        cleanup::report(&conn, &core.roots, &rules)
+        cleanup::report(&*core, &core.roots, &rules)
     })
     .await
 }
@@ -803,7 +865,7 @@ pub async fn organize_run(state: State<'_, AppState>, paths: Vec<String>) -> Res
 #[tauri::command]
 pub async fn undo_batch(state: State<'_, AppState>, batch: String) -> Result<ops::BatchUndo> {
     let core = core_of(&state);
-    blocking("undo_batch", move || ops::undo_batch(&*core, &core.roots, &core.placed, &batch)).await
+    blocking("undo_batch", move || ops::undo_batch(&*core, &core.roots, &batch)).await
 }
 
 /// The standard subject list, for "Use the standard list" in Settings.
@@ -815,6 +877,24 @@ pub fn default_subject_rules() -> Vec<crate::organize::SubjectRule> {
 #[tauri::command]
 pub fn index_status(state: State<'_, AppState>) -> Result<IndexStatus> {
     Ok(state.0.status())
+}
+
+/// One line from the renderer in tote.log (spec 6.5), so a screen that
+/// failed leaves a trace after its toast is gone. The renderer sends the
+/// sentence it already shows, never a raw error; newlines are folded so a
+/// message stays one line.
+#[tauri::command]
+pub fn renderer_log(level: String, message: String) {
+    let message = one_line(&message);
+    match level.as_str() {
+        "error" => log::error!("renderer: {message}"),
+        "warn" => log::warn!("renderer: {message}"),
+        _ => log::info!("renderer: {message}"),
+    }
+}
+
+fn one_line(text: &str) -> String {
+    text.chars().map(|c| if c == '\r' || c == '\n' { ' ' } else { c }).collect()
 }
 
 #[tauri::command]
@@ -915,6 +995,47 @@ pub async fn detach_file(state: State<'_, AppState>, id: i64, path: String) -> R
 mod tests {
     use super::*;
 
+    /// Move all moves each file to its own folder as one batch, names what
+    /// stayed, and Undo all reverses the batch (audit T-30).
+    #[test]
+    fn move_each_is_one_batch_and_names_what_stayed() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = paths::resolve(dir.path()).unwrap();
+        let (desktop, documents, downloads) = (base.join("Desktop"), base.join("Documents"), base.join("Downloads"));
+        for d in [&desktop, &documents, &downloads] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(downloads.join("Quiz.docx"), b"q").unwrap();
+        std::fs::write(downloads.join("Report.pdf"), b"r").unwrap();
+        let roots = paths::Roots::explicit(desktop, documents.clone(), downloads.clone());
+        let conn = db::open_memory().unwrap();
+        let words = documents.join("School Files").join("Word");
+        let pdfs = documents.join("School Files").join("PDF");
+        let request = |name: &str, to: &Path| MoveRequest { path: paths::display(&downloads.join(name)), destination: paths::display(to) };
+        let moves = vec![request("Quiz.docx", &words), request("Report.pdf", &pdfs), request("Gone.docx", &words)];
+        let result = move_each_in(&conn, &roots, &moves);
+        let batch = result.batch.clone().unwrap();
+        assert_eq!(result.moved.len(), 2);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].name, "Gone.docx");
+        assert_eq!(result.failed[0].message, FILE_GONE);
+        assert!(words.join("Quiz.docx").is_file() && pdfs.join("Report.pdf").is_file());
+        let rows = ops::list(&conn, 10).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.batch.as_deref() == Some(batch.as_str())), "one Activity entry");
+        let undone = ops::undo_batch(&conn, &roots, &batch).unwrap();
+        assert_eq!(undone.undone, 2);
+        assert!(downloads.join("Quiz.docx").is_file() && downloads.join("Report.pdf").is_file());
+        assert!(!words.exists() && !pdfs.exists(), "the folders the batch made are gone again");
+
+        // One move is no batch; nothing moved is no batch either.
+        std::fs::write(downloads.join("One.docx"), b"o").unwrap();
+        let single = move_each_in(&conn, &roots, &[request("One.docx", &words)]);
+        assert!(single.batch.is_none() && single.moved.len() == 1);
+        let none = move_each_in(&conn, &roots, &[request("Gone.docx", &words), request("Gone too.docx", &words)]);
+        assert!(none.batch.is_none() && none.failed.len() == 2);
+    }
+
     #[test]
     fn a_folder_choice_is_checked_against_the_drive_the_home_and_the_roots() {
         let dir = tempfile::tempdir().unwrap();
@@ -1011,6 +1132,13 @@ mod tests {
         let json = serde_json::to_value(TemplateCopy { path: "C:\\Her\\Documents\\School Files\\Word\\2026-10\\Plan 2026-10-16.docx".into(), opened: false }).unwrap();
         assert_eq!(json["opened"], serde_json::json!(false));
         assert!(json["path"].as_str().unwrap().ends_with("Plan 2026-10-16.docx"));
+    }
+
+    /// A renderer log line stays one line, whatever the renderer sent.
+    #[test]
+    fn a_renderer_log_line_is_folded_to_one_line() {
+        assert_eq!(one_line("Tote could not save that.\r\nTry again."), "Tote could not save that.  Try again.");
+        assert_eq!(one_line("one sentence"), "one sentence");
     }
 
     #[test]

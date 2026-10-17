@@ -1,9 +1,12 @@
 // Clean up (spec 5.5): duplicate copies, Desktop clutter, old downloads.
 // Nothing happens until she clicks; no destructive box starts ticked. A file
 // that is an extra copy is only offered for the Recycle Bin, never also for a
-// move, so she is never asked two opposite things about the same file. After
-// a row is dealt with, focus goes to the next row (or its section's title),
-// never back to the page.
+// move, so she is never asked two opposite things about the same file. Files
+// that only share a name are different files: they are listed apart, with no
+// tick boxes, and never suggested for the Recycle Bin (audit T-16). The one
+// primary button is the Organize card's; the section actions are plain ones
+// (audit T-30). After a row is dealt with, focus goes to the next row (or its
+// section's title), never back to the page.
 
 import { CheckCheck, ChevronRight, CircleCheck, FolderTree, Trash } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -17,11 +20,19 @@ import { KindTile } from "../components/icons";
 import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
 import { OPEN_CARD_MAX, PAGE, useShown } from "../lib/paging";
-import { describeError, recycleFailureText } from "../lib/errors";
+import { describeError, moveEachText, recycleFailureText } from "../lib/errors";
 import { locationLine, monthName, relativeTime } from "../lib/format";
-import { ipc } from "../lib/ipc";
+import { ipc, logRenderer } from "../lib/ipc";
 import type { AppInfo, CleanupReport, OrganizePlan, Suggestion } from "../lib/types";
-import { moveOpIds, useApp } from "../store/app";
+import { movedOps, stampNote, useApp } from "../store/app";
+
+/** What a change says when it is done, and what its toast's Undo reverses. */
+interface Outcome {
+  text: string;
+  error?: boolean;
+  undoIds?: number[];
+  undoBatch?: string;
+}
 
 function dirLabel(dir: string, roots: string[]): string {
   return locationLine(dir, roots).replace(/^in /, "");
@@ -82,7 +93,7 @@ function afterSuggestion(path: string): string[] {
  * a re-render keeps its rows (and the focus in them) instead of building a
  * new component each time.
  */
-function SuggestionList({ items, testId, roots, onAccept, onPick, onSkip }: { items: Suggestion[]; testId: string; roots: string[]; onAccept(s: Suggestion): void; onPick(path: string): void; onSkip(path: string): void }) {
+function SuggestionList({ items, testId, roots, onAccept, onPick, onSkip, onRecycle }: { items: Suggestion[]; testId: string; roots: string[]; onAccept(s: Suggestion): void; onPick(path: string): void; onSkip(path: string): void; onRecycle?(s: Suggestion): void }) {
   return (
     <div className="rows" data-testid={testId}>
       {items.map((s) => (
@@ -98,6 +109,12 @@ function SuggestionList({ items, testId, roots, onAccept, onPick, onSkip }: { it
             <button type="button" className="button" onClick={() => onAccept(s)}>
               Move it there
             </button>
+            {onRecycle && (
+              <button type="button" className="button" onClick={() => onRecycle(s)} data-testid="suggestion-recycle">
+                <Trash size={18} aria-hidden />
+                Recycle Bin
+              </button>
+            )}
             <button type="button" className="button button-subtle" onClick={() => onPick(s.file.path)}>
               Somewhere else
             </button>
@@ -118,6 +135,8 @@ export function CleanupView({ info }: { info: AppInfo }) {
   const [skipped, setSkipped] = useState<string[]>([]);
   const [picking, setPicking] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
+  /** An old download she asked to send to the Recycle Bin, waiting for her yes. */
+  const [recycling, setRecycling] = useState<Suggestion | null>(null);
   const [plan, setPlan] = useState<OrganizePlan | null>(null);
   const [organizing, setOrganizing] = useState<"closed" | "open" | "busy">("closed");
   const toast = useApp((s) => s.toast);
@@ -132,6 +151,7 @@ export function CleanupView({ info }: { info: AppInfo }) {
     } catch (error) {
       // The sentence sits where the cards would be, with Try again; never a skeleton for good.
       console.warn("Tote:", error);
+      logRenderer("error", describeError(error));
       setLoadError(describeError(error));
     }
   }, []);
@@ -163,10 +183,10 @@ export function CleanupView({ info }: { info: AppInfo }) {
   }, [load]);
 
   /** Runs one change, says what happened, reloads, then focuses the first of `then` still on screen. */
-  const act = async (work: () => Promise<number[] | void>, done: string, then: string[]) => {
+  const act = async (work: () => Promise<Outcome>, then: string[]) => {
     try {
-      const undoIds = await work();
-      toast(done, "info", undoIds ?? undefined);
+      const done = await work();
+      toast(done.text, done.error ? "error" : "info", done.undoIds, done.undoBatch);
       await load();
     } catch (error) {
       fail(error);
@@ -175,10 +195,24 @@ export function CleanupView({ info }: { info: AppInfo }) {
     focusSoon(...then);
   };
 
-  const accept = (s: Suggestion) => act(async () => moveOpIds(await ipc.moveFiles([s.file.path], s.suggestedDir)), `Moved to ${dirLabel(s.suggestedDir, info.roots)}.`, afterSuggestion(s.file.path));
+  /** One file to one folder; a file from the web that lost its mark on the way says so (audit T-43). */
+  const moveOne = async (path: string, dir: string): Promise<Outcome> => {
+    const ops = await movedOps(await ipc.moveFiles([path], dir));
+    return { text: `Moved to ${dirLabel(dir, info.roots)}.${stampNote(ops)}`, undoIds: ops.map((op) => op.id) };
+  };
+  const accept = (s: Suggestion) => act(() => moveOne(s.file.path, s.suggestedDir), afterSuggestion(s.file.path));
   const moveTo = (path: string, dir: string) => {
     setPicking(null);
-    return act(async () => moveOpIds(await ipc.moveFiles([path], dir)), `Moved to ${dirLabel(dir, info.roots)}.`, afterSuggestion(path));
+    return act(() => moveOne(path, dir), afterSuggestion(path));
+  };
+  const recycleOld = (s: Suggestion) => {
+    setRecycling(null);
+    return act(async () => {
+      const ops = await ipc.recycleFiles([s.file.path]);
+      // A refused file comes back as a failed row with its reason (a flash drive, a long folder name).
+      const trouble = recycleFailureText(ops);
+      return trouble ? { text: trouble, error: true } : { text: "Moved to the Recycle Bin.", undoIds: ops.map((o) => o.id) };
+    }, afterSuggestion(s.file.path));
   };
   const skip = (path: string) => {
     const then = afterSuggestion(path);
@@ -202,13 +236,16 @@ export function CleanupView({ info }: { info: AppInfo }) {
     // The ticked copies are gone and the button is off until the next tick: its section's title, or the next section.
     focusSoon('[data-testid="dupes-card-toggle"]', ...SECTION_TITLES);
   };
+  // One move_each call, so Activity shows one row with Undo all and the toast's Undo takes them all back.
   const acceptAll = (items: Suggestion[]) => {
     const live = items.filter((s) => !skipped.includes(s.file.path));
     return act(async () => {
-      const moved: string[] = [];
-      for (const s of live) moved.push(...(await ipc.moveFiles([s.file.path], s.suggestedDir)));
-      return moveOpIds(moved);
-    }, `Moved ${live.length} files into School Files.`, ['[data-testid="desktop-card-toggle"]', ...SECTION_TITLES]);
+      const result = await ipc.moveEach(live.map((s) => ({ path: s.file.path, destination: s.suggestedDir })));
+      const said = moveEachText(result, "School Files");
+      const ops = await movedOps(result.moved);
+      const undo = result.batch ? { undoBatch: result.batch } : { undoIds: ops.map((op) => op.id) };
+      return { text: said.error ? said.text : `${said.text}${stampNote(ops)}`, error: said.error, ...undo };
+    }, ['[data-testid="desktop-card-toggle"]', ...SECTION_TITLES]);
   };
   const listActions = { roots: info.roots, onAccept: (s: Suggestion) => void accept(s), onPick: setPicking, onSkip: skip };
 
@@ -220,7 +257,8 @@ export function CleanupView({ info }: { info: AppInfo }) {
   const oldDownloads = notSkipped(notCopies(report?.oldDownloads ?? []));
   const moveAllLabel = (n: number) => (n === 1 ? "Move it as suggested" : `Move all ${n.toLocaleString()} as suggested`);
   const loose = plan?.moves.length ?? 0;
-  const tidy = (report?.duplicates.length ?? 0) === 0 && desktop.length === 0 && oldDownloads.length === 0 && loose === 0;
+  const sameName = report?.sameName ?? [];
+  const tidy = (report?.duplicates.length ?? 0) === 0 && sameName.length === 0 && desktop.length === 0 && oldDownloads.length === 0 && loose === 0;
 
   return (
     <div className="main-inner" data-testid="cleanup-view">
@@ -257,7 +295,7 @@ export function CleanupView({ info }: { info: AppInfo }) {
               </button>
             </section>
           )}
-          {(report.duplicates.length > 0 || desktop.length > 0 || oldDownloads.length > 0) && (
+          {(report.duplicates.length > 0 || sameName.length > 0 || desktop.length > 0 || oldDownloads.length > 0) && (
             <div className="card fold-group" data-testid="tidy-card">
               {report.duplicates.length > 0 && (
                 <FoldSection
@@ -312,6 +350,31 @@ export function CleanupView({ info }: { info: AppInfo }) {
                   }
                 </FoldSection>
               )}
+              {sameName.length > 0 && (
+                <FoldSection id="same" title="Same name, different files" lead="These share a name but are different files, so Tote keeps them all." count={sameName.length} testId="same-name-card">
+                  {(shown) =>
+                    sameName.slice(0, shown).map((group) => (
+                      <div key={group.latest.path} className="dupe-group" data-testid="same-name-group">
+                        {/* The native side lists them in sameName; others is read when a group arrives that way. */}
+                        {[group.latest, ...(group.sameName.length > 0 ? group.sameName : group.others)].map((row) => (
+                          <div key={row.path} className="suggestion">
+                            <KindTile kind={row.kind} ext={row.ext} />
+                            <div className="suggestion-text">
+                              <strong>{row.name}</strong>
+                              <span>
+                                edited {relativeTime(row.modified)} · {locationLine(row.parent, info.roots)}
+                              </span>
+                            </div>
+                            <button type="button" className="button button-subtle" onClick={() => void ipc.open(row.path).catch(fail)} aria-label={`Open ${row.name} ${locationLine(row.parent, info.roots)}`}>
+                              Open
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ))
+                  }
+                </FoldSection>
+              )}
               {desktop.length > 0 && (
                 <FoldSection
                   id="desktop"
@@ -320,7 +383,7 @@ export function CleanupView({ info }: { info: AppInfo }) {
                   count={desktop.length}
                   testId="desktop-card"
                   action={
-                    <button type="button" className="button button-primary" onClick={() => void acceptAll(desktop)} data-testid="desktop-move-all">
+                    <button type="button" className="button" onClick={() => void acceptAll(desktop)} data-testid="desktop-move-all">
                       {moveAllLabel(desktop.length)}
                     </button>
                   }
@@ -330,7 +393,7 @@ export function CleanupView({ info }: { info: AppInfo }) {
               )}
               {oldDownloads.length > 0 && (
                 <FoldSection id="old" title="Old downloads" lead="Untouched for two months or more." count={oldDownloads.length} testId="old-card">
-                  {(shown) => <SuggestionList items={oldDownloads.slice(0, shown)} testId="old-downloads-list" {...listActions} />}
+                  {(shown) => <SuggestionList items={oldDownloads.slice(0, shown)} testId="old-downloads-list" {...listActions} onRecycle={setRecycling} />}
                 </FoldSection>
               )}
             </div>
@@ -341,6 +404,22 @@ export function CleanupView({ info }: { info: AppInfo }) {
         <OrganizeDialog plan={plan} schoolFiles={info.schoolFiles} busy={organizing === "busy"} onConfirm={() => void organize()} onClose={() => setOrganizing("closed")} />
       )}
       {picking && <FolderPicker count={1} warnOld onPick={(dir) => void moveTo(picking, dir)} onClose={() => setPicking(null)} />}
+      {recycling && (
+        <Dialog title="Move this file to the Recycle Bin?" onClose={() => setRecycling(null)} testId="old-recycle-confirm">
+          <ul className="dialog-files" aria-label="Files">
+            <li>{recycling.file.name}</li>
+          </ul>
+          <p>A file on this computer goes to the Recycle Bin, so you can bring it back from Activity or from the Recycle Bin. A file on a flash drive or a network folder stays where it is.</p>
+          <div className="dialog-actions">
+            <button type="button" className="button" onClick={() => setRecycling(null)}>
+              Keep it
+            </button>
+            <button type="button" className="button" onClick={() => void recycleOld(recycling)}>
+              Move to Recycle Bin
+            </button>
+          </div>
+        </Dialog>
+      )}
       {confirm && (
         <Dialog title={ticked.length === 1 ? "Move 1 copy to the Recycle Bin?" : `Move ${ticked.length} copies to the Recycle Bin?`} onClose={() => setConfirm(false)}>
           <p>The Latest copy stays. Copies on this computer go to the Recycle Bin, so you can bring them back. A copy on a flash drive or a network folder stays where it is.</p>

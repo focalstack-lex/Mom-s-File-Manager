@@ -13,9 +13,9 @@ describe("browser notice", () => {
   });
 
   it("names the browsers that need a change, once each", () => {
-    expect(browserNotice([ok("Chrome"), bad("Edge")])).toBe("Edge saves some downloads outside Downloads, so they will not be filed.");
+    expect(browserNotice([ok("Chrome"), bad("Edge")])).toBe("Edge saves some downloads outside Downloads, so Recent downloads may miss them.");
     expect(browserNotice([bad("Chrome", "A"), bad("Chrome", "B"), bad("Edge"), bad("Firefox")])).toBe(
-      "Chrome, Edge and Firefox save some downloads outside Downloads, so they will not be filed.",
+      "Chrome, Edge and Firefox save some downloads outside Downloads, so Recent downloads may miss them.",
     );
   });
 

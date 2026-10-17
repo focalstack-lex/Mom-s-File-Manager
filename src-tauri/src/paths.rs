@@ -100,7 +100,7 @@ impl Roots {
             .any(|r| same_path(&r, &wanted) || same_path(&r, path))
     }
 
-    /// `Documents\School Files`, where sorted downloads go (spec 5.1).
+    /// `Documents\School Files`, where Move to Tote and Organize file things (spec 5.1, 5.11).
     pub fn school_files(&self) -> Result<PathBuf> {
         self.documents
             .as_ref()

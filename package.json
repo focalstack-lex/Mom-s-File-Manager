@@ -2,7 +2,7 @@
   "name": "tote",
   "private": true,
   "version": "0.3.0",
-  "description": "Tote: finds a teacher's files and keeps new downloads filed, with no new routines to learn.",
+  "description": "Tote: finds a teacher's files and files the ones she sends it with one right-click.",
   "license": "MIT",
   "type": "module",
   "scripts": {

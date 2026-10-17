@@ -1,10 +1,10 @@
 # Tote
 
-Tote finds a teacher's files and keeps new downloads filed, with no new routines to learn. Built for one real user first: Lex's mother, a public school teacher on a Windows laptop whose files are saved everywhere.
+Tote finds a teacher's files and files the ones she sends it with one right-click, with no other routine to learn. Built for one real user first: Lex's mother, a public school teacher on a Windows laptop whose files are saved everywhere.
 
 What it does:
 
-- Watches Downloads and files every finished download into `Documents\School Files\<Type>\<YYYY-MM>`, remembering where it came from (Messenger, Gmail, Google Drive, DepEd, or the site).
+- Files what she sends it: right-click a file in File Explorer and choose **Move to Tote** (under Show more options on Windows 11). Tote puts it in `Documents\School Files` by grade and subject from the name (the Organize rule), else by type and month, answers with a Windows message, and Activity can undo it. Nothing moves on its own (Lex's decision, 2026-10-17); a download keeps where it came from (Messenger, Gmail, Google Drive, DepEd, or the site).
 - Indexes Desktop, Documents, Downloads, Pictures, Videos, Music and OneDrive, including the words inside Word, Excel, PowerPoint, PDF and text files, so typing a student's name finds `Book1.xlsx`. Build output inside code projects is skipped.
 - Notices downloads a browser saved somewhere else (by the browser's web stamp) and lists them under Recent downloads without moving them, and checks each browser's download settings.
 - One Find screen: a big search box, Recent downloads, pinned files, date and type and source filters, copies grouped with the newest marked Latest, a quick preview, and Copy to paste a file into a message.
@@ -64,7 +64,7 @@ cd src-tauri
 cargo build --release --features tauri/custom-protocol
 ```
 
-The feature matters: a plain `cargo build --release` makes a dev-mode exe (tauri's build script turns dev on when `custom-protocol` is off) whose window asks `http://localhost:1430` for its page, so the native check stops at the first screen with ERR_CONNECTION_REFUSED. On this checkout, set the `TAURI_CONFIG` override first (see "Building on a path with an apostrophe"). The check seeds `%LOCALAPPDATA%\tote-native-check` with fake messy files, launches the app in test mode, drops downloads with real `Zone.Identifier` streams, and checks filing, search, move, rename, pin, Recycle Bin, Undo, Clean up, To do (attachments that follow a move, a restart, the morning reminder, recovery of a damaged list) and Settings against the disk and the database. Evidence lands in `reports/native-check/<stamp>/`.
+The feature matters: a plain `cargo build --release` makes a dev-mode exe (tauri's build script turns dev on when `custom-protocol` is off) whose window asks `http://localhost:1430` for its page, so the native check stops at the first screen with ERR_CONNECTION_REFUSED. On this checkout, set the `TAURI_CONFIG` override first (see "Building on a path with an apostrophe"). The check seeds `%LOCALAPPDATA%\tote-native-check` with fake messy files, launches the app in test mode, drops downloads with real `Zone.Identifier` streams and checks they stay, sends files with Move to Tote the way File Explorer does (a second `tote.exe --move-to-tote <file>`, handed to the running test app), and checks search, move, rename, pin, Recycle Bin, Undo, Clean up, To do (attachments that follow a move, a restart, the morning reminder, recovery of a damaged list) and Settings against the disk and the database. Evidence lands in `reports/native-check/<stamp>/`.
 
 ### Test mode
 
@@ -80,8 +80,8 @@ In test mode the app never registers itself to start at login and logs at debug 
 
 ## Installing on her laptop
 
-1. Run `Tote_<version>_x64-setup.exe`. It installs for the current user; no admin password.
-2. **Set every browser she uses to save straight to Downloads.** Tote files only what lands there.
+1. Run `Tote_<version>_x64-setup.exe`. It installs for the current user; no admin password. It also adds **Move to Tote** to File Explorer's right-click menu for her account (on Windows 11 under Show more options, or Shift and right-click); uninstalling removes it.
+2. **Set every browser she uses to save straight to Downloads**, so Recent downloads lists every new file for her to send to Tote.
    - Chrome, Edge, Brave: Settings > Downloads > Location: Downloads, and turn off "Ask where to save each file".
    - Firefox: Settings > General > Files and Applications > Save files to: Downloads, and turn off "Always ask you where to save files".
    - Tote checks this itself: Settings > Browsers shows each browser and profile, and the Find screen shows one line while any of them needs a change.
@@ -182,7 +182,7 @@ A checkout on a plain path (as in CI) needs none of this. Renaming the folder is
 
 ## Safety rules
 
-- Only new downloads move automatically. Existing files are indexed, never moved, unless she moves them.
+- Nothing moves on its own. A file moves only when she sends it with Move to Tote or moves it with Move to, Organize or Clean up.
 - Nothing is overwritten (`Name (2).docx`), nothing is deleted for good (Recycle Bin only), every change is undoable.
 - Every file command validates on the Rust side that the path resolves inside Desktop, Documents, Downloads or OneDrive.
 - Failures are logged and shown in Activity in plain words; nothing fails silently.

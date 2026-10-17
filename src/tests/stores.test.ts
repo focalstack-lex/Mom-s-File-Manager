@@ -23,7 +23,7 @@ const mock: MockBackend = {
 // vitest runs these in node; the stores only need window for the mock and timers.
 Object.assign(globalThis, { window: Object.assign(globalThis, { __toteMock: mock }) });
 
-const { useApp } = await import("../store/app");
+const { movedOps, stampNote, useApp } = await import("../store/app");
 const { useFind } = await import("../store/find");
 const { useTodo } = await import("../store/todo");
 
@@ -69,6 +69,20 @@ describe("app store", () => {
     answers.set("browser_check", () => []);
     await useApp.getState().checkBrowsers();
     expect(useApp.getState()).toMatchObject({ browsers: [], browsersError: null });
+  });
+});
+
+describe("move toasts", () => {
+  const op = (id: number, dst: string, stampLost: boolean) => ({ id, kind: "move", src: `C:\\u\\Downloads\\${id}.pdf`, dst, status: "done", message: null, automatic: false, createdAt: id, batch: null, stampLost });
+
+  it("finds the rows of the files just moved and says when one lost its web mark (audit T-43)", async () => {
+    answers.set("list_activity", () => [op(1, "E:\\a.pdf", true), op(2, "E:\\b.pdf", false), op(3, "C:\\c.pdf", true)]);
+    const ops = await movedOps(["E:\\a.pdf", "E:\\b.pdf"]);
+    expect(ops.map((o) => o.id)).toEqual([1, 2]);
+    expect(stampNote(ops)).toBe(" Windows will no longer mark 1 of them as from the internet.");
+    expect(stampNote(ops.slice(0, 1))).toBe(" Windows will no longer mark it as from the internet.");
+    expect(stampNote(ops.slice(1))).toBe("");
+    expect(stampNote([ops[0], { ...ops[0], id: 9 }])).toBe(" Windows will no longer mark them as from the internet.");
   });
 });
 

@@ -16,5 +16,5 @@ export function browserNotice(all: BrowserStatus[] | null): string | null {
   const names = [...new Set(needing.map((s) => s.browser))];
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
   const verb = names.length === 1 ? "saves" : "save";
-  return `${list} ${verb} some downloads outside Downloads, so they will not be filed.`;
+  return `${list} ${verb} some downloads outside Downloads, so Recent downloads may miss them.`;
 }

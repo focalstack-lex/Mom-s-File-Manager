@@ -61,9 +61,17 @@ export function foldBatches(ops: OpRow[]): ActivityEntry[] {
  * Organize run, "Moved 4 files to the Recycle Bin" or "Moved 3 files to
  * October 2026" when several ticked files were sent at once. A row that
  * failed is never counted as done: "Moved 1 of 2 files to the Recycle Bin",
- * and "Could not move 2 files to the Recycle Bin" when none went.
+ * and "Could not move 2 files to the Recycle Bin" when none went. After an
+ * Undo all the row says what came back ("Put back 1 of 2 files"), never what
+ * moved, because the undone rows are no longer in their new place.
  */
 export function batchTitle(ops: OpRow[]): string {
+  const undone = ops.filter((o) => o.status === "undone");
+  if (undone.length > 0) {
+    const all = ops.length === 1 ? "1 file" : `${ops.length.toLocaleString()} files`;
+    const back = undone.length === ops.length ? all : `${undone.length.toLocaleString()} of ${all}`;
+    return `Put back ${back}`;
+  }
   const went = ops.filter((o) => o.status !== "failed");
   const folderOf = (o: OpRow) => (o.dst ?? "").slice(0, (o.dst ?? "").lastIndexOf("\\"));
   // The folders the files reached; when none did, the ones they were meant for.
@@ -76,7 +84,9 @@ export function batchTitle(ops: OpRow[]): string {
     const [only] = folders;
     return folders.size === 1 && only ? `${verb} ${count} to ${monthName(only.split("\\").pop() ?? only)}` : `${verb} ${count}`;
   }
-  if (went.length === 0) return `Could not organize ${total}`;
   const into = folders.size === 1 ? "1 folder" : `${folders.size.toLocaleString()} folders`;
+  // Several files sent at once with File Explorer's Move to Tote (filing.rs).
+  if ((ops[0]?.batch ?? "").startsWith("tote-")) return went.length === 0 ? `Could not file ${total}` : `Filed ${count} into ${into}`;
+  if (went.length === 0) return `Could not organize ${total}`;
   return `Organized ${count} into ${into}`;
 }

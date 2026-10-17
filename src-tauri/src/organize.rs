@@ -234,7 +234,7 @@ pub fn run(core: &crate::state::Core, rules: &[SubjectRule], wanted: &[String]) 
     let mut failed = Vec::new();
     let mut folders = std::collections::HashSet::new();
     for m in plan.moves.iter().filter(|m| wanted.iter().any(|w| paths::same_path(w, Path::new(&m.path)))) {
-        match ops::move_file_in_batch(core, roots, &core.placed, Path::new(&m.path), Path::new(&m.dest_dir), &batch) {
+        match ops::move_file_in_batch(core, roots, Path::new(&m.path), Path::new(&m.dest_dir), &batch) {
             Ok(_) => {
                 moved += 1;
                 folders.insert(m.dest_dir.clone());
@@ -358,7 +358,6 @@ mod tests {
             data_dir: std::path::PathBuf::new(),
             tasks_restored: None,
             tasks_unavailable: false,
-            placed: Default::default(),
         };
         let rules = default_rules();
         let wanted = vec![desktop.join("Grade 7 Science Quiz.docx").to_string_lossy().into_owned(), desktop.join("notes.txt").to_string_lossy().into_owned()];
@@ -370,11 +369,49 @@ mod tests {
         assert!(school.join("Grade 7").join("Science").join("Grade 7 Science Quiz.docx").is_file());
         assert!(downloads.join("Not chosen.pdf").is_file(), "only confirmed files move");
         let conn = core.db().unwrap();
-        let undone = crate::ops::undo_batch(&conn, &core.roots, &core.placed, &result.batch).unwrap();
+        let undone = crate::ops::undo_batch(&conn, &core.roots, &result.batch).unwrap();
         assert_eq!(undone.undone, 2);
         assert!(desktop.join("Grade 7 Science Quiz.docx").is_file());
         assert!(desktop.join("notes.txt").is_file());
         assert!(!school.join("Grade 7").exists(), "folders the run created and left empty are removed");
+    }
+
+    /// Undo all removes only the folders the run created: a folder she
+    /// made before, even an empty one, stays (audit T-45).
+    #[test]
+    fn undo_all_keeps_a_folder_she_made_before_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (desktop, documents, downloads) = (dir.path().join("Desktop"), dir.path().join("Documents"), dir.path().join("Downloads"));
+        for d in [&desktop, &documents, &downloads] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let school = documents.join("School Files");
+        let hers = school.join("Grade 7");
+        std::fs::create_dir_all(&hers).unwrap();
+        std::fs::write(desktop.join("Grade 7 Science Quiz.docx"), "q").unwrap();
+        std::fs::write(desktop.join("Grade 7 seat plan.xlsx"), "s").unwrap();
+        let core = crate::state::Core {
+            db: std::sync::Mutex::new(crate::db::open_memory().unwrap()),
+            roots: Roots::explicit(desktop.clone(), documents.clone(), downloads.clone()),
+            status: std::sync::Mutex::new(Default::default()),
+            recovered: false,
+            rebuilt: None,
+            data_dir: std::path::PathBuf::new(),
+            tasks_restored: None,
+            tasks_unavailable: false,
+        };
+        let wanted = vec![desktop.join("Grade 7 Science Quiz.docx").to_string_lossy().into_owned(), desktop.join("Grade 7 seat plan.xlsx").to_string_lossy().into_owned()];
+        let result = run(&core, &default_rules(), &wanted).unwrap();
+        assert_eq!(result.moved, 2);
+        assert!(hers.join("Science").join("Grade 7 Science Quiz.docx").is_file());
+        assert!(hers.join("Grade 7 seat plan.xlsx").is_file());
+        let conn = core.db().unwrap();
+        let undone = crate::ops::undo_batch(&*conn, &core.roots, &result.batch).unwrap();
+        assert_eq!(undone.undone, 2);
+        assert!(desktop.join("Grade 7 Science Quiz.docx").is_file() && desktop.join("Grade 7 seat plan.xlsx").is_file());
+        assert!(!hers.join("Science").exists(), "the run made Science, so it goes");
+        assert!(hers.is_dir(), "she made Grade 7 before the run, so it stays");
+        assert!(school.is_dir());
     }
 
     /// The renderer's path and the plan's path can name the same file in
@@ -397,7 +434,6 @@ mod tests {
             data_dir: std::path::PathBuf::new(),
             tasks_restored: None,
             tasks_unavailable: false,
-            placed: Default::default(),
         };
         let spelled = desktop.join(".").join("Grade 7 Science Quiz.docx");
         let result = run(&core, &default_rules(), &[spelled.to_string_lossy().into_owned()]).unwrap();

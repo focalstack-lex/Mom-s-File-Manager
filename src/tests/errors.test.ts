@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CODE_SENTENCES, describeError, isPlain, plainMessage, recycleFailureText, undoText } from "../lib/errors";
+import { CODE_SENTENCES, describeError, isPlain, moveEachText, plainMessage, recycleFailureText, undoText } from "../lib/errors";
 import { snippetHtml, snippetText } from "../components/ResultRow";
 import { describeOp, fileStillThere } from "../views/ActivityView";
 import type { OpRow, ToteError } from "../lib/types";
@@ -84,7 +84,7 @@ describe("undoText", () => {
 });
 
 describe("recycleFailureText", () => {
-  const row = (src: string, status: OpRow["status"], message: string | null = null): OpRow => ({ id: 1, kind: "recycle", src, dst: null, status, message, automatic: false, createdAt: 0, batch: null });
+  const row = (src: string, status: OpRow["status"], message: string | null = null): OpRow => ({ id: 1, kind: "recycle", src, dst: null, status, message, automatic: false, createdAt: 0, batch: null, stampLost: false });
 
   it("is silent when every file went to the Recycle Bin", () => {
     expect(recycleFailureText([row("C:\\a\\Quiz.docx", "done")])).toBeNull();
@@ -94,8 +94,9 @@ describe("recycleFailureText", () => {
     const refused = row("C:\\a\\Deep Quiz.docx", "failed", "This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.");
     expect(recycleFailureText([refused])).toBe("Deep Quiz.docx: This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.");
     expect(recycleFailureText([row("C:\\a\\A.docx", "done"), refused, row("C:\\a\\B.docx", "done")])).toBe("Moved 2 of 3 to the Recycle Bin. Deep Quiz.docx: This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.");
-    expect(recycleFailureText([row("C:\\a\\C.docx", "failed")])).toBe("C.docx: Windows could not move it to the Recycle Bin.");
-    expect(recycleFailureText([row("C:\\a\\C.docx", "failed", RAW_TEXTS[1])])).toBe("C.docx: Windows could not move it to the Recycle Bin.");
+    const fallback = "C.docx: Windows could not move it to the Recycle Bin. Open the Recycle Bin to check, or delete it in File Explorer if you are sure.";
+    expect(recycleFailureText([row("C:\\a\\C.docx", "failed")])).toBe(fallback);
+    expect(recycleFailureText([row("C:\\a\\C.docx", "failed", RAW_TEXTS[1])])).toBe(fallback);
   });
 
   it("words a failed Recycle Bin row in Activity with its reason, and hides Show the file once the file is gone", () => {
@@ -113,7 +114,7 @@ describe("recycleFailureText", () => {
 
 describe("describeOp for changes that failed", () => {
   const roots = ["C:\\u\\Documents", "C:\\u\\Desktop"];
-  const op = (kind: OpRow["kind"], src: string, dst: string | null, status: OpRow["status"], message: string | null): OpRow => ({ id: 7, kind, src, dst, status, message, automatic: false, createdAt: 0, batch: null });
+  const op = (kind: OpRow["kind"], src: string, dst: string | null, status: OpRow["status"], message: string | null): OpRow => ({ id: 7, kind, src, dst, status, message, automatic: false, createdAt: 0, batch: null, stampLost: false });
   const inUse = "That file is open in another program. Close it there, then try again.";
 
   it("says Could not move or rename with the reason, never the success sentence", () => {
@@ -128,7 +129,8 @@ describe("describeOp for changes that failed", () => {
   it("gives a next step when the row has no reason and replaces program text", () => {
     expect(describeOp(op("move", "C:\\u\\Desktop\\Quiz.docx", null, "failed", null), roots).detail).toBe("It is still where it was. Try again from Find.");
     expect(describeOp(op("rename", "C:\\u\\Desktop\\Quiz.docx", null, "failed", RAW_TEXTS[0]), roots).detail).not.toMatch(PROGRAM_TEXT);
-    expect(describeOp(op("autoSort", "C:\\u\\Downloads\\budget.xlsx", null, "failed", RAW_TEXTS[2]), roots).detail).toBe("It is still in Downloads.");
+    const filing = describeOp(op("autoSort", "C:\\u\\Downloads\\budget.xlsx", null, "failed", RAW_TEXTS[2]), roots);
+    expect(filing).toEqual({ title: "Could not file budget.xlsx", detail: "It is still where it was. Right-click it in File Explorer to try again." });
   });
 
   it("keeps the success wording for changes that worked", () => {
@@ -156,5 +158,18 @@ describe("snippetText", () => {
   it("gives a screen reader the snippet's words without the marks (audit T-22)", () => {
     const [start, end] = [String.fromCharCode(0xe000), String.fromCharCode(0xe001)];
     expect(snippetText(`Santos ${start}Reyes${end} Dela Cruz [Name]`)).toBe("Santos Reyes Dela Cruz [Name]");
+  });
+});
+
+describe("moveEachText", () => {
+  const inUse = "That file is open in another program. Close it there, then try again.";
+  it("says how many moved, with the right plural (audit T-30)", () => {
+    expect(moveEachText({ batch: "move-1", moved: ["a", "b"], failed: [] }, "School Files")).toEqual({ text: "Moved 2 files into School Files.", error: false });
+    expect(moveEachText({ batch: null, moved: ["a"], failed: [] }, "School Files")).toEqual({ text: "Moved 1 file into School Files.", error: false });
+  });
+
+  it("names the first file that stayed with its reason, and never passes program text", () => {
+    expect(moveEachText({ batch: "move-1", moved: ["a"], failed: [{ name: "Quiz.docx", message: inUse }] }, "School Files")).toEqual({ text: `Moved 1 of 2 files into School Files. Quiz.docx: ${inUse}`, error: true });
+    expect(moveEachText({ batch: null, moved: [], failed: [{ name: "Quiz.docx", message: "Access is denied. (os error 5)" }, { name: "B.pdf", message: inUse }] }, "School Files").text).toBe("None of the 2 could be moved. Quiz.docx: It is still where it was. Try again in a moment.");
   });
 });

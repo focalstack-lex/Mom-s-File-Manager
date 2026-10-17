@@ -47,7 +47,13 @@ export function Tour({ onFinish }: { onFinish(): void }) {
       setTarget(el ? ringBox(el) : null);
       setViewport({ width: window.innerWidth, height: window.innerHeight });
       setMinTop(cardTop());
-      if (cardRef.current) setCard({ width: cardRef.current.offsetWidth, height: cardRef.current.offsetHeight });
+      // Fractional, unlike offsetWidth/offsetHeight: the ring's box is also
+      // fractional, and a rounded-up height lands the card 0.4 px inside it
+      // at 640x480 (measured 2026-10-18).
+      if (cardRef.current) {
+        const box = cardRef.current.getBoundingClientRect();
+        setCard({ width: box.width, height: box.height });
+      }
     };
     // Bring the target on screen; when the card then has no free side
     // (a small window), move the target to the top of its scrolling area
@@ -55,7 +61,8 @@ export function Tour({ onFinish }: { onFinish(): void }) {
     const measure = () => {
       const el = find();
       if (el) {
-        const size = cardRef.current ? { width: cardRef.current.offsetWidth, height: cardRef.current.offsetHeight } : { width: 360, height: 200 };
+        const box = cardRef.current?.getBoundingClientRect();
+        const size = box ? { width: box.width, height: box.height } : { width: 360, height: 200 };
         const view = { width: window.innerWidth, height: window.innerHeight };
         const fits = () => placeCard(ringBox(el), size, view, 24, cardTop()).fits;
         el.scrollIntoView({ block: "nearest", inline: "nearest" });

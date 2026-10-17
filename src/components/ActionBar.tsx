@@ -12,7 +12,7 @@ import { recycleFailureText } from "../lib/errors";
 import { focusSoon, neighbourRows, rowTarget } from "../lib/focus";
 import { locationLine } from "../lib/format";
 import { ipc } from "../lib/ipc";
-import { moveOpIds, useApp } from "../store/app";
+import { movedOps, stampNote, useApp } from "../store/app";
 import { allRows, useFind } from "../store/find";
 import { Dialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
@@ -57,7 +57,9 @@ export function ActionBar({ onRename }: { onRename(path: string): void }) {
       await refresh();
       // The toast names the folder the way Find does ("School Files > Word > October 2026").
       const where = locationLine(destination, roots).replace(/^in /, "");
-      toast(moved.length === 1 ? `Moved to ${where}.` : `Moved ${moved.length} files to ${where}.`, "info", await moveOpIds(moved));
+      // A file from the web that lost its mark on a flash drive says so (audit T-43).
+      const ops = await movedOps(moved);
+      toast(`${moved.length === 1 ? `Moved to ${where}.` : `Moved ${moved.length} files to ${where}.`}${stampNote(ops)}`, "info", ops.map((op) => op.id));
       // A recent download stays listed in its new place; focus follows it there.
       focusSoon(moved[0] ? rowTarget(moved[0]) : null, ...nextRows);
     } catch (error) {

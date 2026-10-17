@@ -21,7 +21,10 @@ export interface FileRow {
 
 export interface Group {
   latest: FileRow;
+  /** Copies of the latest: the same size, or a name with a copy mark such as "(2)" or "final". */
   others: FileRow[];
+  /** Files that only share the name and are different files; never offered for the Recycle Bin. */
+  sameName: FileRow[];
 }
 
 export interface Filters {
@@ -102,7 +105,8 @@ export interface OrganizeResult {
 
 export interface BatchUndo {
   undone: number;
-  failed: string[];
+  /** A file that could not go back, with the sentence for why. */
+  failed: { name: string; message: string }[];
 }
 
 export interface AppInfo {
@@ -158,6 +162,27 @@ export interface OpRow {
   createdAt: number;
   /** Set when the change was part of an Organize run. */
   batch: string | null;
+  /** The file came from the web and landed on a drive that cannot keep that mark (a FAT32 or exFAT flash drive). */
+  stampLost: boolean;
+}
+
+/** One file for `move_each`: where it is and the folder it goes to. */
+export interface MoveRequest {
+  path: string;
+  destination: string;
+}
+
+/** A file `move_each` left where it was, with the plain reason. */
+export interface MoveFailure {
+  name: string;
+  message: string;
+}
+
+/** What `move_each` did: one batch for several moves, the new paths, and the files that stayed. */
+export interface MoveResult {
+  batch: string | null;
+  moved: string[];
+  failed: MoveFailure[];
 }
 
 export interface Suggestion {
@@ -167,6 +192,8 @@ export interface Suggestion {
 
 export interface CleanupReport {
   duplicates: Group[];
+  /** Files that share a name but are different files: shown, never suggested for the Recycle Bin. */
+  sameName: Group[];
   desktop: Suggestion[];
   oldDownloads: Suggestion[];
 }
@@ -215,10 +242,12 @@ export interface BrowserStatus {
   advice: string;
 }
 
+/** What Move to Tote filed: the first file, its folder, and how many went. */
 export interface SortedEvent {
   name: string;
   folder: string;
   path: string;
+  count: number;
 }
 
 export type Repeat = "never" | "week" | "month" | "quarter";

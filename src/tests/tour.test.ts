@@ -60,6 +60,18 @@ describe("walkthrough", () => {
     }
   });
 
+  // The real 640x480 measurement is fractional (a 190.59 px card beside a
+  // 64.5 px ring). Tour must pass getBoundingClientRect sizes, not
+  // offsetHeight: rounding 190.59 up to 191 clamped the card 0.4 px into the
+  // ring (2026-10-18).
+  it("keeps a fractional card out of a fractional ring when it is the last thing that fits", () => {
+    const target = { top: 208.890625, left: 72, width: 536, height: 64.5 };
+    const card = { width: 320, height: 190.59375 };
+    const placed = placeCard(target, card, { width: 640, height: 480 }, 24, 52);
+    expect(placed.top).toBeGreaterThanOrEqual(target.top + target.height);
+    expect(placed.top + card.height).toBeLessThanOrEqual(480 - 16 + 0.001);
+  });
+
   it("says when no side has room, so the walkthrough scrolls the target first", () => {
     const placed = placeCard({ top: 150, left: 72, width: 520, height: 160 }, { width: 320, height: 190 }, { width: 640, height: 480 }, 24, 52);
     expect(placed.fits).toBe(false);

@@ -226,6 +226,7 @@ mod tests {
             ("paths.rs", include_str!("paths.rs")),
             ("update.rs", include_str!("update.rs")),
             ("worker.rs", include_str!("worker.rs")),
+            ("filing.rs", include_str!("filing.rs")),
             ("lib.rs", include_str!("lib.rs")),
         ];
         let mut sentences: Vec<(String, String)> = [DB_READ, DB_WRITE, IN_USE, FILE_GONE, NAME_TAKEN].iter().map(|s| ("error.rs".to_string(), s.to_string())).collect();

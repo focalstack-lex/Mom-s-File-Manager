@@ -273,12 +273,17 @@ kbd {
   outline-offset: -4px;
 }
 
+/* The bottom padding keeps the last item (Settings) clear of the canvas
+   card's rounded corner: the active tab and its 20 px lower curve must meet
+   the card where its edge is still straight, above the 24 px corner, or the
+   curve hangs below the card (2026-10-17). 48 px is the nearest step over 44
+   on the token scale; every layout of the sidebar keeps it. */
 .sidebar {
   position: relative;
   color: var(--sidebar-text);
   display: flex;
   flex-direction: column;
-  padding: var(--space-1) 0 var(--space-3) var(--space-3);
+  padding: var(--space-1) 0 var(--space-7) var(--space-3);
   gap: var(--space-2);
   min-width: 0;
   /* A short window (200 percent scaling) scrolls the menu, so Settings is
@@ -506,7 +511,7 @@ kbd {
 }
 
 .app.is-collapsed .sidebar {
-  padding: var(--space-1) var(--space-2) var(--space-3);
+  padding: var(--space-1) var(--space-2) var(--space-7);
 }
 
 .app.is-collapsed .brand {
@@ -1594,11 +1599,6 @@ kbd {
   box-shadow: 0 0 0 4px rgba(31, 107, 74, 0.12);
 }
 
-.date-grid input::-webkit-calendar-picker-indicator {
-  cursor: pointer;
-  opacity: 0.6;
-}
-
 .field-error {
   color: var(--coral);
   font-size: var(--text-sm);
@@ -1675,6 +1675,59 @@ kbd {
   flex: 1;
   min-width: 0;
   padding: var(--space-2) 0;
+}
+
+/* Files dragged over the window: one card says where to let go. The native
+   side takes the drop, so the layer never catches the pointer. Above the
+   walkthrough and the title bar: while she drags, this is the only message. */
+
+.drop-zone {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-tour) + 2);
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: rgba(23, 32, 27, 0.45);
+  pointer-events: none;
+}
+
+.drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  width: min(440px, 100%);
+  padding: var(--space-6) var(--space-5);
+  background: var(--bg-card);
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
+  text-align: center;
+}
+
+.drop-mark {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.drop-title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--text-primary);
+}
+
+.drop-text {
+  margin: 0;
+  font-size: var(--text-detail);
+  color: var(--text-muted);
 }
 
 /* Activity */
@@ -2366,7 +2419,7 @@ kbd {
 
   .sidebar,
   .app.is-collapsed .sidebar {
-    padding: var(--space-1) var(--space-2) var(--space-3);
+    padding: var(--space-1) var(--space-2) var(--space-7);
     align-items: center;
   }
 
@@ -2567,8 +2620,7 @@ kbd {
   padding: var(--space-4);
 }
 
-.todo-add-title,
-.todo-due input {
+.todo-add-title {
   min-height: 48px;
   border: 1.5px solid var(--border-strong);
   border-radius: var(--radius);
@@ -2579,13 +2631,7 @@ kbd {
   width: 100%;
 }
 
-.todo-due input {
-  padding: 0 var(--space-3);
-  font-size: 16px;
-}
-
 .todo-add-title:focus,
-.todo-due input:focus,
 .task-details select:focus {
   border-color: var(--accent);
   outline: none;
@@ -2598,6 +2644,177 @@ kbd {
   gap: var(--space-1);
   font-size: var(--text-sm);
   font-weight: 700;
+}
+
+/* The date field and its calendar (components/DatePicker.tsx, 2026-10-17).
+   The field reads like the other inputs and says the day in words; the
+   calendar is a white card under it with 44 px round days: the chosen day
+   filled green, today ringed, a hover in the soft green. Only the shown
+   month's days are drawn, so every number can be picked. */
+.date-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 16px;
+  text-align: left;
+}
+
+.date-field:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.date-field:focus-visible,
+.date-field.is-open {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(31, 107, 74, 0.12);
+}
+
+.date-field:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.date-field-icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.date-field-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.date-field-text.is-empty {
+  color: var(--text-muted);
+}
+
+.date-field-chevron {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.date-field.is-open .date-field-chevron {
+  transform: rotate(180deg);
+}
+
+.date-pop {
+  position: fixed;
+  z-index: calc(var(--z-dialog) + 1);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-float);
+}
+
+.date-pop-head {
+  display: grid;
+  grid-template-columns: 44px 1fr 44px;
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+
+.date-pop-title {
+  margin: 0;
+  text-align: center;
+  font-size: var(--text-md);
+  font-weight: 700;
+}
+
+.date-pop-head .icon-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: transparent;
+}
+
+.date-cal {
+  border-collapse: separate;
+  border-spacing: 2px;
+}
+
+.date-cal th {
+  height: 32px;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.date-cal td {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+}
+
+.date-day {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.date-day:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.date-day.is-today {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 800;
+}
+
+.date-day.is-chosen {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 800;
+}
+
+.date-day.is-chosen:hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+
+/* Outside the dates allowed (a quarter outside the school year): shown so
+   the month keeps its shape, never offered. */
+.date-day:disabled {
+  color: var(--text-faint);
+  opacity: 0.45;
+  cursor: default;
+}
+
+.date-pop-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.todo-due .date-field {
+  min-height: 48px;
+  min-width: 11.5rem;
 }
 
 .todo-add .button-primary {
@@ -2873,7 +3090,8 @@ kbd {
     animation: rise-in 260ms var(--ease-out);
   }
 
-  .dialog-backdrop {
+  .dialog-backdrop,
+  .drop-zone {
     animation: fade-in 180ms ease-out;
   }
 

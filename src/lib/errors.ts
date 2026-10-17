@@ -2,7 +2,7 @@
 // native side words its own failures; this file keeps raw program text off
 // the screen and fills in a sentence when none came.
 
-import type { OpRow, ToteError } from "./types";
+import type { MoveResult, OpRow, ToteError } from "./types";
 
 export function isToteError(value: unknown): value is ToteError {
   return typeof value === "object" && value !== null && "code" in value && "message" in value;
@@ -60,7 +60,22 @@ export function recycleFailureText(ops: OpRow[]): string | null {
   const done = ops.length - failed.length;
   const name = failed[0].src.split(/[\\/]/).pop() || "That file";
   const lead = done > 0 ? `Moved ${done} of ${ops.length} to the Recycle Bin. ` : "";
-  return `${lead}${name}: ${plainMessage(failed[0].message, "Windows could not move it to the Recycle Bin.")}`;
+  return `${lead}${name}: ${plainMessage(failed[0].message, "Windows could not move it to the Recycle Bin. Open the Recycle Bin to check, or delete it in File Explorer if you are sure.")}`;
+}
+
+/**
+ * What a Move all says (`move_each`): "Moved 7 files into School Files.", or
+ * "Moved 1 of 2 files into School Files. Grade 7 Quiz.docx: That file is open
+ * in another program. Close it there, then try again." `error` is true when a
+ * file stayed, so the toast is coral.
+ */
+export function moveEachText(result: MoveResult, where: string): { text: string; error: boolean } {
+  const done = result.moved.length;
+  const total = done + result.failed.length;
+  if (result.failed.length === 0) return { text: done === 1 ? `Moved 1 file into ${where}.` : `Moved ${done} files into ${where}.`, error: false };
+  const first = result.failed[0];
+  const lead = done > 0 ? `Moved ${done} of ${total} files into ${where}. ` : total > 1 ? `None of the ${total} could be moved. ` : "";
+  return { text: `${lead}${first.name}: ${plainMessage(first.message, "It is still where it was. Try again in a moment.")}`, error: true };
 }
 
 /** One file an Undo could not put back, with the reason when the native side gave one. */

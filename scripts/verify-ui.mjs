@@ -399,7 +399,7 @@ async function drive(browser) {
   await page.locator('[data-testid="desktop-list"]').getByRole("button", { name: "Move it there" }).first().click();
   const suggestionMoved = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "move_files").at(-1)?.args.destination);
   await capture(page, "11-cleanup");
-  record("Clean up shows Organize, duplicates, Desktop clutter and old downloads with nothing ticked, and a suggestion moves on click", cleanupOk && cards === 4 && tickedByDefault === 0 && recycleDisabled && String(suggestionMoved).includes("School Files"), JSON.stringify({ cards, tickedByDefault, recycleDisabled, suggestionMoved }));
+  record("Clean up shows Organize, duplicates, same-name files, Desktop clutter and old downloads with nothing ticked, and a suggestion moves on click", cleanupOk && cards === 5 && tickedByDefault === 0 && recycleDisabled && String(suggestionMoved).includes("School Files"), JSON.stringify({ cards, tickedByDefault, recycleDisabled, suggestionMoved }));
 
   // 12b. A long card starts folded with its count; opening it shows 10 rows and Show 4 more.
   const oldToggle = page.locator('[data-testid="old-card-toggle"]');
@@ -506,14 +506,31 @@ async function drive(browser) {
     ruleRows === 4 && robotics?.words?.join(",") === "arduino,robot" && savedRules.length === 5,
     JSON.stringify({ ruleRows, robotics, saved: savedRules.length }));
 
-  // 14. A sorted download arriving in the background shows a toast and the new row.
-  await page.evaluate(() => window.__toteMock.simulateDownload());
+  // 14. A download sent with File Explorer's Move to Tote shows a toast and the new row.
+  await page.evaluate(() => window.__toteMock.simulateMoveToTote());
   await page.locator('[data-testid="nav-find"]').click();
   await visible(page, '[data-testid="find-view"]');
-  const arrivedToast = await page.locator(".toast", { hasText: "Reading Assessment Q2.pdf" }).count();
+  // "Filed" is the one word for what Move to Tote does (T-30).
+  const arrivedToast = await page.locator(".toast", { hasText: "Filed Reading Assessment Q2.pdf in School Files > English." }).count();
   await page.waitForFunction(() => document.querySelector('[data-testid="recent"] .row-name-text')?.textContent === "Reading Assessment Q2.pdf", null, { timeout: STEP_TIMEOUT_MS });
   const newFirst = await page.locator('[data-testid="recent"] .row-name-text').first().textContent();
-  record("A download filed in the background shows a toast and appears at the top of Recent", arrivedToast === 1 && newFirst === "Reading Assessment Q2.pdf", JSON.stringify({ arrivedToast, newFirst }));
+  record("A download sent with Move to Tote shows a toast and appears at the top of Recent", arrivedToast === 1 && newFirst === "Reading Assessment Q2.pdf", JSON.stringify({ arrivedToast, newFirst }));
+
+  // 14a. Files dragged over the window show where to let go; the drop is filed like Move to Tote.
+  await page.evaluate(() => window.__toteMock.simulateDrag(true));
+  const dropCard = await visible(page, '[data-testid="drop-zone"]');
+  const dropTitle = await page.locator('[data-testid="drop-zone"] .drop-title').textContent().catch(() => null);
+  // The layer fades in over 180 ms; the evidence shows it settled.
+  await page.waitForFunction(() => document.querySelector('[data-testid="drop-zone"]')?.getAnimations().every((a) => a.playState === "finished") ?? false, null, { timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
+  await capture(page, "14a-drop-zone");
+  await page.evaluate(() => window.__toteMock.simulateDrop("Reading Log Week 3.pdf"));
+  const dropGone = await page.locator('[data-testid="drop-zone"]').waitFor({ state: "detached", timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  const droppedToast = await page.locator(".toast", { hasText: "Filed Reading Log Week 3.pdf in School Files > English." }).waitFor({ timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  await page.evaluate(() => window.__toteMock.simulateDrag(true));
+  await visible(page, '[data-testid="drop-zone"]');
+  await page.evaluate(() => window.__toteMock.simulateDrag(false));
+  const leaveGone = await page.locator('[data-testid="drop-zone"]').waitFor({ state: "detached", timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  record("Files dragged over the window show the drop card, a drop files them with a toast, a leave hides it", dropCard && dropTitle === "Drop to file it" && dropGone && droppedToast && leaveGone, JSON.stringify({ dropCard, dropTitle, dropGone, droppedToast, leaveGone }));
 
   // 14b. The sidebar folds into the icon rail and back; the menu keeps its names for screen readers.
   const sidebarWidth = () => page.evaluate(() => Math.round(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width));
@@ -589,7 +606,8 @@ async function drive(browser) {
   await page.keyboard.press("Enter");
   const addedByEnter = await taskCount(1);
   await page.locator('[data-testid="todo-input"]').fill("Submit SF2 for October");
-  await page.locator('[data-testid="todo-due"]').fill(today);
+  await page.locator('[data-testid="todo-due"]').click();
+  await page.locator('[data-testid="date-today"]').click();
   await page.locator('[data-testid="todo-add"]').click();
   const addedByButton = await taskCount(2);
   const groupTitles = await page.locator('[data-testid="todo-group"] h2').allTextContents();
@@ -599,6 +617,39 @@ async function drive(browser) {
   record("Enter and Add both add a task; the dated one sits under Today, the other under No date, and the box is cleared with focus kept",
     addedByEnter && addedByButton && groupTitles.join(",") === "Today,No date" && cleared && focusBack === "todo-input",
     JSON.stringify({ groupTitles, cleared, focusBack }));
+
+  // 17b2. The date picker (2026-10-17): the field opens a calendar on today
+  // with every control at least 44 px, an arrow and Enter pick the next day
+  // and the field says it in words with focus back on it, Escape closes and
+  // keeps the day, No date clears it.
+  {
+    const field = page.locator('[data-testid="todo-due"]');
+    await field.click();
+    const opened = await visible(page, '[data-testid="date-pop"]');
+    const startFocus = await page.evaluate(() => document.activeElement?.getAttribute("data-day"));
+    const smallest = await page.evaluate(() => Math.min(...[...document.querySelectorAll('[data-testid="date-pop"] button')].filter((b) => b.offsetParent).map((b) => Math.min(b.getBoundingClientRect().width, b.getBoundingClientRect().height))));
+    await capture(page, "17b2-date-picker");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Enter");
+    const tomorrow = await page.evaluate(() => {
+      const d = new Date();
+      d.setDate(d.getDate() + 1);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    });
+    const picked = await field.getAttribute("data-value");
+    const words = (await field.textContent())?.trim() ?? "";
+    const backOnField = await page.evaluate(() => document.activeElement?.getAttribute("data-testid") === "todo-due");
+    await field.click();
+    await visible(page, '[data-testid="date-pop"]');
+    await page.keyboard.press("Escape");
+    const escClosed = (await page.locator('[data-testid="date-pop"]').count()) === 0 && (await field.getAttribute("data-value")) === picked;
+    await field.click();
+    await page.locator('[data-testid="date-clear"]').click();
+    const cleared = (await field.getAttribute("data-value")) === "" && (await field.textContent())?.trim() === "No due date";
+    record("Date picker: opens on today with every control 44 px or more; an arrow and Enter pick the next day, shown in words with focus back on the field; Escape keeps it; No date clears it",
+      opened && startFocus === today && smallest >= 44 && picked === tomorrow && /^[A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2} \d{4}$/.test(words) && backOnField && escClosed && cleared,
+      JSON.stringify({ opened, startFocus, smallest, picked, words, backOnField, escClosed, cleared }));
+  }
 
   // 17c. Tick: Done appears and the toast's Undo puts it back.
   const sf2 = () => page.locator('[data-testid="todo-group"] [data-testid="task-row"]', { hasText: "Submit SF2" });
@@ -714,6 +765,7 @@ async function drive(browser) {
     JSON.stringify({ unavailableNotice, unavailableText, addOff, inputOff, noSkeleton, noListCall }));
 
   await driveFailures(browser);
+  await driveNamesAndCleanup(browser);
   await driveAccess(browser);
 }
 
@@ -975,13 +1027,187 @@ async function driveFailures(browser) {
   const stillUndo = await run.locator('[data-testid="activity-batch-still"] [data-testid="undo"]').count();
   await capture(page, "19n-organize-activity-partial");
   const expectedUndo = `Put back ${firstMove.total - 1} of ${firstMove.total}. ${firstMove.name}: `;
-  record("Organize toast Undo: when one organized file is gone, the toast says Put back N of M and names the file, and Activity keeps the run with Undo all and lists the file that stayed with its own Undo",
-    firstMove.total > 1 && (partialUndoText ?? "").startsWith(expectedUndo) && runTitle?.startsWith("Organized") && runUndoAll === 1 && stillRows === 1 && stillTitle === `Moved ${firstMove.name}` && stillUndo === 1,
-    JSON.stringify({ partialUndoText, runTitle, runUndoAll, stillRows, stillTitle, stillUndo, firstMove }));
+  const expectedTitle = `Put back ${firstMove.total - 1} of ${firstMove.total} files`;
+  record("Organize toast Undo: when one organized file is gone, the toast says Put back N of M and names the file, Activity says what came back, keeps Undo all, and lists the file that stayed with its own Undo",
+    firstMove.total > 1 && (partialUndoText ?? "").startsWith(expectedUndo) && runTitle === expectedTitle && runUndoAll === 1 && stillRows === 1 && stillTitle === `Moved ${firstMove.name}` && stillUndo === 1,
+    JSON.stringify({ partialUndoText, runTitle, expectedTitle, runUndoAll, stillRows, stillTitle, stillUndo, firstMove }));
 
   const failureToasts = await toastAudit(page);
   record("No toast in the failure drive carried program text", failureToasts.seen > 0 && failureToasts.raw.length === 0, JSON.stringify(failureToasts));
   await context.close();
+}
+
+/**
+ * 21. Names, duplicates and Clean up (T-16, T-28, T-30, T-43): Rename checks
+ * as she types and asks on a clash, a change of capitals is a rename,
+ * same-name files are never called copies, one primary button per screen,
+ * Move all is one batch, old downloads offer the Recycle Bin, month folders
+ * read as months, and a move that loses the web mark says so.
+ */
+async function driveNamesAndCleanup(browser) {
+  const { context, page } = await newPage(browser);
+  await page.keyboard.press("Escape");
+  await hidden(page, '[data-testid="tour"]');
+  const firstRecent = page.locator('[data-testid="recent"] [data-testid="file-row"]').first();
+  const renameCalls = () => page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "rename_file").length);
+
+  // 21a. Rename: typing ":" shows the native sentence at once, before Enter, in a live region tied to the field.
+  await firstRecent.locator("input[type=checkbox]").check();
+  await page.getByRole("button", { name: "Rename" }).click();
+  await visible(page, '[data-testid="rename-input"]');
+  const callsBefore = await renameCalls();
+  await page.locator('[data-testid="rename-input"]').press("End");
+  await page.keyboard.type(":");
+  const typedError = await page.locator('[data-testid="rename-note"]').textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  const tied = await page.evaluate(() => {
+    const input = document.querySelector('[data-testid="rename-input"]');
+    const note = document.getElementById(input?.getAttribute("aria-describedby") ?? "");
+    return { described: note?.getAttribute("data-testid") === "rename-note", live: note?.getAttribute("aria-live") === "polite", invalid: input?.getAttribute("aria-invalid") === "true" };
+  });
+  const noCallWhileTyping = (await renameCalls()) === callsBefore;
+  await capture(page, "21a-rename-as-you-type");
+  await page.keyboard.press("Backspace");
+  const clearedAfterFix = (await page.locator('[data-testid="rename-note"]').textContent()) === "" && (await page.locator('[data-testid="rename-input"]').getAttribute("aria-invalid")) === null;
+  record("Rename: typing ':' shows \"Names cannot contain :\" under the field before Enter, tied to the field by aria-describedby in a polite live region, and clears when it is removed",
+    typedError === "Names cannot contain :. Try a space or a hyphen instead." && tied.described && tied.live && tied.invalid && noCallWhileTyping && clearedAfterFix,
+    JSON.stringify({ typedError, tied, noCallWhileTyping, clearedAfterFix }));
+
+  // 21b. A change of capitals alone is a rename, not "already exists".
+  await page.locator('[data-testid="rename-input"]').fill("GRADE 7 QUIZ 2");
+  await page.keyboard.press("Enter");
+  const capitalsDone = await hidden(page, '[data-testid="rename-input"]');
+  const capitalsName = await firstRecent.locator(".row-name-text").textContent();
+  const capitalsToast = await page.locator(".toast", { hasText: "Renamed to GRADE 7 QUIZ 2.docx" }).count();
+  record("Rename: a change of capitals alone renames the file", capitalsDone && capitalsName === "GRADE 7 QUIZ 2.docx" && capitalsToast === 1, JSON.stringify({ capitalsDone, capitalsName, capitalsToast }));
+  await page.locator('[aria-label="Clear selection"]').click().catch(() => undefined);
+
+  // 21c. A name that is taken asks "Use Name (2) instead?" and the button renames to the free name.
+  await firstRecent.locator("input[type=checkbox]").check();
+  await page.getByRole("button", { name: "Rename" }).click();
+  await page.locator('[data-testid="rename-input"]').fill("DLL Week 5");
+  await page.keyboard.press("Enter");
+  const askOk = await visible(page, '[data-testid="rename-use-free"]');
+  const question = await page.locator('[data-testid="rename-note"]').textContent().catch(() => null);
+  const useLabel = await page.locator('[data-testid="rename-use-free"]').textContent().catch(() => null);
+  await capture(page, "21c-rename-clash");
+  await page.locator('[data-testid="rename-use-free"]').click();
+  await hidden(page, '[data-testid="rename-input"]');
+  const lastRename = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "rename_file").at(-1)?.args);
+  const freeName = await firstRecent.locator(".row-name-text").textContent();
+  const freeToast = await page.locator(".toast", { hasText: "Renamed to DLL Week 5 (2).docx" }).count();
+  record("Rename: a name that is taken asks \"Use DLL Week 5 (2).docx instead?\" and the button renames with pickFree",
+    askOk && question === "A file called DLL Week 5.docx already exists. Use DLL Week 5 (2).docx instead?" && useLabel === "Use DLL Week 5 (2).docx" && lastRename?.pickFree === true && freeName === "DLL Week 5 (2).docx" && freeToast === 1,
+    JSON.stringify({ question, useLabel, lastRename, freeName, freeToast }));
+  await page.locator('[aria-label="Clear selection"]').click().catch(() => undefined);
+
+  // 21d. Find: two different files with Word's default name are not copies; they sit behind their own button.
+  await page.locator('[data-testid="search-input"]').fill("new microsoft");
+  await page.waitForFunction(() => document.querySelector('[data-testid="results"] [data-testid="same-name-toggle"]'), null, { timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
+  const sameToggle = await page.locator('[data-testid="results"] [data-testid="same-name-toggle"]').textContent().catch(() => null);
+  const noLatest = (await page.locator('[data-testid="results"] .latest').count()) === 0;
+  const noCopies = (await page.locator('[data-testid="results"] .copies-toggle', { hasText: "cop" }).count()) === 0;
+  await page.locator('[data-testid="results"] [data-testid="same-name-toggle"]').click().catch(() => undefined);
+  const sameRows = await page.locator('[data-testid="results"] [data-testid="same-name"] [data-testid="file-row"]').count();
+  await capture(page, "21d-find-same-name");
+  record("Find: same-name files that are different show as \"1 other file with the same name\", with no Latest and no copies",
+    sameToggle === "1 other file with the same name" && noLatest && noCopies && sameRows === 1, JSON.stringify({ sameToggle, noLatest, noCopies, sameRows }));
+  await page.locator('[data-testid="search-input"]').fill("");
+
+  // 21e. Clean up: they are listed under "Same name, different files" with no tick boxes and are not among the copies to recycle.
+  await page.locator('[data-testid="nav-cleanup"]').click();
+  const sameCard = await visible(page, '[data-testid="same-name-card"]');
+  const sameTitle = await page.locator('[data-testid="same-name-card"] .fold-name').textContent().catch(() => null);
+  const sameMembers = await page.locator('[data-testid="same-name-group"] .suggestion').count();
+  const sameTicks = await page.locator('[data-testid="same-name-card"] input[type=checkbox]').count();
+  const sameRecycle = await page.locator('[data-testid="same-name-card"]', { hasText: "Recycle" }).count();
+  const inCopies = await page.locator('[data-testid="dupes-card"]', { hasText: "New Microsoft Word Document" }).count();
+  await capture(page, "21e-cleanup-same-name");
+  record("Clean up: same-name different files are under \"Same name, different files\" with no tick boxes, no Recycle Bin offer, and are not among the copies",
+    sameCard && sameTitle === "Same name, different files" && sameMembers === 2 && sameTicks === 0 && sameRecycle === 0 && inCopies === 0,
+    JSON.stringify({ sameTitle, sameMembers, sameTicks, sameRecycle, inCopies }));
+
+  // 21f. One primary button per screen; the sidebar item keeps its name and says where it goes.
+  const primaries = {};
+  for (const [nav, view] of [["nav-find", "find-view"], ["nav-cleanup", "cleanup-view"], ["nav-activity", "activity-view"], ["nav-settings", "settings-view"], ["nav-todo", "todo-view"]]) {
+    await page.locator(`[data-testid="${nav}"]`).click();
+    await visible(page, `[data-testid="${view}"]`);
+    if (view === "cleanup-view") await visible(page, '[data-testid="tidy-card"]');
+    await sleep(150);
+    primaries[view] = await page.evaluate(() => [...document.querySelectorAll(".button-primary")].filter((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden";
+    }).length);
+  }
+  const folders = page.locator('[data-testid="nav-folders"]');
+  const foldersTitle = await folders.getAttribute("title");
+  const foldersLabel = (await folders.textContent())?.trim();
+  record("Every screen shows at most one primary button, and the Sorted folders item says \"Open School Files in File Explorer\"",
+    Object.values(primaries).every((n) => n <= 1) && primaries["cleanup-view"] === 1 && foldersTitle === "Open School Files in File Explorer" && /^(Sorted folders)+$/.test(foldersLabel ?? ""),
+    JSON.stringify({ primaries, foldersTitle, foldersLabel }));
+
+  // 21g. Move all: one move_each call, one Activity row with Undo all, and the toast counts the files.
+  await page.locator('[data-testid="nav-cleanup"]').click();
+  await visible(page, '[data-testid="desktop-move-all"]');
+  const allLabel = await page.locator('[data-testid="desktop-move-all"]').textContent();
+  const wanted = Number(/Move all (\d+)/.exec(allLabel ?? "")?.[1] ?? 0);
+  const callCount = (command) => page.evaluate((c) => window.__toteMock.calls.filter((x) => x.command === c).length, command);
+  const [eachBefore, filesBefore] = [await callCount("move_each"), await callCount("move_files")];
+  await page.locator('[data-testid="desktop-move-all"]').click();
+  const allToast = page.locator(".toast", { hasText: "into School Files" });
+  const allText = await allToast.locator(".toast-text").textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  const allUndo = await allToast.locator('[data-testid="toast-undo"]').count();
+  const oneCall = (await callCount("move_each")) === eachBefore + 1 && (await callCount("move_files")) === filesBefore;
+  await page.locator('[data-testid="nav-activity"]').click();
+  await page.waitForSelector('[data-testid="activity-batch"]', { timeout: STEP_TIMEOUT_MS });
+  const allRow = page.locator('[data-testid="activity-batch"]').first();
+  const allRowTitle = await allRow.locator("strong").first().textContent();
+  const allRowUndo = await allRow.locator('[data-testid="undo-batch"]').count();
+  await capture(page, "21g-move-all-one-row");
+  record("Clean up: Move all is one move_each call, one Activity row with Undo all, and the toast says \"Moved 2 files into School Files.\"",
+    wanted === 2 && allText === `Moved ${wanted} files into School Files.` && allUndo === 1 && oneCall && allRowTitle === `Moved ${wanted} files` && allRowUndo === 1,
+    JSON.stringify({ allLabel, allText, allUndo, oneCall, allRowTitle, allRowUndo }));
+
+  // 21h. Old downloads: Recycle Bin beside Move it there, asked first, then a toast with Undo.
+  await page.locator('[data-testid="nav-cleanup"]').click();
+  await visible(page, '[data-testid="old-card-toggle"]');
+  await page.locator('[data-testid="old-card-toggle"]').click();
+  const oldRow = page.locator('[data-testid="old-downloads-list"] .suggestion').first();
+  const oldName = await oldRow.locator("strong").textContent();
+  const oldPath = await oldRow.getAttribute("data-path");
+  const oldButtons = await oldRow.locator(".suggestion-actions button").allTextContents();
+  await oldRow.locator('[data-testid="suggestion-recycle"]').click();
+  const asked = await visible(page, '[data-testid="old-recycle-confirm"]');
+  const askedName = await page.locator('[data-testid="old-recycle-confirm"] .dialog-files li').first().textContent().catch(() => null);
+  await page.locator('[data-testid="old-recycle-confirm"]').getByRole("button", { name: "Move to Recycle Bin" }).click();
+  const recycledArgs = await page.evaluate(() => window.__toteMock.calls.filter((c) => c.command === "recycle_files").at(-1)?.args.paths);
+  const oldToast = page.locator(".toast", { hasText: "Moved to the Recycle Bin." });
+  const oldToastUndo = await oldToast.locator('[data-testid="toast-undo"]').count().catch(() => 0);
+  const oldGone = await page.waitForFunction((path) => !document.querySelector(`.suggestion[data-path="${CSS.escape(path)}"]`), oldPath, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  await capture(page, "21h-old-download-recycled");
+  record("Old downloads: each row offers Recycle Bin beside Move it there, asks first naming the file, recycles only it, and offers Undo",
+    oldButtons.map((t) => t.trim()).join("|") === "Move it there|Recycle Bin|Somewhere else|Skip" && asked && askedName === oldName && JSON.stringify(recycledArgs) === JSON.stringify([oldPath]) && oldToastUndo === 1 && oldGone,
+    JSON.stringify({ oldButtons, askedName, recycledArgs, oldToastUndo, oldGone }));
+
+  const audit = await toastAudit(page);
+  record("No toast in the names and Clean up drive carried program text", audit.seen > 0 && audit.raw.length === 0, JSON.stringify(audit));
+  await context.close();
+
+  // 21i. Move to: month folders read as months; a file from the web moved to a drive that cannot keep the mark says so (T-43).
+  const flash = await newPage(browser, VIEWPORT, "/?stamp=lost");
+  await flash.page.keyboard.press("Escape");
+  await hidden(flash.page, '[data-testid="tour"]');
+  await flash.page.locator('[data-testid="recent"] [data-testid="file-row"] input[type=checkbox]').first().check();
+  await flash.page.getByRole("button", { name: "Move to..." }).click();
+  await visible(flash.page, '[data-testid="folder-picker"] .folder-option');
+  const labels = await flash.page.locator(".folder-option").allTextContents();
+  const monthWords = labels.some((l) => l.includes("School Files > Word > October 2026")) && labels.every((l) => !/\d{4}-\d{2}/.test(l));
+  await flash.page.locator(".folder-option", { hasText: "Documents > Forms" }).click();
+  await flash.page.locator('[data-testid="move-confirm"]').click();
+  const stampText = await flash.page.locator(".toast .toast-text", { hasText: "Moved to" }).first().textContent({ timeout: STEP_TIMEOUT_MS }).catch(() => null);
+  await capture(flash.page, "21i-move-stamp-lost");
+  record("Move to: month folders read as months, and a move that loses the web mark says \"Windows will no longer mark it as from the internet.\"",
+    monthWords && stampText === "Moved to Documents > Forms. Windows will no longer mark it as from the internet.", JSON.stringify({ labels, stampText }));
+  await flash.context.close();
 }
 
 /** The visible controls on screen smaller than 44 by 44 px (spec 7, audit T-27); a checkbox or switch counts by its label, which is what she aims at. */
@@ -1111,7 +1337,7 @@ async function driveAccess(browser) {
     await page.getByRole("button", { name: "Move to..." }).click();
     focus.pickerFirst = await focusIs(page, () => document.activeElement === document.querySelector('[data-testid="folder-picker"] .folder-option'));
     await page.locator('[data-testid="folder-picker"] .folder-option').nth(1).focus();
-    await page.evaluate(() => window.__toteMock.simulateDownload());
+    await page.evaluate(() => window.__toteMock.simulateMoveToTote());
     await sleep(600);
     focus.dialogKept = await page.evaluate(() => document.activeElement === document.querySelectorAll('[data-testid="folder-picker"] .folder-option')[1]);
     await page.locator(".folder-option", { hasText: "Documents > Forms" }).click();
@@ -1154,14 +1380,23 @@ async function driveAccess(browser) {
 
     // To do: ticking off and deleting move focus to the next task or the add box.
     await page.locator('[data-testid="nav-todo"]').click();
+    // Wait for each save before typing the next, or the input is cleared by
+    // the previous add under the new title and one task never lands.
+    let taskCount = 0;
     for (const title of ["Print the Grade 7 quiz", "Submit SF2 for October", "Call the parents"]) {
       await page.locator('[data-testid="todo-input"]').fill(title);
       await page.keyboard.press("Enter");
+      taskCount += 1;
+      await page.waitForFunction((n) => document.querySelectorAll('[data-testid="task-row"]').length === n, taskCount, { timeout: STEP_TIMEOUT_MS });
     }
-    await page.waitForFunction(() => document.querySelectorAll('[data-testid="task-row"]').length === 3, null, { timeout: STEP_TIMEOUT_MS });
     await page.locator('[data-testid="todo-group"] [data-testid="task-check"]').first().click();
     focus.afterTick = await focusIs(page, () => ["task-check", "todo-input"].includes(document.activeElement?.getAttribute("data-testid") ?? ""));
+    // The tick reloads the list in the background; wait for the done task to
+    // leave the open groups before opening the next one, or the row moves
+    // under the pointer and Playwright sees the button detach (2026-10-17).
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="todo-group"] [data-testid="task-row"]').length === 2, null, { timeout: STEP_TIMEOUT_MS });
     await page.locator('[data-testid="todo-group"] [data-testid="task-open"]').first().click();
+    await visible(page, '[data-testid="task-details"]');
     await page.locator('[data-testid="task-delete"]').click();
     focus.afterDelete = await focusIs(page, () => ["task-open", "todo-input"].includes(document.activeElement?.getAttribute("data-testid") ?? ""));
     const lastFocus = await focusedOn(page);
@@ -1415,12 +1650,9 @@ async function driveAccess(browser) {
     const { context, page } = await newPage(browser);
     await page.keyboard.press("Escape");
     await page.locator('[data-testid="nav-todo"]').click();
-    const today = await page.evaluate(() => {
-      const d = new Date();
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    });
     await page.locator('[data-testid="todo-input"]').fill("Submit SF2 for October");
-    await page.locator('[data-testid="todo-due"]').fill(today);
+    await page.locator('[data-testid="todo-due"]').click();
+    await page.locator('[data-testid="date-today"]').click();
     await page.locator('[data-testid="todo-add"]').click();
     await page.locator('[data-testid="task-open"]').first().click();
     const noteShown = await visible(page, '[data-testid="quarter-note"]');

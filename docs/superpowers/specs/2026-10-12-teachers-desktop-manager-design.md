@@ -42,7 +42,8 @@ Hard constraints:
 | Pictures, Videos, Music | Indexed and watched, never sorted | Downloads often land there through Save As; old photos and videos must not move. |
 | Organize now | On request, Desktop and Downloads loose files, grade and subject from the name else type and month, plan first, one Undo | Lex's choice on 2026-10-12 between on request, a picked folder or always-on, and between subject, type or school-year folders. |
 | Build folders | Skipped only beside a project file | Lex's Documents held 32,208 indexed files, mostly Rust build output; a teacher's own folder named "build" must still be found. |
-| Retry schedule | 5 s, 5 s, 10 s, 20 s, 60 s, 2 min, then 15 min | Fresh downloads are held briefly by the antivirus; the first retries are quick. Changed from 5 s, 30 s, 2 min on 2026-10-12. |
+| Retry schedule | 5 s, 5 s, 10 s, 20 s, 60 s, 2 min, then 15 min | Fresh downloads are held briefly by the antivirus; the first retries are quick. Changed from 5 s, 30 s, 2 min on 2026-10-12. Retired 2026-10-17 with automatic filing. |
+| What may move automatically (amended 2026-10-17) | Nothing. She sends a file with File Explorer's right-click Move to Tote, and Tote files it by the Organize rule | Lex's decision on 2026-10-17: a download should not be moved by the system. Chosen over a Settings switch that keeps automatic filing (one more line in Settings, and the Downloads guards kept alive). The entry sits under Show more options on Windows 11, because the top of the new menu needs a signed packaged extension (a code-signing certificate). |
 
 ## 4. Scope
 
@@ -81,6 +82,8 @@ Amendment 2026-10-14 (Lex's decision): deadline reminders are now in, as part of
 ## 5. Behavior
 
 ### 5.1 Download sorting
+
+Amendment 2026-10-17 (Lex's decision): nothing is sorted on its own any more; the watcher, retry schedule and Downloads guards below are retired. The installer adds a File Explorer right-click entry, Move to Tote, for her account (`src-tauri/windows/hooks.nsh`; under Show more options on Windows 11). Explorer starts `tote.exe --move-to-tote "<file>"` per selected file; a running Tote takes the files through the single-instance plugin, and files that arrive within 800 ms of each other are one batch. Each goes where Organize would put it (5.11: grade and subject from the name, else type and month), with the clash, transfer and failure rules below and one Activity row per batch with Undo all. Refused, and left where they are: shortcuts and system files, a download still being written, and a file outside her folders. A Windows message answers every Move to Tote, whatever the notifications switch says, because it is her own action. Origin labels (5.1.1), the browser check (5.1.2) and Recent downloads (5.1.3) stay.
 
 - The app starts at login (autostart) and lives in the system tray. Closing the window hides it; Quit is in the tray menu. Only one instance runs.
 - It watches the user's Downloads folder (resolved through the known-folder API, not a hardcoded path), top level only.
@@ -179,7 +182,7 @@ A sidebar view with three cards. Nothing happens without her click; no destructi
 
 Minimal: start at login (on by default), notifications (on by default), indexed roots (defaults above, add or remove), school year start and end dates, four quarter date ranges, and "Show the walkthrough again". No other settings in v1.
 
-Amendment 2026-10-14: the notifications switch is labelled "Windows messages" and also covers the To do morning reminder.
+Amendment 2026-10-14: the notifications switch is labelled "Windows messages" and also covers the To do morning reminder. Amendment 2026-10-17: with filing now on request (5.1), the switch covers the morning reminder only; a Move to Tote is always answered.
 
 ### 5.9 First-run walkthrough
 

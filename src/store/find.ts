@@ -3,7 +3,8 @@
 // dropped.
 
 import { create } from "zustand";
-import { ipc } from "../lib/ipc";
+import { ipc, logRenderer } from "../lib/ipc";
+import { describeError } from "../lib/errors";
 import { spanFor, type DateChip } from "../lib/dates";
 import { hasWord } from "../lib/search";
 import type { FileRow, FindResult, Kind, Settings, Template } from "../lib/types";
@@ -110,6 +111,7 @@ export const useFind = create<FindStore>((set, get) => ({
       // The last answer stays on screen; the Find screen shows one quiet line
       // instead of a toast, so a broken search never looks like no match.
       console.warn("Tote: search failed", error);
+      logRenderer("error", describeError(error));
       set({ loading: false, failed: true });
     }
   },
@@ -135,6 +137,6 @@ export const useFind = create<FindStore>((set, get) => ({
 export function allRows(result: FindResult | null): FileRow[] {
   if (!result) return [];
   const rows: FileRow[] = [...result.pinned, ...result.recent];
-  for (const group of result.groups) rows.push(group.latest, ...group.others);
+  for (const group of result.groups) rows.push(group.latest, ...group.others, ...group.sameName);
   return rows;
 }

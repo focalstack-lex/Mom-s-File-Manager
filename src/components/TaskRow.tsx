@@ -14,6 +14,7 @@ import { useApp } from "../store/app";
 import { useTodo } from "../store/todo";
 import { AttachDialog } from "./AttachDialog";
 import { KindTile } from "./icons";
+import { DatePicker } from "./DatePicker";
 
 const ADD_BOX = '[data-testid="todo-input"]';
 
@@ -101,7 +102,7 @@ function TaskDetails({ id, task, info }: { id: string; task: Task; info: AppInfo
       <div className="task-fields">
         <div className="field">
           <label htmlFor={`${id}-due`}>Due</label>
-          <input id={`${id}-due`} type="date" value={task.due ?? ""} onChange={(e) => void update(task, { due: e.target.value === "" ? null : e.target.value })} data-testid="task-due" />
+          <DatePicker id={`${id}-due`} value={task.due} onChange={(day) => void update(task, { due: day })} label="Due date" placeholder="No due date" clearable={false} testId="task-due" />
         </div>
         <div className="field">
           <label htmlFor={`${id}-repeat`}>Repeat</label>

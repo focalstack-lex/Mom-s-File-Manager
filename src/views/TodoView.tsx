@@ -12,6 +12,7 @@ import { groupTasks } from "../lib/todo";
 import type { AppInfo } from "../lib/types";
 import { useApp } from "../store/app";
 import { useTodo } from "../store/todo";
+import { DatePicker } from "../components/DatePicker";
 
 export function TodoView({ info }: { info: AppInfo }) {
   const tasks = useTodo((s) => s.tasks);
@@ -62,10 +63,10 @@ export function TodoView({ info }: { info: AppInfo }) {
           What needs doing?
         </label>
         <input id="todo-title" ref={input} className="todo-add-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs doing? For example: Submit SF2 for October" maxLength={200} autoComplete="off" disabled={info.tasksUnavailable} data-testid="todo-input" />
-        <label className="todo-due">
-          Due
-          <input type="date" value={due} onChange={(e) => setDue(e.target.value)} aria-label="Due date, optional" disabled={info.tasksUnavailable} data-testid="todo-due" />
-        </label>
+        <div className="todo-due">
+          <span aria-hidden>Due</span>
+          <DatePicker value={due || null} onChange={(day) => setDue(day ?? "")} label="Due date, optional" placeholder="No due date" disabled={info.tasksUnavailable} testId="todo-due" />
+        </div>
         <button type="submit" className="button button-primary" disabled={info.tasksUnavailable || title.trim() === ""} data-testid="todo-add">
           Add
         </button>

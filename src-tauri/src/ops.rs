@@ -7,7 +7,7 @@ use crate::index;
 use crate::origin;
 use crate::paths::{self, Roots};
 use crate::sorter;
-use crate::state::{Db, Placed};
+use crate::state::Db;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -283,19 +283,23 @@ fn copy_new(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// Moves one file into `dst_dir`, clash rule applied. Returns the new path.
-/// A landing in Downloads (a Move to she asked for) is noted in `placed`
-/// first, so the watcher does not file it. The lock is held to record the
-/// change and to finish it, never while the file moves (audit T-12).
-pub fn move_file(db: &impl Db, roots: &Roots, placed: &Placed, src: &Path, dst_dir: &Path, kind: OpKind) -> Result<PathBuf> {
-    move_inner(db, roots, placed, src, dst_dir, kind, None)
+/// The lock is held to record the change and to finish it, never while the
+/// file moves (audit T-12).
+pub fn move_file(db: &impl Db, roots: &Roots, src: &Path, dst_dir: &Path, kind: OpKind) -> Result<PathBuf> {
+    move_inner(db, roots, src, dst_dir, kind, None)
 }
 
 /// A move that belongs to an Organize run (spec 5.11) or to a Move to of several files.
-pub fn move_file_in_batch(db: &impl Db, roots: &Roots, placed: &Placed, src: &Path, dst_dir: &Path, batch: &str) -> Result<PathBuf> {
-    move_inner(db, roots, placed, src, dst_dir, OpKind::Move, Some(batch))
+pub fn move_file_in_batch(db: &impl Db, roots: &Roots, src: &Path, dst_dir: &Path, batch: &str) -> Result<PathBuf> {
+    move_inner(db, roots, src, dst_dir, OpKind::Move, Some(batch))
 }
 
-fn move_inner(db: &impl Db, roots: &Roots, placed: &Placed, src: &Path, dst_dir: &Path, kind: OpKind, batch: Option<&str>) -> Result<PathBuf> {
+/// A filing that belongs to one Move to Tote of several files (filing.rs).
+pub fn file_in_batch(db: &impl Db, roots: &Roots, src: &Path, dst_dir: &Path, batch: &str) -> Result<PathBuf> {
+    move_inner(db, roots, src, dst_dir, OpKind::AutoSort, Some(batch))
+}
+
+fn move_inner(db: &impl Db, roots: &Roots, src: &Path, dst_dir: &Path, kind: OpKind, batch: Option<&str>) -> Result<PathBuf> {
     let src = roots.confine(src)?;
     let dst_dir = roots.confine(dst_dir)?;
     if !src.is_file() {
@@ -307,8 +311,10 @@ fn move_inner(db: &impl Db, roots: &Roots, placed: &Placed, src: &Path, dst_dir:
         return Ok(src);
     }
     let dst = sorter::unique_path(&wanted);
+    // Folders this move is about to create, so Undo all removes those and
+    // never one she had before (audit T-45).
+    let creating = if batch.is_some() { missing_folders(&dst_dir) } else { Vec::new() };
     let id = record_in(&*db.hold()?, kind, &src, Some(&dst), kind == OpKind::AutoSort, batch)?;
-    note_placed(roots, placed, &dst);
     let stamped = origin::read_zone(&src).is_some();
     let result = transfer(&src, &dst).map(|()| dst.clone());
     let stamp_lost = stamped && result.is_ok() && origin::read_zone(&dst).is_none();
@@ -316,6 +322,9 @@ fn move_inner(db: &impl Db, roots: &Roots, placed: &Placed, src: &Path, dst_dir:
         let conn = db.hold()?;
         finish(&conn, id, &result)?;
         let dst = result?;
+        if let Some(batch) = batch {
+            note_batch_folders(&conn, batch, &creating);
+        }
         if stamp_lost {
             note_stamp_lost(&conn, id, &dst)?;
         }
@@ -328,6 +337,46 @@ fn move_inner(db: &impl Db, roots: &Roots, placed: &Placed, src: &Path, dst_dir:
     Ok(dst)
 }
 
+/// The settings row that lists the folders a batch created, as a JSON list.
+const BATCH_FOLDERS_PREFIX: &str = "batch_folders:";
+
+/// `dir` and those of its parents that do not exist yet, deepest first.
+fn missing_folders(dir: &Path) -> Vec<PathBuf> {
+    dir.ancestors().take_while(|folder| !folder.exists()).map(Path::to_path_buf).collect()
+}
+
+/// Adds `created` to the folders `batch` made. A failure to save the list
+/// is logged and the move still counts: the cost is only an empty folder
+/// left after Undo all.
+fn note_batch_folders(conn: &Connection, batch: &str, created: &[PathBuf]) {
+    if created.is_empty() {
+        return;
+    }
+    let saved = (|| -> Result<()> {
+        let mut folders = batch_folders(conn, batch)?;
+        for folder in created {
+            let text = folder.to_string_lossy().into_owned();
+            if !folders.contains(&text) {
+                folders.push(text);
+            }
+        }
+        let json = serde_json::to_string(&folders).map_err(ToteError::db_write)?;
+        crate::db::set_setting(conn, &format!("{BATCH_FOLDERS_PREFIX}{batch}"), &json).map_err(ToteError::as_write)
+    })();
+    if let Err(error) = saved {
+        log::warn!("batch {batch}: the folders it created were not saved ({}); Undo all will leave them", error.message);
+    }
+}
+
+/// The folders `batch` created, as saved by `note_batch_folders`.
+fn batch_folders(conn: &Connection, batch: &str) -> Result<Vec<String>> {
+    let Some(json) = crate::db::get_setting(conn, &format!("{BATCH_FOLDERS_PREFIX}{batch}"))? else { return Ok(Vec::new()) };
+    Ok(serde_json::from_str(&json).unwrap_or_else(|error| {
+        log::warn!("batch {batch}: the list of folders it created could not be read ({error})");
+        Vec::new()
+    }))
+}
+
 /// Logs and records that a moved file arrived without its web stamp (audit T-43).
 fn note_stamp_lost(conn: &Connection, id: i64, dst: &Path) -> Result<()> {
     log::info!("moved {} to a drive that cannot keep the web stamp; Windows will no longer mark it as from the internet", sorter::describe(dst));
@@ -335,8 +384,11 @@ fn note_stamp_lost(conn: &Connection, id: i64, dst: &Path) -> Result<()> {
     write(conn, "UPDATE ops SET stamp_lost = 1 WHERE id = ?1", [id]).map(|_| ())
 }
 
-/// Renames a file in place, keeping its extension locked.
-pub fn rename_file(conn: &Connection, roots: &Roots, src: &Path, new_stem: &str) -> Result<PathBuf> {
+/// Renames a file in place, keeping its extension locked. A name taken by
+/// another file is refused with `NAME_TAKEN`, unless `pick_free` asks for
+/// the next free name ("Name (2).docx"), which she agreed to after that
+/// refusal. A change of capital letters only is a rename too (audit T-28).
+pub fn rename_file(conn: &Connection, roots: &Roots, src: &Path, new_stem: &str, pick_free: bool) -> Result<PathBuf> {
     let src = roots.confine(src)?;
     if !src.is_file() {
         return Err(ToteError::new(ErrorCode::NotFound, FILE_GONE).with_path(paths::display(&src)));
@@ -344,12 +396,15 @@ pub fn rename_file(conn: &Connection, roots: &Roots, src: &Path, new_stem: &str)
     paths::validate_name(new_stem)?;
     let ext = src.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
     let parent = src.parent().ok_or_else(|| ToteError::new(ErrorCode::InvalidPath, "That file has no folder Tote can use. Pick another file."))?;
-    let dst = parent.join(format!("{new_stem}{ext}"));
+    let mut dst = parent.join(format!("{new_stem}{ext}"));
     if dst == src {
         return Ok(src);
     }
-    if dst.exists() {
-        return Err(ToteError::new(ErrorCode::AlreadyExists, NAME_TAKEN).with_path(paths::display(&dst)));
+    if name_taken(&src, &dst) {
+        if !pick_free {
+            return Err(ToteError::new(ErrorCode::AlreadyExists, NAME_TAKEN).with_path(paths::display(&dst)));
+        }
+        dst = sorter::unique_path(&dst);
     }
     let id = record(conn, OpKind::Rename, &src, Some(&dst), false)?;
     let result = std::fs::rename(&src, &dst).map(|_| dst.clone()).map_err(ToteError::from);
@@ -357,6 +412,28 @@ pub fn rename_file(conn: &Connection, roots: &Roots, src: &Path, new_stem: &str)
     let dst = result?;
     index::relocate(conn, &src, &dst)?;
     Ok(dst)
+}
+
+/// Another entry already has the name `dst`. Windows compares names
+/// without case, so for a change of capitals only ("lesson plan.docx" to
+/// "Lesson Plan.docx") `exists()` answers for the file itself; the name is
+/// taken then only when the folder holds an entry spelled exactly `dst`.
+fn name_taken(src: &Path, dst: &Path) -> bool {
+    if !dst.exists() {
+        return false;
+    }
+    let (Some(from), Some(to)) = (src.file_name(), dst.file_name()) else { return true };
+    if from.to_string_lossy().to_lowercase() != to.to_string_lossy().to_lowercase() || src.parent() != dst.parent() {
+        return true;
+    }
+    let Some(parent) = dst.parent() else { return true };
+    match std::fs::read_dir(parent) {
+        Ok(entries) => entries.flatten().any(|e| e.file_name() == to),
+        Err(error) => {
+            log::warn!("rename: could not read the folder to check a change of capitals ({error})");
+            true
+        }
+    }
 }
 
 pub fn create_folder(conn: &Connection, roots: &Roots, parent: &Path, name: &str) -> Result<PathBuf> {
@@ -571,58 +648,14 @@ fn recorded_recycle(conn: &Connection, id: i64) -> Result<Option<(i64, u64)>> {
     Ok(row.and_then(|(at, size)| Some((at?, u64::try_from(size?).ok()?))))
 }
 
-/// Tells the Downloads watcher that Tote is about to put a file at `path`
-/// when that is in Downloads, so it is not filed again (audit T-06). Done
-/// before the file moves, so the event cannot arrive first.
-fn note_placed(roots: &Roots, placed: &Placed, path: &Path) {
-    if roots.downloads.as_ref().is_some_and(|downloads| path.starts_with(downloads) || paths::resolve(downloads).is_ok_and(|d| path.starts_with(d))) {
-        placed.note(path);
-    }
-}
-
-/// How long a Move to Downloads may take before the file lands: the row is
-/// written before the transfer, and a copy from another drive gives the
-/// copy a fresh created time, so the row may be a little older than the
-/// file it put there.
-const MOVE_COPY_SLACK_SECS: i64 = 60;
-
-/// True when Tote put a file at `path` for her after that file was created:
-/// an Undo, restore or Undo all (an undone filing, move or Recycle Bin row
-/// whose landing, `undone_to`, is the path; the recorded `src` for rows
-/// from before the column) or a Move to Downloads she asked for (a done
-/// move landing there). The undone row's moment is the Undo itself
-/// (`undone_at`, the row's own time for older rows), taken after the file
-/// landed, so it is later than the created time a copy from another drive
-/// gave the file as much as the one a same-drive move kept; the done row
-/// is given `MOVE_COPY_SLACK_SECS` for the same reason. A later download
-/// at the same path is newer than every row and is filed; a download that
-/// took the name before an Undo landed beside it as "Name (2)" is not the
-/// undone row's landing and is filed too. The watcher asks here in its
-/// start-up sweep and again before every filing, because the in-memory
-/// registry forgets a path after ten minutes and does not survive a
-/// restart (audit T-06).
-pub fn was_put_back(conn: &Connection, path: &Path, created: i64) -> Result<bool> {
-    let found: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM ops WHERE (status = 'undone' AND kind IN ('autoSort', 'move', 'recycle') AND COALESCE(undone_to, src) = ?1 AND COALESCE(undone_at, created_at) >= ?2) OR (status = 'done' AND kind = 'move' AND automatic = 0 AND dst = ?1 AND created_at >= ?3) LIMIT 1",
-            params![path.to_string_lossy().into_owned(), created, created - MOVE_COPY_SLACK_SECS],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(found.is_some())
-}
-
 /// Reverses a completed operation. Moves and renames go back to their original
 /// path (clash rule applied); a recycled file is restored from the Recycle Bin.
-/// A file that comes back into Downloads is noted in `placed` first. The row
-/// then records the moment and where the file landed (`undone_at`,
-/// `undone_to`), which `was_put_back` reads; Undo all and a restore come
-/// through here, so they record it too. The lock is held only to read and
-/// write the row and the index, never while a file moves (audit T-12); the
-/// landing a move back is headed for is written to the row first
-/// (`undone_to` on a row still done), so the start-up sweep can find a copy
-/// a closed Tote left there.
-pub fn undo(db: &impl Db, roots: &Roots, placed: &Placed, id: i64) -> Result<()> {
+/// The row then records the moment and where the file landed (`undone_at`,
+/// `undone_to`); Undo all and a restore come through here, so they record it
+/// too. The lock is held only to read and write the row and the index, never
+/// while a file moves (audit T-12); the landing a move back is headed for is
+/// written to the row first (`undone_to` on a row still done).
+pub fn undo(db: &impl Db, roots: &Roots, id: i64) -> Result<()> {
     let row = get(&*db.hold()?, id)?.ok_or_else(|| ToteError::new(ErrorCode::NotFound, "That change is no longer in the list. Open Activity to see what is there."))?;
     if row.status != "done" {
         return Err(ToteError::validation("Only completed changes can be undone. Open Activity to check it."));
@@ -642,7 +675,6 @@ pub fn undo(db: &impl Db, roots: &Roots, placed: &Placed, id: i64) -> Result<()>
                 None
             } else {
                 let back = sorter::unique_path(&roots.confine(&src)?);
-                note_placed(roots, placed, &back);
                 write(&*db.hold()?, "UPDATE ops SET undone_to = ?2 WHERE id = ?1", params![id, back.to_string_lossy().into_owned()])?;
                 transfer(&current, &back)?;
                 index::relocate_unlocked(db, &current, &back)?;
@@ -659,7 +691,7 @@ pub fn undo(db: &impl Db, roots: &Roots, placed: &Placed, id: i64) -> Result<()>
         }
         "recycle" => {
             let recorded = recorded_recycle(&*db.hold()?, id)?;
-            let back = restore_from_recycle_bin(&src, recorded, roots, placed)?;
+            let back = restore_from_recycle_bin(&src, recorded)?;
             index::refresh_file(db, &back)?;
             Some(back)
         }
@@ -713,10 +745,9 @@ fn check_restored(landing: &Path, recorded: Option<(i64, u64)>, send_back: impl 
 /// an item under the name it is given, and the name it lists is the bare
 /// stem when Explorer hides extensions, so it is given the full name at the
 /// landing path instead; the file that lands there is then checked against
-/// the recorded size. Returns where the file came back; a landing in
-/// Downloads is noted in `placed` before the shell is asked.
+/// the recorded size. Returns where the file came back.
 #[cfg(any(windows, target_os = "linux"))]
-fn restore_from_recycle_bin(original: &Path, recorded: Option<(i64, u64)>, roots: &Roots, placed: &Placed) -> Result<PathBuf> {
+fn restore_from_recycle_bin(original: &Path, recorded: Option<(i64, u64)>) -> Result<PathBuf> {
     use trash::os_limited;
     let items = os_limited::list().map_err(|error| {
         log::warn!("restore: the Recycle Bin could not be listed ({error})");
@@ -747,7 +778,6 @@ fn restore_from_recycle_bin(original: &Path, recorded: Option<(i64, u64)>, roots
     log::info!("restoring {} from the Recycle Bin", sorter::describe(&landing));
     log::debug!("restoring {} from the Recycle Bin to {}", latest.id.to_string_lossy(), landing.display());
     latest.name = name.to_os_string();
-    note_placed(roots, placed, &landing);
     os_limited::restore_all(vec![latest]).map_err(|error| {
         log::warn!("restore: Windows could not bring back {} she recycled ({error})", sorter::describe(original));
         log::debug!("restore: the file was recycled from {wanted}");
@@ -762,7 +792,7 @@ fn restore_from_recycle_bin(original: &Path, recorded: Option<(i64, u64)>, roots
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-fn restore_from_recycle_bin(_original: &Path, _recorded: Option<(i64, u64)>, _roots: &Roots, _placed: &Placed) -> Result<PathBuf> {
+fn restore_from_recycle_bin(_original: &Path, _recorded: Option<(i64, u64)>) -> Result<PathBuf> {
     Err(ToteError::new(ErrorCode::Unsupported, "Restoring from the Recycle Bin is not available here. Open the Recycle Bin to bring the file back."))
 }
 
@@ -770,15 +800,25 @@ fn restore_from_recycle_bin(_original: &Path, _recorded: Option<(i64, u64)>, _ro
 #[serde(rename_all = "camelCase")]
 pub struct BatchUndo {
     pub undone: usize,
-    pub failed: Vec<String>,
+    /// Why a file could not go back, so the toast and Activity name the
+    /// reason instead of guessing (a file open in another program).
+    pub failed: Vec<UndoFailure>,
 }
 
-/// Reverses every completed change of one batch, newest first. For an
-/// Organize run it then removes the folders the run created that are now
-/// empty (never a folder that still holds anything, never School Files
-/// itself). A manual Move of several files never removes a folder: it may
-/// have existed, empty, before she moved anything into it.
-pub fn undo_batch(db: &impl Db, roots: &Roots, placed: &Placed, batch: &str) -> Result<BatchUndo> {
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoFailure {
+    pub name: String,
+    pub message: String,
+}
+
+/// Reverses every completed change of one batch, newest first, then
+/// removes the folders the batch itself created (`note_batch_folders`)
+/// that are now empty: never a folder that existed before, even an empty
+/// one she made, never one that still holds anything, never School Files
+/// itself (audit T-45). A batch recorded before that list existed removes
+/// no folder.
+pub fn undo_batch(db: &impl Db, roots: &Roots, batch: &str) -> Result<BatchUndo> {
     let rows: Vec<OpRow> = {
         let conn = db.hold()?;
         let mut stmt = conn.prepare(&format!("SELECT {OP_COLUMNS} FROM ops WHERE batch = ?1 AND status = 'done' ORDER BY id DESC"))?;
@@ -787,38 +827,36 @@ pub fn undo_batch(db: &impl Db, roots: &Roots, placed: &Placed, batch: &str) -> 
     };
     let mut undone = 0;
     let mut failed = Vec::new();
-    let mut touched: Vec<PathBuf> = Vec::new();
     for row in rows {
-        match undo(db, roots, placed, row.id) {
-            Ok(()) => {
-                undone += 1;
-                if let Some(parent) = row.dst.as_deref().and_then(|d| Path::new(d).parent()) {
-                    touched.push(parent.to_path_buf());
-                }
-            }
+        match undo(db, roots, row.id) {
+            Ok(()) => undone += 1,
             Err(error) => {
                 log::warn!("undo batch {batch}, op {}: {}", row.id, error.message);
-                failed.push(Path::new(&row.src).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                failed.push(UndoFailure {
+                    name: Path::new(&row.src).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                    message: error.message,
+                });
             }
         }
     }
-    if !batch.starts_with("organize-") {
-        return Ok(BatchUndo { undone, failed });
+    let mut created: Vec<PathBuf> = batch_folders(&*db.hold()?, batch)?.into_iter().map(PathBuf::from).collect();
+    created.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    let school = roots.school_files().ok();
+    for folder in created {
+        if school.as_deref().is_some_and(|s| paths::same_path(s, &folder)) || roots.confine(&folder).is_err() {
+            continue;
+        }
+        let empty = std::fs::read_dir(&folder).map(|mut d| d.next().is_none()).unwrap_or(false);
+        if empty {
+            if let Err(error) = std::fs::remove_dir(&folder) {
+                log::warn!("undo batch {batch}: an empty folder it created stays ({error})");
+            }
+        }
     }
-    let school = roots.school_files()?;
-    touched.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
-    touched.dedup();
-    for dir in touched {
-        let mut current = Some(dir.as_path());
-        while let Some(folder) = current {
-            if folder == school || !folder.starts_with(&school) {
-                break;
-            }
-            let empty = std::fs::read_dir(folder).map(|mut d| d.next().is_none()).unwrap_or(false);
-            if !empty || std::fs::remove_dir(folder).is_err() {
-                break;
-            }
-            current = folder.parent();
+    if failed.is_empty() {
+        // Everything is back, so the list has done its job.
+        if let Err(error) = write(&*db.hold()?, "DELETE FROM settings WHERE key = ?1", [format!("{BATCH_FOLDERS_PREFIX}{batch}")]) {
+            log::warn!("undo batch {batch}: the list of folders it created stays ({})", error.message);
         }
     }
     Ok(BatchUndo { undone, failed })
@@ -829,8 +867,14 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<OpRow>> {
     Ok(stmt.query_row([id], map_op).optional()?)
 }
 
+/// The newest `limit` entries of Activity, newest first, where all the
+/// rows of one batch count as one entry and come back together, so a
+/// 300-file Organize run is never cut short (audit T-45).
 pub fn list(conn: &Connection, limit: usize) -> Result<Vec<OpRow>> {
-    let mut stmt = conn.prepare(&format!("SELECT {OP_COLUMNS} FROM ops WHERE status <> 'pending' ORDER BY id DESC LIMIT ?1"))?;
+    let mut stmt = conn.prepare(&format!(
+        "WITH entries AS (SELECT COALESCE(batch, '#' || id) AS entry FROM ops WHERE status <> 'pending' GROUP BY entry ORDER BY MAX(id) DESC LIMIT ?1) \
+         SELECT {OP_COLUMNS} FROM ops WHERE status <> 'pending' AND COALESCE(batch, '#' || id) IN (SELECT entry FROM entries) ORDER BY id DESC"
+    ))?;
     let rows = stmt.query_map([limit as i64], map_op)?;
     Ok(rows.collect::<std::result::Result<Vec<OpRow>, _>>()?)
 }
@@ -959,13 +1003,6 @@ fn remove_partials(folder: &Path) {
     }
 }
 
-/// Writes a failure the sorter hit so Activity can show it.
-pub fn note_failure(conn: &Connection, src: &Path, message: &str) -> Result<()> {
-    let id = record(conn, OpKind::AutoSort, src, None, true)?;
-    write(conn, "UPDATE ops SET status = 'failed', message = ?2 WHERE id = ?1", params![id, message])?;
-    Ok(())
-}
-
 fn map_op(row: &rusqlite::Row<'_>) -> rusqlite::Result<OpRow> {
     Ok(OpRow {
         id: row.get(0)?,
@@ -1008,31 +1045,21 @@ mod tests {
         index::refresh_path(&conn, &src).unwrap();
         let dest = roots.documents.clone().unwrap().join("School Files").join("Word");
         let created = index::entry_for(&src).unwrap().created;
-        let placed = Placed::default();
-        let moved = move_file(&conn, &roots, &placed, &src, &dest, OpKind::Move).unwrap();
+        let moved = move_file(&conn, &roots, &src, &dest, OpKind::Move).unwrap();
         assert!(moved.is_file());
         assert!(!src.exists());
-        assert!(!placed.covers(&moved, std::time::Instant::now()), "a landing outside Downloads is not noted");
         assert!(index::by_path(&conn, &moved.to_string_lossy()).unwrap().is_some());
         let ops = list(&conn, 10).unwrap();
         assert_eq!(ops[0].status, "done");
-        assert!(!was_put_back(&conn, &src, created).unwrap(), "a done move away from Downloads is not a put-back");
         let before_undo = db::now();
-        undo(&conn, &roots, &placed, ops[0].id).unwrap();
+        undo(&conn, &roots, ops[0].id).unwrap();
         assert!(src.is_file());
         assert_eq!(get(&conn, ops[0].id).unwrap().unwrap().status, "undone");
         let (undone_at, undone_to) = undone(&conn, ops[0].id);
         let undone_at = undone_at.expect("the moment of the Undo is recorded");
         assert!(undone_at >= before_undo && undone_at <= db::now());
         assert_eq!(undone_to, Some(src.to_string_lossy().into_owned()), "and where the file landed");
-        // What the watcher reads after the put-back: on the same drive the move kept the created time.
-        let back = index::entry_for(&src).unwrap().created;
-        assert_eq!(back, created, "a same-drive move keeps the created time");
-        // The watcher is told before the file moves back, so it is not filed again (audit T-06).
-        assert!(placed.covers(&src, std::time::Instant::now()), "the path Undo put back in Downloads is noted");
-        assert!(was_put_back(&conn, &src, back).unwrap(), "and the Activity row says it was put back, for the sweep and for every later filing");
-        assert!(!was_put_back(&conn, &src, undone_at + 1).unwrap(), "a later download at the same path is newer than the Undo and is still filed");
-        assert!(!was_put_back(&conn, &roots.downloads.clone().unwrap().join("Other.docx"), back).unwrap());
+        assert_eq!(index::entry_for(&src).unwrap().created, created, "a same-drive move keeps the created time");
     }
 
     /// The moment and the landing an undone row recorded.
@@ -1040,98 +1067,25 @@ mod tests {
         conn.query_row("SELECT undone_at, undone_to FROM ops WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
     }
 
-    /// The put-back guard where a same-drive rename is not what happened
-    /// (audit T-06): a put-back from another drive is a copy with a fresh
-    /// created time, so the file is measured against the moment of the Undo
-    /// (or, for a Move to Downloads, the row's time plus the copy's slack);
-    /// a row from before the column falls back to its own time; and an Undo
-    /// beside a file that took the name lands at "Name (2)", which is the
-    /// path the row then covers, while the namesake is filed as the download
-    /// it is.
+    /// Undo beside a file that has since taken the name lands at
+    /// "Name (2)", leaves the other file untouched, and the row names the
+    /// real landing.
     #[test]
-    fn a_put_back_by_copy_or_beside_a_namesake_is_still_known() {
+    fn an_undo_beside_a_namesake_lands_beside_it() {
         let (_dir, roots, conn) = fixture();
         let downloads = roots.downloads.clone().unwrap();
         let school = roots.documents.clone().unwrap().join("School Files");
-        let created = 1_700_000_000;
-        // Undo across drives: the copy in Downloads was created after the filing and just before the Undo finished.
-        let copied = downloads.join("Memo.pdf");
-        conn.execute(
-            "INSERT INTO ops(kind, src, dst, status, automatic, created_at, undone_at, undone_to) VALUES('autoSort', ?1, ?2, 'undone', 1, ?3, ?4, ?1)",
-            params![copied.to_string_lossy().into_owned(), school.join("PDF").join("Memo.pdf").to_string_lossy().into_owned(), created - 3_600, created + 2],
-        )
-        .unwrap();
-        assert!(was_put_back(&conn, &copied, created).unwrap(), "the Undo finished after the copy was created");
-        assert!(!was_put_back(&conn, &copied, created + 3).unwrap(), "a download after the Undo is newer than it");
-        // A row from before the columns existed: its own time stands in for the Undo.
-        let older = downloads.join("Old Memo.pdf");
-        conn.execute("INSERT INTO ops(kind, src, dst, status, automatic, created_at) VALUES('autoSort', ?1, ?2, 'undone', 1, ?3)", params![older.to_string_lossy().into_owned(), school.join("PDF").join("Old Memo.pdf").to_string_lossy().into_owned(), created + 1]).unwrap();
-        assert!(was_put_back(&conn, &older, created).unwrap(), "an older undone row still counts by its own time");
-        // A Move to Downloads from another drive: the row is written before the copy lands.
-        let moved = downloads.join("Form.pdf");
-        conn.execute("INSERT INTO ops(kind, src, dst, status, automatic, created_at) VALUES('move', 'D:\\Forms\\Form.pdf', ?1, 'done', 0, ?2)", params![moved.to_string_lossy().into_owned(), created - 30]).unwrap();
-        assert!(was_put_back(&conn, &moved, created).unwrap(), "a copy that took half a minute is still the move she asked for");
-        assert!(!was_put_back(&conn, &moved, created + MOVE_COPY_SLACK_SECS + 1).unwrap(), "a download well after the move is not");
-        // Undo beside a namesake: a second download took "Quiz.docx" while the first was filed.
-        let placed = Placed::default();
         let src = downloads.join("Quiz.docx");
         std::fs::write(&src, b"first").unwrap();
-        move_file(&conn, &roots, &placed, &src, &school.join("Word"), OpKind::AutoSort).unwrap();
+        move_file(&conn, &roots, &src, &school.join("Word"), OpKind::AutoSort).unwrap();
         std::fs::write(&src, b"second download").unwrap();
-        let namesake = index::entry_for(&src).unwrap().created;
         let row = list(&conn, 1).unwrap().remove(0);
-        undo(&conn, &roots, &placed, row.id).unwrap();
+        undo(&conn, &roots, row.id).unwrap();
         let landing = downloads.join("Quiz (2).docx");
         assert!(landing.is_file(), "the first file came back beside the namesake");
         assert_eq!(std::fs::read(&src).unwrap(), b"second download", "which is untouched");
         let (_, undone_to) = undone(&conn, row.id);
         assert_eq!(undone_to, Some(landing.to_string_lossy().into_owned()), "the row names the real landing");
-        assert!(placed.covers(&landing, std::time::Instant::now()), "which the registry was told");
-        assert!(was_put_back(&conn, &landing, index::entry_for(&landing).unwrap().created).unwrap(), "the file that came back is known at its landing");
-        assert!(!was_put_back(&conn, &src, namesake).unwrap(), "the download that took the name is still the new download it is");
-    }
-
-    /// Undo of a move that did not land in Downloads notes nothing: the
-    /// registry is only for the Downloads watcher.
-    #[test]
-    fn undo_outside_downloads_notes_nothing() {
-        let (_dir, roots, conn) = fixture();
-        let src = roots.desktop.clone().unwrap().join("Quiz.docx");
-        std::fs::write(&src, b"q").unwrap();
-        let dest = roots.documents.clone().unwrap().join("Forms");
-        let placed = Placed::default();
-        move_file(&conn, &roots, &placed, &src, &dest, OpKind::Move).unwrap();
-        undo(&conn, &roots, &placed, list(&conn, 1).unwrap()[0].id).unwrap();
-        assert!(src.is_file());
-        assert!(!placed.covers(&src, std::time::Instant::now()));
-    }
-
-    /// A Move to Downloads she asked for is the other door into Downloads:
-    /// the landing is noted for the watcher before the file moves, and the
-    /// done row says she put it there, so it is never filed (audit T-06).
-    #[test]
-    fn a_move_into_downloads_is_noted_and_remembered() {
-        let (_dir, roots, conn) = fixture();
-        let src = roots.documents.clone().unwrap().join("School Files").join("Word").join("Quiz.docx");
-        std::fs::create_dir_all(src.parent().unwrap()).unwrap();
-        std::fs::write(&src, b"q").unwrap();
-        let created = index::entry_for(&src).unwrap().created;
-        let downloads = roots.downloads.clone().unwrap();
-        let placed = Placed::default();
-        let landing = move_file(&conn, &roots, &placed, &src, &downloads, OpKind::Move).unwrap();
-        assert_eq!(landing, downloads.join("Quiz.docx"));
-        assert!(placed.covers(&landing, std::time::Instant::now()), "the landing in Downloads is noted before the file moves");
-        assert!(was_put_back(&conn, &landing, created).unwrap(), "the done move row says she put it there");
-        let row_at = list(&conn, 1).unwrap()[0].created_at;
-        assert!(was_put_back(&conn, &landing, row_at + MOVE_COPY_SLACK_SECS).unwrap(), "a copy from another drive that landed within the slack is still her move");
-        assert!(!was_put_back(&conn, &landing, row_at + MOVE_COPY_SLACK_SECS + 1).unwrap(), "a download at that path past the slack is newer than the move and is still filed");
-        // The same through a batch of several files.
-        let other = roots.desktop.clone().unwrap().join("Form.pdf");
-        std::fs::write(&other, b"f").unwrap();
-        let batch = new_batch("move");
-        let beside = move_file_in_batch(&conn, &roots, &placed, &other, &downloads, &batch).unwrap();
-        assert!(placed.covers(&beside, std::time::Instant::now()));
-        assert!(was_put_back(&conn, &beside, index::entry_for(&beside).unwrap().created).unwrap());
     }
 
     #[test]
@@ -1140,10 +1094,71 @@ mod tests {
         let src = roots.desktop.clone().unwrap().join("a.docx");
         std::fs::write(&src, b"a").unwrap();
         std::fs::write(roots.desktop.clone().unwrap().join("taken.docx"), b"t").unwrap();
-        let renamed = rename_file(&conn, &roots, &src, "Grade 7 Quiz").unwrap();
+        let renamed = rename_file(&conn, &roots, &src, "Grade 7 Quiz", false).unwrap();
         assert_eq!(renamed.file_name().unwrap().to_string_lossy(), "Grade 7 Quiz.docx");
-        assert_eq!(rename_file(&conn, &roots, &renamed, "taken").unwrap_err().code, ErrorCode::AlreadyExists);
-        assert_eq!(rename_file(&conn, &roots, &renamed, "bad:name").unwrap_err().code, ErrorCode::InvalidName);
+        assert_eq!(rename_file(&conn, &roots, &renamed, "taken", false).unwrap_err().code, ErrorCode::AlreadyExists);
+        assert_eq!(rename_file(&conn, &roots, &renamed, "bad:name", false).unwrap_err().code, ErrorCode::InvalidName);
+    }
+
+    /// Fixing the capitals of a name is a rename, not a clash (audit T-28).
+    #[test]
+    fn a_change_of_capitals_only_is_a_rename() {
+        let (_dir, roots, conn) = fixture();
+        let src = roots.desktop.clone().unwrap().join("lesson plan.docx");
+        std::fs::write(&src, b"plan").unwrap();
+        let mut entries = Vec::new();
+        index::walk(&roots.confine(roots.desktop.as_ref().unwrap()).unwrap(), &mut entries);
+        for e in &entries {
+            index::upsert(&conn, e).unwrap();
+        }
+        let renamed = rename_file(&conn, &roots, &src, "Lesson Plan", false).unwrap();
+        assert_eq!(renamed.file_name().unwrap().to_string_lossy(), "Lesson Plan.docx");
+        let names: Vec<String> = std::fs::read_dir(roots.desktop.as_ref().unwrap()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec!["Lesson Plan.docx".to_string()], "one file, with the new capitals");
+        assert_eq!(std::fs::read(&renamed).unwrap(), b"plan");
+        assert!(index::by_path(&conn, &renamed.to_string_lossy()).unwrap().is_some(), "the index follows the new spelling");
+    }
+
+    /// After she agrees, a taken name becomes the next free one (audit T-28).
+    #[test]
+    fn pick_free_takes_the_next_free_name() {
+        let (_dir, roots, conn) = fixture();
+        let desktop = roots.desktop.clone().unwrap();
+        let src = desktop.join("draft.docx");
+        std::fs::write(&src, b"draft").unwrap();
+        std::fs::write(desktop.join("Grade 7 Quiz.docx"), b"theirs").unwrap();
+        assert_eq!(rename_file(&conn, &roots, &src, "Grade 7 Quiz", false).unwrap_err().code, ErrorCode::AlreadyExists);
+        let renamed = rename_file(&conn, &roots, &src, "Grade 7 Quiz", true).unwrap();
+        assert_eq!(renamed.file_name().unwrap().to_string_lossy(), "Grade 7 Quiz (2).docx");
+        assert_eq!(std::fs::read(desktop.join("Grade 7 Quiz.docx")).unwrap(), b"theirs", "the other file is untouched");
+        assert_eq!(std::fs::read(&renamed).unwrap(), b"draft");
+    }
+
+    /// Activity counts a batch as one entry and returns all of its rows,
+    /// however many there are (audit T-45).
+    #[test]
+    fn activity_returns_whole_batches() {
+        let (_dir, _roots, conn) = fixture();
+        let insert = |src: String, batch: Option<&str>| {
+            conn.execute("INSERT INTO ops(kind, src, dst, status, automatic, created_at, batch) VALUES('move', ?1, 'd', 'done', 0, 1, ?2)", params![src, batch]).unwrap();
+        };
+        for n in 0..300 {
+            insert(format!("organized {n}"), Some("organize-1"));
+        }
+        for n in 0..250 {
+            insert(format!("single {n}"), None);
+        }
+        let newest = list(&conn, 200).unwrap();
+        assert_eq!(newest.len(), 200, "the 200 newest entries are single changes");
+        assert!(newest.iter().all(|r| r.batch.is_none()));
+        let all = list(&conn, 251).unwrap();
+        assert_eq!(all.len(), 550, "the run comes back whole as the 251st entry");
+        assert_eq!(all.iter().filter(|r| r.batch.as_deref() == Some("organize-1")).count(), 300);
+        assert!(all.windows(2).all(|w| w[0].id > w[1].id), "newest first");
+        insert("after".into(), Some("move-2"));
+        insert("after too".into(), Some("move-2"));
+        let top = list(&conn, 2).unwrap();
+        assert_eq!(top.len(), 3, "a two-row batch and one single change");
     }
 
     #[test]
@@ -1152,12 +1167,12 @@ mod tests {
         let outside = dir.path().join("x.txt");
         std::fs::write(&outside, b"x").unwrap();
         let dest = roots.documents.clone().unwrap();
-        assert_eq!(move_file(&conn, &roots, &Placed::default(), &outside, &dest, OpKind::Move).unwrap_err().code, ErrorCode::OutsideRoots);
+        assert_eq!(move_file(&conn, &roots, &outside, &dest, OpKind::Move).unwrap_err().code, ErrorCode::OutsideRoots);
         let folder = create_folder(&conn, &roots, &dest, "Grade 7").unwrap();
         assert!(folder.is_dir());
         assert_eq!(create_folder(&conn, &roots, &dest, "Grade 7").unwrap_err().code, ErrorCode::AlreadyExists);
         let op = list(&conn, 1).unwrap().remove(0);
-        undo(&conn, &roots, &Placed::default(), op.id).unwrap();
+        undo(&conn, &roots, op.id).unwrap();
         assert!(!folder.exists());
     }
 
@@ -1173,16 +1188,14 @@ mod tests {
         let dest = roots.documents.clone().unwrap().join("School Files").join("Quizzes");
         std::fs::create_dir_all(&dest).unwrap();
         let batch = new_batch("move");
-        let placed = Placed::default();
-        move_file_in_batch(&conn, &roots, &placed, &a, &dest, &batch).unwrap();
-        move_file_in_batch(&conn, &roots, &placed, &b, &dest, &batch).unwrap();
+        move_file_in_batch(&conn, &roots, &a, &dest, &batch).unwrap();
+        move_file_in_batch(&conn, &roots, &b, &dest, &batch).unwrap();
         let logged = list(&conn, 10).unwrap();
         assert_eq!(logged.iter().filter(|o| o.batch.as_deref() == Some(batch.as_str())).count(), 2);
 
-        let undone = undo_batch(&conn, &roots, &placed, &batch).unwrap();
+        let undone = undo_batch(&conn, &roots, &batch).unwrap();
         assert_eq!(undone.undone, 2);
         assert!(a.is_file() && b.is_file());
-        assert!(placed.covers(&a, std::time::Instant::now()) && placed.covers(&b, std::time::Instant::now()), "Undo all notes every file it puts back in Downloads");
         assert!(dest.is_dir(), "a manual batch must never remove the folder it moved into");
     }
 
@@ -1200,13 +1213,13 @@ mod tests {
             use std::os::windows::fs::OpenOptionsExt;
             std::fs::OpenOptions::new().read(true).share_mode(0).open(&src).unwrap()
         };
-        let error = rename_file(&conn, &roots, &src, "Renamed").unwrap_err();
+        let error = rename_file(&conn, &roots, &src, "Renamed", false).unwrap_err();
         assert_eq!(error.code, ErrorCode::InUse, "{}", error.message);
         assert_eq!(error.message, IN_USE);
         let row = list(&conn, 1).unwrap().remove(0);
         assert_eq!(row.status, "failed");
         assert_eq!(row.message.as_deref(), Some(IN_USE), "Activity carries the same sentence");
-        let error = move_file(&conn, &roots, &Placed::default(), &src, &roots.documents.clone().unwrap(), OpKind::Move).unwrap_err();
+        let error = move_file(&conn, &roots, &src, &roots.documents.clone().unwrap(), OpKind::Move).unwrap_err();
         assert_eq!(error.code, ErrorCode::InUse, "{}", error.message);
         assert!(src.is_file(), "the file stays where it was");
     }
@@ -1244,7 +1257,7 @@ mod tests {
         let file = roots.downloads.clone().unwrap().join("Quiz.docx");
         std::fs::write(&file, b"q").unwrap();
         conn.pragma_update(None, "query_only", "ON").unwrap();
-        let error = note_failure(&conn, &file, "x").unwrap_err();
+        let error = record(&conn, OpKind::Move, &file, None, false).unwrap_err();
         assert_eq!((error.code, error.message.as_str()), (ErrorCode::Db, crate::error::DB_WRITE));
         assert!(list(&conn, 1).unwrap().is_empty(), "reads still work");
         conn.pragma_update(None, "query_only", "OFF").unwrap();
@@ -1294,7 +1307,7 @@ mod tests {
         assert_eq!(rows[0].status, "failed");
         assert_eq!(rows[0].message.as_deref(), Some("This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first."));
         assert!(file.is_file(), "a refused file is left where it was");
-        assert_eq!(undo(&conn, &roots, &Placed::default(), rows[0].id).unwrap_err().code, ErrorCode::Validation, "a refused row has nothing to undo");
+        assert_eq!(undo(&conn, &roots, rows[0].id).unwrap_err().code, ErrorCode::Validation, "a refused row has nothing to undo");
     }
 
     /// With extensions hidden the shell lists the item as the bare stem; a
@@ -1346,20 +1359,17 @@ mod tests {
         assert!((crate::db::now() - at).abs() < 60);
         let recycled = PathBuf::from(&rows[0].src);
         assert!(bin_listing().unwrap().iter().any(|item| is_same_original(item, &recycled)), "the item is in the Recycle Bin");
-        let placed = Placed::default();
-        undo(&conn, &roots, &placed, rows[0].id).unwrap();
+        undo(&conn, &roots, rows[0].id).unwrap();
         assert!(file.is_file(), "Undo brings it back");
         assert_eq!(get(&conn, rows[0].id).unwrap().unwrap().status, "undone");
-        assert!(placed.covers(&file, std::time::Instant::now()), "a restore into Downloads is noted for the watcher");
 
         let rows = recycle(&conn, &roots, std::slice::from_ref(&file)).unwrap();
         assert_eq!(rows[0].status, "done", "{:?}", rows[0].message);
         std::fs::write(&file, b"another file with that name").unwrap();
-        undo(&conn, &roots, &placed, rows[0].id).unwrap();
+        undo(&conn, &roots, rows[0].id).unwrap();
         assert_eq!(std::fs::read(&file).unwrap(), b"another file with that name", "the file that took its place is never touched");
         let beside = roots.downloads.clone().unwrap().join("Tote recycle check (2).txt");
         assert_eq!(std::fs::read(&beside).unwrap(), b"recycle check", "the recycled file comes back beside it with its extension");
-        assert!(placed.covers(&beside, std::time::Instant::now()), "the landing beside the other file is the path noted");
         assert!(index::by_path(&conn, &beside.to_string_lossy()).unwrap().is_some(), "the index knows where it landed");
         assert_eq!(get(&conn, rows[0].id).unwrap().unwrap().status, "undone");
     }
@@ -1387,7 +1397,7 @@ mod tests {
         assert_eq!(rows.len(), 1, "the first row is finished, not left pending: {rows:?}");
         assert_eq!(rows[0].status, "done");
         assert!(recorded_recycle(&conn, rows[0].id).unwrap().is_some(), "its moment and size are recorded");
-        undo(&conn, &roots, &Placed::default(), rows[0].id).unwrap();
+        undo(&conn, &roots, rows[0].id).unwrap();
         assert!(first.is_file(), "and Undo works on it");
     }
 
@@ -1417,7 +1427,7 @@ mod tests {
             const FILE_SHARE_READ: u32 = 0x1;
             std::fs::OpenOptions::new().read(true).write(true).share_mode(FILE_SHARE_READ).open(&src).unwrap()
         };
-        let error = move_file(&conn, &roots, &Placed::default(), &src, &dest, OpKind::Move).unwrap_err();
+        let error = move_file(&conn, &roots, &src, &dest, OpKind::Move).unwrap_err();
         assert_eq!((error.code, error.message.as_str()), (ErrorCode::InUse, IN_USE));
         assert_eq!(list(&conn, 1).unwrap()[0].message.as_deref(), Some(IN_USE), "Activity carries the same sentence");
         assert!(names_in(&dest).is_empty(), "nothing was copied: {:?}", names_in(&dest));
@@ -1483,7 +1493,7 @@ mod tests {
         std::fs::write(&file, b"deep").unwrap();
         assert!(path_units(&file) >= 260);
         let deeper = deep.join("C".repeat(30));
-        let moved = move_file(&conn, &roots, &Placed::default(), &file, &deeper, OpKind::Move).unwrap();
+        let moved = move_file(&conn, &roots, &file, &deeper, OpKind::Move).unwrap();
         assert_eq!(std::fs::read(&moved).unwrap(), b"deep");
         let copied = deep.join("Deep Quiz copy.docx");
         copy_across(&moved, &copied).unwrap();
@@ -1551,10 +1561,9 @@ mod tests {
         std::fs::write(&src, b"video").unwrap();
         let dest = roots.documents.clone().unwrap().join("Videos");
         let watched = Watched::new(conn, &src, &dest.join("Class Video.mp4"));
-        let placed = Placed::default();
-        move_file(&watched, &roots, &placed, &src, &dest, OpKind::Move).unwrap();
+        move_file(&watched, &roots, &src, &dest, OpKind::Move).unwrap();
         let id = list(&watched.hold().unwrap(), 1).unwrap()[0].id;
-        undo(&watched, &roots, &placed, id).unwrap();
+        undo(&watched, &roots, id).unwrap();
         assert!(src.is_file(), "Undo put it back");
         let holds = watched.holds.lock().unwrap().clone();
         assert!(holds.len() >= 4, "the move and the Undo each took the lock before and after: {holds:?}");
@@ -1633,7 +1642,7 @@ mod tests {
             assert!(shown.contains(&id), "Activity shows change {id}: {shown:?}");
         }
         assert_eq!(resolve_pending(&conn).unwrap(), 0, "nothing is left pending");
-        undo(&conn, &roots, &Placed::default(), undoing).unwrap();
+        undo(&conn, &roots, undoing).unwrap();
         assert_eq!(std::fs::read(&quiz_home).unwrap(), b"quiz");
     }
 
@@ -1694,7 +1703,7 @@ mod tests {
         let (_dir, roots, conn) = fixture();
         let src = roots.downloads.clone().unwrap().join("Memo.pdf");
         std::fs::write(&src, b"%PDF").unwrap();
-        let moved = move_file(&conn, &roots, &Placed::default(), &src, &roots.desktop.clone().unwrap(), OpKind::Move).unwrap();
+        let moved = move_file(&conn, &roots, &src, &roots.desktop.clone().unwrap(), OpKind::Move).unwrap();
         let row = list(&conn, 1).unwrap().remove(0);
         assert!(!row.stamp_lost, "a file without a stamp has none to lose");
         note_stamp_lost(&conn, row.id, &moved).unwrap();
@@ -1704,7 +1713,7 @@ mod tests {
             let stamped = roots.downloads.clone().unwrap().join("Form.pdf");
             std::fs::write(&stamped, b"%PDF").unwrap();
             std::fs::write(format!("{}:Zone.Identifier", stamped.display()), "[ZoneTransfer]\r\nZoneId=3\r\n").unwrap();
-            let landed = move_file(&conn, &roots, &Placed::default(), &stamped, &roots.desktop.clone().unwrap(), OpKind::Move).unwrap();
+            let landed = move_file(&conn, &roots, &stamped, &roots.desktop.clone().unwrap(), OpKind::Move).unwrap();
             assert!(origin::read_zone(&landed).is_some());
             assert!(!list(&conn, 1).unwrap()[0].stamp_lost, "the stamp stayed on this drive");
         }

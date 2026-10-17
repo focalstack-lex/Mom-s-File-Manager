@@ -36,7 +36,26 @@ pub struct FileRow {
 #[serde(rename_all = "camelCase")]
 pub struct Group {
     pub latest: FileRow,
+    /// Copies of `latest`: the same size, or a name that carries a copy
+    /// marker (`dupes::differ_by_copy_marker`).
     pub others: Vec<FileRow>,
+    /// Files with the same name that are not copies (another class's
+    /// "Book1.xlsx"); never offered for the Recycle Bin (audit T-16).
+    pub same_name: Vec<FileRow>,
+}
+
+impl FileRow {
+    /// The name without its extension.
+    pub fn stem(&self) -> String {
+        Path::new(&self.name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| self.name.clone())
+    }
+
+    /// True when the name alone marks this file as a copy of `latest`, or
+    /// both are the same size (Find's quick rule; Clean up also compares
+    /// the content of same-size files before it calls them copies).
+    pub fn looks_like_copy_of(&self, latest: &FileRow) -> bool {
+        self.size == latest.size || crate::dupes::differ_by_copy_marker(&latest.stem(), &self.stem())
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -689,9 +708,46 @@ pub fn fts_query(input: &str) -> Option<String> {
 
 /// True when every typed word starts a word of the name (in either indexed
 /// form): the name column matched on its own, so the row needs no snippet.
+/// Both sides are folded the way FTS5's `remove_diacritics 2` folds them, so
+/// typing "penaflor" finds "Peñaflor.xlsx" and the row is not called a
+/// content hit.
 fn name_matches(name: &str, query_words: &[String]) -> bool {
-    let name_words = words(&indexed_name(name));
-    query_words.iter().all(|q| name_words.iter().any(|n| n.starts_with(q.as_str())))
+    let name_words: Vec<String> = words(&indexed_name(name)).iter().map(|w| fold_diacritics(w)).collect();
+    query_words.iter().all(|q| {
+        let q = fold_diacritics(q);
+        name_words.iter().any(|n| n.starts_with(q.as_str()))
+    })
+}
+
+/// Folds the accented letters of Latin-1 and Latin Extended-A to their plain
+/// form (already lowercase, as `words` leaves them). FTS5 does the same when
+/// it indexes, so the two comparisons agree; a ligature folds to its letters.
+fn fold_diacritics(word: &str) -> String {
+    let mut out = String::with_capacity(word.len());
+    for c in word.chars() {
+        match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => out.push('a'),
+            'æ' => out.push_str("ae"),
+            'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => out.push('c'),
+            'ď' | 'đ' => out.push('d'),
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => out.push('e'),
+            'ğ' | 'ĝ' | 'ġ' | 'ģ' => out.push('g'),
+            'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => out.push('i'),
+            'ł' | 'ĺ' | 'ļ' | 'ľ' => out.push('l'),
+            'ñ' | 'ń' | 'ņ' | 'ň' => out.push('n'),
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => out.push('o'),
+            'œ' => out.push_str("oe"),
+            'ŕ' | 'ŗ' | 'ř' => out.push('r'),
+            'ś' | 'ŝ' | 'ş' | 'š' => out.push('s'),
+            'ß' => out.push_str("ss"),
+            'ţ' | 'ť' | 'ŧ' => out.push('t'),
+            'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => out.push('u'),
+            'ý' | 'ÿ' | 'ŷ' => out.push('y'),
+            'ź' | 'ż' | 'ž' => out.push('z'),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn filter_sql(filters: &Filters, args: &mut Vec<Box<dyn rusqlite::ToSql>>) -> String {
@@ -836,7 +892,9 @@ pub fn group_members(conn: &Connection, group_key: &str) -> Result<Vec<FileRow>>
 }
 
 /// Groups rows by duplicate key, keeping first-seen order and marking the
-/// most recently modified member as Latest.
+/// most recently modified member as Latest. A member is one of its
+/// `others` only when it looks like a copy (`FileRow::looks_like_copy_of`);
+/// the rest of the group goes to `same_name` (audit T-16).
 pub fn group(rows: Vec<FileRow>) -> Vec<Group> {
     let mut order: Vec<String> = Vec::new();
     let mut buckets: HashMap<String, Vec<FileRow>> = HashMap::new();
@@ -853,7 +911,8 @@ pub fn group(rows: Vec<FileRow>) -> Vec<Group> {
             members.sort_by_key(|m| std::cmp::Reverse(m.modified));
             let mut iter = members.into_iter();
             let latest = iter.next()?;
-            Some(Group { latest, others: iter.collect() })
+            let (others, same_name) = iter.partition(|m| m.looks_like_copy_of(&latest));
+            Some(Group { latest, others, same_name })
         })
         .collect()
 }
@@ -905,6 +964,33 @@ mod tests {
         assert!(content[0].snippet.as_deref().unwrap().contains(&format!("{MARK_START}Santos{MARK_END}")));
         let kinds = Filters { kinds: vec!["word".into()], ..Default::default() };
         assert_eq!(search(&conn, "", &kinds, 50).unwrap().len(), 2);
+    }
+
+    /// Find counts same-name files as copies only when the size matches or
+    /// the name carries a copy marker (audit T-16).
+    #[test]
+    fn find_groups_copies_apart_from_same_name_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_memory().unwrap();
+        for (folder, name, body) in [("a", "Book1.xlsx", "Grade 7 Rizal"), ("b", "Book1.xlsx", "Grade 8 Bonifacio list"), ("c", "Book1.xlsx", "Grade 7 Rizal"), ("d", "Book1 (2).xlsx", "an older draft")] {
+            std::fs::create_dir_all(dir.path().join(folder)).unwrap();
+            std::fs::write(dir.path().join(folder).join(name), body).unwrap();
+        }
+        let mut entries = Vec::new();
+        walk(dir.path(), &mut entries);
+        for e in &entries {
+            upsert(&conn, e).unwrap();
+        }
+        let a = dir.path().join("a").join("Book1.xlsx").to_string_lossy().into_owned();
+        conn.execute("UPDATE files SET modified = modified + 1000 WHERE path = ?1", [&a]).unwrap();
+        let groups = group(search(&conn, "book1", &Filters::default(), 50).unwrap());
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].latest.path, a);
+        let others: Vec<&str> = groups[0].others.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(others.len(), 2, "the same size and the marked name: {others:?}");
+        assert!(others.iter().any(|p| p.contains("Book1 (2)")));
+        assert_eq!(groups[0].same_name.len(), 1);
+        assert!(groups[0].same_name[0].path.contains(&format!("{}b{}", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR)));
     }
 
     /// A pin, a move's index update or a removal that fails says not
@@ -1108,7 +1194,7 @@ mod tests {
     fn typed_names_find_their_files_however_they_are_written() {
         let dir = tempfile::tempdir().unwrap();
         let conn = db::open_memory().unwrap();
-        let names = ["Book1.xlsx", "SF2_October.xlsx", "Grade-7 Science Quiz.docx", "Teacher's Day Program.docx", "2026-10-14 Attendance.xlsx", "Dela Cruz, Juan.pdf"];
+        let names = ["Book1.xlsx", "SF2_October.xlsx", "Grade-7 Science Quiz.docx", "Teacher's Day Program.docx", "2026-10-14 Attendance.xlsx", "Dela Cruz, Juan.pdf", "Peñaflor.pdf"];
         for name in names {
             let path = dir.path().join(name);
             std::fs::write(&path, b"x").unwrap();
@@ -1122,6 +1208,8 @@ mod tests {
             ("teachers day", "Teacher's Day Program.docx"),
             ("2026-10-14", "2026-10-14 Attendance.xlsx"),
             ("Dela Cruz, Juan", "Dela Cruz, Juan.pdf"),
+            ("penaflor", "Peñaflor.pdf"),
+            ("Peñaflor", "Peñaflor.pdf"),
         ] {
             let hits = search(&conn, typed, &Filters::default(), 50).unwrap();
             assert_eq!(hits.first().map(|h| h.name.as_str()), Some(expected), "typed {typed:?}");

@@ -1,7 +1,7 @@
 [package]
 name = "tote"
 version = "0.3.0"
-description = "Tote: finds a teacher's files and keeps new downloads filed"
+description = "Tote: finds a teacher's files and files the ones she sends it"
 authors = ["Lex Matondo"]
 license = "MIT"
 edition = "2021"

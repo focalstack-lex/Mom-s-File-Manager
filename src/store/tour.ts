@@ -23,7 +23,7 @@ export const TOUR_STEPS: TourStep[] = [
     id: "recent",
     target: "recent",
     title: "Your downloads land here",
-    body: "Everything you download shows up in this list, newest first. It is already filed for you.",
+    body: "Everything you download shows up in this list, newest first. To file one, right-click it in File Explorer and choose Move to Tote (under Show more options).",
     view: "find",
   },
   {

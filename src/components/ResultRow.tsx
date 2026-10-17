@@ -4,14 +4,18 @@
 // Open, Show in folder, Copy and Pin wait quietly on the right and come
 // forward on hover, focus, selection or preview; the preview panel carries
 // the same actions with labels. A program, script or shortcut offers "Open
-// the program", so a plain Open never runs one by surprise.
+// the program", so a plain Open never runs one by surprise. Rename checks the
+// name on every key with the native rules and says what is wrong under the
+// field; a name that is taken is a question ("Use Name (2) instead?"), not a
+// refusal. Files that only share the name sit behind their own button, apart
+// from the copies.
 
 import { Check, Copy, FolderOpen, Pin, X } from "lucide-react";
 import { useId, useState, type KeyboardEvent } from "react";
-import { describeError } from "../lib/errors";
+import { describeError, isToteError } from "../lib/errors";
 import { focusSiblingRow, focusSoon, refocusIfLost, rowTarget } from "../lib/focus";
 import { ipc } from "../lib/ipc";
-import { copiesLabel, extOf, isProgram, locationLine, originLine, stemOf } from "../lib/format";
+import { copiesLabel, extOf, isProgram, locationLine, nameProblem, numberedName, originLine, sameNameLabel, stemOf } from "../lib/format";
 import type { FileRow } from "../lib/types";
 import { useApp } from "../store/app";
 import { useFind } from "../store/find";
@@ -23,6 +27,8 @@ interface Props {
   roots: string[];
   latest?: boolean;
   others?: FileRow[];
+  /** Different files that share this one's name: listed apart from the copies. */
+  sameName?: FileRow[];
   sample?: boolean;
   tourOpen?: boolean;
   /** Pinned rows: name and location on one line when the window is short (styles.css). */
@@ -32,7 +38,7 @@ interface Props {
   onCancelRename?(): void;
 }
 
-export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, compact, renaming, onRenamed, onCancelRename }: Props) {
+export function ResultRow({ file, roots, latest, others = [], sameName = [], sample, tourOpen, compact, renaming, onRenamed, onCancelRename }: Props) {
   const toast = useApp((s) => s.toast);
   const fail = useApp((s) => s.fail);
   const selected = useFind((s) => s.selected.includes(file.path));
@@ -42,9 +48,17 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
   const refresh = useFind((s) => s.refresh);
   const touring = useTour((s) => s.active) && tourOpen;
   const [showCopies, setShowCopies] = useState(false);
+  const [showSameName, setShowSameName] = useState(false);
   const [stem, setStem] = useState(stemOf(file.name));
   const [renameError, setRenameError] = useState<string | null>(null);
+  /** The name she asked for when it was taken: the field then asks whether to use "Name (2)". */
+  const [clash, setClash] = useState<string | null>(null);
   const metaId = useId();
+  const renameNoteId = useId();
+  const ext = extOf(file.name);
+  // Checked as she types, with the sentences paths::validate_name answers with.
+  const typedProblem = renaming ? nameProblem(stem.trim()) : null;
+  const renameMessage = typedProblem ?? renameError;
 
   const run = async (action: () => Promise<unknown>, done?: string) => {
     if (sample) return;
@@ -58,23 +72,40 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
 
   const open = () => void run(() => ipc.open(file.path));
 
-  const submitRename = async () => {
-    if (stem.trim() === stemOf(file.name)) {
+  const submitRename = async (pickFree = false) => {
+    const wanted = stem.trim();
+    // Only an exact match is no change: "Lesson Plan" to "Lesson plan" is a rename.
+    if (wanted === stemOf(file.name)) {
       onCancelRename?.();
       return;
     }
+    // The sentence is already under the field.
+    if (nameProblem(wanted)) return;
     try {
-      const renamed = await ipc.renameFile(file.path, stem.trim());
+      const renamed = await ipc.renameFile(file.path, wanted, pickFree);
       setRenameError(null);
+      setClash(null);
       onRenamed?.();
       await refresh();
-      toast(`Renamed to ${stem.trim()}${extOf(file.name)}`);
+      // The name the file really got, "(2)" included.
+      toast(`Renamed to ${renamed.split("\\").pop() ?? `${wanted}${ext}`}`);
       // The field is gone; the same file, under its new name, keeps the focus.
       focusSoon(rowTarget(renamed));
     } catch (error) {
+      if (!pickFree && isToteError(error) && error.code === "alreadyExists") {
+        setRenameError(null);
+        setClash(wanted);
+        return;
+      }
       // The same plain sentence a toast would show, under the field instead.
       setRenameError(describeError(error));
     }
+  };
+
+  const onStemChange = (value: string) => {
+    setStem(value);
+    setRenameError(null);
+    setClash(null);
   };
 
   const onRenameKey = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -112,20 +143,29 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
             <input
               autoFocus
               value={stem}
-              onChange={(e) => setStem(e.target.value)}
+              onChange={(e) => onStemChange(e.target.value)}
               onKeyDown={onRenameKey}
               aria-label="New name"
-              aria-invalid={renameError ? true : undefined}
+              aria-invalid={renameMessage ? true : undefined}
+              aria-describedby={renameNoteId}
               data-testid="rename-input"
             />
-            <span className="ext">{extOf(file.name)}</span>
+            <span className="ext">{ext}</span>
             <button type="button" className="icon-button" onClick={() => void submitRename()} aria-label="Save name">
               <Check size={20} aria-hidden />
             </button>
             <button type="button" className="icon-button" onClick={onCancelRename} aria-label="Cancel rename">
               <X size={20} aria-hidden />
             </button>
-            {renameError && <span className="field-error">{renameError}</span>}
+            {/* Always on the page, so a screen reader announces each new sentence as it appears. */}
+            <span id={renameNoteId} className={clash ? "field-note" : "field-error"} aria-live="polite" data-testid="rename-note">
+              {clash ? `A file called ${clash}${ext} already exists. Use ${numberedName(clash, ext)} instead?` : renameMessage}
+            </span>
+            {clash && (
+              <button type="button" className="button" onClick={() => void submitRename(true)} data-testid="rename-use-free">
+                Use {numberedName(clash, ext)}
+              </button>
+            )}
           </div>
         ) : (
           <button
@@ -195,6 +235,14 @@ export function ResultRow({ file, roots, latest, others = [], sample, tourOpen, 
             {showCopies ? "Hide copies" : copiesLabel(others.length)}
           </button>
           {showCopies && others.map((other) => <ResultRow key={other.path} file={other} roots={roots} />)}
+        </div>
+      )}
+      {sameName.length > 0 && (
+        <div className="copies" data-testid="same-name">
+          <button type="button" className="button button-quiet copies-toggle" onClick={() => setShowSameName((v) => !v)} aria-expanded={showSameName} data-testid="same-name-toggle">
+            {showSameName ? "Hide the files with the same name" : sameNameLabel(sameName.length)}
+          </button>
+          {showSameName && sameName.map((other) => <ResultRow key={other.path} file={other} roots={roots} />)}
         </div>
       )}
     </div>

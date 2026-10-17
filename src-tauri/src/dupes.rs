@@ -18,6 +18,22 @@ pub fn group_key(stem: &str, ext: &str) -> String {
     format!("{}|{}", words.join(" "), ext.to_lowercase())
 }
 
+/// True when two names that share a `group_key` differ, which can only be
+/// by a copy marker: "Lesson Plan (2)", "Copy of Lesson Plan", "Lesson Plan
+/// final". Two names that read the same once case and separators are set
+/// aside ("Book1.xlsx" in three folders, "New Microsoft Word Document")
+/// say nothing about the content, so the caller decides by size or content
+/// instead (audit T-16).
+pub fn differ_by_copy_marker(a_stem: &str, b_stem: &str) -> bool {
+    name_form(a_stem) != name_form(b_stem)
+}
+
+/// A stem's words in lower case, every marker kept.
+fn name_form(stem: &str) -> String {
+    let lower = stem.to_lowercase();
+    lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
 fn is_noise(word: &str) -> bool {
     if matches!(word, "copy" | "of" | "final" | "revised" | "new" | "latest" | "edited" | "updated") {
         return true;
@@ -79,6 +95,16 @@ mod tests {
     fn different_documents_differ() {
         assert_ne!(group_key("Lesson Plan", "docx"), group_key("Lesson Plan", "pdf"));
         assert_ne!(group_key("Grade 7 Quiz", "docx"), group_key("Grade 8 Quiz", "docx"));
+    }
+
+    #[test]
+    fn only_a_copy_marker_makes_a_name_a_copy() {
+        assert!(differ_by_copy_marker("Lesson Plan", "Lesson Plan (2)"));
+        assert!(differ_by_copy_marker("Lesson Plan", "Copy of Lesson Plan"));
+        assert!(differ_by_copy_marker("Lesson Plan", "lesson plan final"));
+        assert!(!differ_by_copy_marker("Book1", "Book1"));
+        assert!(!differ_by_copy_marker("New Microsoft Word Document", "New Microsoft Word Document"));
+        assert!(!differ_by_copy_marker("Lesson Plan", "lesson-plan"), "case and separators are not markers");
     }
 
     #[test]

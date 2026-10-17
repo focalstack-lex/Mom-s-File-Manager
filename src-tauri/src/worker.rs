@@ -1,18 +1,15 @@
-//! Background work (spec 5.1 and 5.2): the Downloads watcher and sorting
-//! pipeline, the index watchers that keep search current, and the initial
-//! scan. Everything here runs on its own threads and reports through events.
+//! Background work (spec 5.2): the index watchers that keep search current,
+//! the initial scan, and the To do check. Everything here runs on its own
+//! threads and reports through events. Downloads are not filed on their own
+//! any more (Lex's decision, 2026-10-17): she sends a file to Tote from File
+//! Explorer's Move to Tote, which filing.rs handles.
 
 use crate::error::Result;
 use crate::index;
-use crate::ops;
-use crate::origin;
-use crate::paths;
 use crate::sorter;
-use crate::stability::{self, Pending};
 use crate::state::Core;
 use crate::tasks;
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebounceEventResult};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -20,7 +17,6 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 pub const CHANGED_EVENT: &str = "tote://changed";
-pub const SORTED_EVENT: &str = "tote://sorted";
 
 /// A stamped file created this recently, anywhere Tote watches, counts as a download.
 const LIVE_DOWNLOAD_WINDOW_SECS: i64 = 10 * 60;
@@ -28,98 +24,6 @@ const LIVE_DOWNLOAD_WINDOW_SECS: i64 = 10 * 60;
 const SCAN_DOWNLOAD_WINDOW_SECS: i64 = 30 * 86_400;
 /// How often the To do housekeeping runs (purge, snapshot, morning reminder).
 const TASKS_CHECK_EVERY: Duration = Duration::from_secs(15 * 60);
-/// The setting that says when Tote was last awake: written at the worker's
-/// start, every 15 minutes with the To do check, and at exit (lib.rs). A
-/// file in Downloads created after the previous run's value arrived while
-/// Tote was closed.
-pub const LAST_RUN_KEY: &str = "downloads_last_run";
-
-/// Whether a file in Downloads is a download Tote has not filed, rather than
-/// an old file she edited, renamed or put back (audit T-06, T-07): it was
-/// created after the last run's marker, or it carries the browser's web
-/// stamp and was created within the live window. `run_marker` is the value
-/// read when the worker started, so a long download whose part file kept an
-/// earlier created time is still new.
-pub fn is_new_download(created: i64, stamped: bool, run_marker: i64, now: i64) -> bool {
-    created > run_marker || (stamped && now - created <= LIVE_DOWNLOAD_WINDOW_SECS)
-}
-
-/// The month folder comes from when the file arrived, not when it was filed
-/// (audit T-51): a download at 23:59 on the last day of a month belongs to
-/// that month.
-fn created_local(created: i64) -> chrono::DateTime<chrono::Local> {
-    use chrono::TimeZone;
-    chrono::Local.timestamp_opt(created, 0).single().unwrap_or_else(chrono::Local::now)
-}
-
-/// Reads the previous run's marker (now, on the first run, so nothing already
-/// in Downloads is touched) and writes this run's.
-fn start_run_marker(core: &Core) -> i64 {
-    let now = crate::db::now();
-    let Ok(conn) = core.db() else { return now };
-    let previous = crate::db::get_setting(&conn, LAST_RUN_KEY).ok().flatten().and_then(|value| value.parse::<i64>().ok()).unwrap_or(now);
-    if let Err(error) = crate::db::set_setting(&conn, LAST_RUN_KEY, &now.to_string()) {
-        log::warn!("run marker not saved: {error}");
-    }
-    previous
-}
-
-/// Writes the run marker as now.
-pub fn mark_run(core: &Core) {
-    let Ok(conn) = core.db() else { return };
-    if let Err(error) = crate::db::set_setting(&conn, LAST_RUN_KEY, &crate::db::now().to_string()) {
-        log::warn!("run marker not saved: {error}");
-    }
-}
-
-/// Whether an Activity row says Tote put this file in Downloads for her
-/// after it was created (Undo, restore, Undo all, or a Move to Downloads),
-/// so it is hers and is not filed (audit T-06). The in-memory registry
-/// covers the first ten minutes after the landing; this check holds for as
-/// long as the row does, across a restart too. A read that fails leaves the
-/// file alone: filing needs a reason.
-fn put_there_for_her(conn: &rusqlite::Connection, path: &Path, created: i64) -> bool {
-    match ops::was_put_back(conn, path, created) {
-        Ok(false) => false,
-        Ok(true) => {
-            log::debug!("{} was put in Downloads by an Undo or a Move; left there", path.display());
-            true
-        }
-        Err(error) => {
-            log::warn!("could not check Activity before filing {}: {}", sorter::describe(path), error.message);
-            log::debug!("the Activity check failed for {}", path.display());
-            true
-        }
-    }
-}
-
-/// Downloads that arrived while Tote was closed (audit T-51): every stamped
-/// file directly in Downloads created after the previous run's marker,
-/// unless an Undo once put it back there (that registry is in memory, and a
-/// Windows shutdown skips the exit mark). The watcher only hears live
-/// events, so these are fed to it at start.
-fn unseen_downloads(core: &Core, run_marker: i64) -> Vec<PathBuf> {
-    let Some(downloads) = core.roots.downloads.as_ref() else { return Vec::new() };
-    let Ok(read) = std::fs::read_dir(downloads) else { return Vec::new() };
-    let mut found = Vec::new();
-    for entry in read.flatten() {
-        // The ops rows hold the resolved spelling (`confine`), so the sweep
-        // compares in that spelling too.
-        let path = paths::resolve(&entry.path()).unwrap_or_else(|_| entry.path());
-        let Some(file) = index::entry_for(&path) else { continue };
-        if file.created <= run_marker || sorter::stays_in_downloads(&sorter::extension(&path)) || origin::read_zone(&path).is_none() {
-            continue;
-        }
-        if core.db().map(|conn| put_there_for_her(&conn, &path, file.created)).unwrap_or(true) {
-            continue;
-        }
-        found.push(path);
-    }
-    if !found.is_empty() {
-        log::info!("{} downloads arrived while Tote was closed", found.len());
-    }
-    found
-}
 
 /// Windows reports a write to `file.mp3:Zone.Identifier` with the stream
 /// name attached; the file itself is what matters.
@@ -131,52 +35,18 @@ fn without_stream(path: PathBuf) -> PathBuf {
     }
 }
 
-enum Msg {
-    Candidate(PathBuf),
-    IndexChange(PathBuf),
-}
-
-/// What the renderer hears after a download is filed.
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Sorted {
-    pub name: String,
-    pub folder: String,
-    pub path: String,
-}
-
-/// Starts the watchers and the worker thread. The debouncers move into the
-/// thread so they live as long as the app.
+/// Starts the index watchers and the worker thread. The debouncers move
+/// into the thread so they live as long as the app.
 pub fn start(core: Arc<Core>, app: AppHandle) -> Result<()> {
-    let (tx, rx) = mpsc::channel::<Msg>();
+    let (tx, rx) = mpsc::channel::<PathBuf>();
 
     let mut debouncers = Vec::new();
-    if let Some(downloads) = core.roots.downloads.clone() {
-        let tx_dl = tx.clone();
-        let mut debouncer = new_debouncer(Duration::from_secs(2), move |result: DebounceEventResult| match result {
-            Ok(events) => {
-                for event in events {
-                    let _ = tx_dl.send(Msg::Candidate(event.path));
-                }
-            }
-            Err(error) => log::warn!("downloads watcher: {error}"),
-        })
-        .map_err(|e| {
-            log::warn!("downloads watcher could not be created: {e}");
-            crate::error::ToteError::new(crate::error::ErrorCode::Io, "Tote could not start watching Downloads. Restart Tote to try again.")
-        })?;
-        match debouncer.watcher().watch(&downloads, RecursiveMode::NonRecursive) {
-            Ok(()) => log::info!("watching downloads at {}", downloads.display()),
-            Err(error) => log::warn!("cannot watch {}: {error}", downloads.display()),
-        }
-        debouncers.push(debouncer);
-    }
     for root in core.roots.all() {
         let tx_idx = tx.clone();
         let mut debouncer = new_debouncer(Duration::from_secs(3), move |result: DebounceEventResult| match result {
             Ok(events) => {
                 for event in events {
-                    let _ = tx_idx.send(Msg::IndexChange(event.path));
+                    let _ = tx_idx.send(event.path);
                 }
             }
             Err(error) => log::warn!("index watcher: {error}"),
@@ -202,44 +72,13 @@ pub fn start(core: Arc<Core>, app: AppHandle) -> Result<()> {
     Ok(())
 }
 
-fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<Msg>) {
-    let mut pending: HashMap<PathBuf, Pending> = HashMap::new();
+fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<PathBuf>) {
     let mut index_dirty = false;
     let mut tasks_checked: Option<Instant> = None;
     let roots = core.roots.all();
-    let run_marker = start_run_marker(&core);
-    let started = Instant::now();
-    for path in unseen_downloads(&core, run_marker) {
-        if let Ok(meta) = std::fs::metadata(&path) {
-            pending.insert(path, Pending::new(meta.len(), started));
-        }
-    }
     loop {
         match rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(Msg::Candidate(path)) => {
-                // The watcher reports the raw root's spelling; Undo noted the
-                // resolved one (`confine`), which can differ by more than case
-                // when a folder is redirected, so the candidate is resolved first.
-                let path = without_stream(path);
-                let path = paths::resolve(&path).unwrap_or(path);
-                let now = Instant::now();
-                if core.placed.covers(&path, now) {
-                    // Undo, restore or Undo all just put this file back; it is hers, not a download.
-                    log::debug!("download candidate {} was put there by Tote; left alone", path.display());
-                    pending.remove(&path);
-                    continue;
-                }
-                log::debug!("download candidate {}", path.display());
-                match std::fs::metadata(&path) {
-                    Ok(meta) if meta.is_file() => {
-                        pending.entry(path).and_modify(|p| p.observe(meta.len(), now)).or_insert_with(|| Pending::new(meta.len(), now));
-                    }
-                    _ => {
-                        pending.remove(&path);
-                    }
-                }
-            }
-            Ok(Msg::IndexChange(path)) => {
+            Ok(path) => {
                 let path = without_stream(path);
                 log::debug!("index change {}", path.display());
                 if index::under_skipped_dir(&path, &roots) {
@@ -252,12 +91,11 @@ fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<Msg>) {
                     log::debug!("index refresh failed for {}", path.display());
                 }
                 if let Ok(conn) = core.db() {
-                    // A browser that saved outside Downloads still stamps the
-                    // file; it joins Recent downloads where it is (spec 5.1.3).
+                    // A stamped file joins Recent downloads where the browser
+                    // saved it (spec 5.1.3); it stays there until she sends it
+                    // to Tote.
                     match index::note_if_downloaded(&conn, &path, LIVE_DOWNLOAD_WINDOW_SECS) {
                         Ok(true) => {
-                            // Downloads is a root too, so this also fires for a download
-                            // the sorter is about to file; the line says what is true now.
                             log::info!("noticed {} with a web stamp; it joins Recent downloads where it is", sorter::describe(&path));
                             log::debug!("the stamped file is {}", path.display());
                         }
@@ -273,7 +111,6 @@ fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<Msg>) {
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
-        tick(&core, &app, &mut pending, run_marker);
         if index_dirty {
             index_dirty = false;
             let _ = app.emit(CHANGED_EVENT, ());
@@ -281,7 +118,6 @@ fn run(core: Arc<Core>, app: AppHandle, rx: mpsc::Receiver<Msg>) {
         if tasks_checked.is_none_or(|at| at.elapsed() >= TASKS_CHECK_EVERY) {
             tasks_checked = Some(Instant::now());
             tasks_check(&core, &app);
-            mark_run(&core);
         }
     }
 }
@@ -325,150 +161,6 @@ fn tasks_check(core: &Arc<Core>, app: &AppHandle) {
         if let Err(error) = crate::db::set_setting(&conn, tasks::REMINDED_KEY, &now.date().format("%Y-%m-%d").to_string()) {
             log::warn!("reminder day not saved: {error}");
         }
-    }
-}
-
-fn tick(core: &Arc<Core>, app: &AppHandle, pending: &mut HashMap<PathBuf, Pending>, run_marker: i64) {
-    let now = Instant::now();
-    let due: Vec<PathBuf> = pending.iter().filter(|(_, p)| now >= p.next_try).map(|(path, _)| path.clone()).collect();
-    for path in due {
-        let Some(state) = pending.get_mut(&path) else { continue };
-        let Ok(meta) = std::fs::metadata(&path) else {
-            pending.remove(&path);
-            continue;
-        };
-        state.observe(meta.len(), now);
-        // An empty file, or one whose browser is still writing the part file
-        // beside it, is not a download yet (audit T-15).
-        let in_progress = meta.len() == 0 || stability::has_partial_sibling(&path);
-        if state.expired(now) {
-            give_up(core, &path, in_progress, run_marker);
-            pending.remove(&path);
-            continue;
-        }
-        let quiet = state.is_quiet(now);
-        let free = quiet && !in_progress && stability::can_open_exclusively(&path);
-        if !free {
-            state.defer(now);
-            log::debug!(
-                "waiting on {} ({}), attempt {}, next look in {:?}",
-                path.display(),
-                if in_progress {
-                    "still empty or being downloaded"
-                } else if quiet {
-                    "another program has it open"
-                } else {
-                    "still growing"
-                },
-                state.attempts,
-                state.next_try.saturating_duration_since(now)
-            );
-            continue;
-        }
-        pending.remove(&path);
-        sort_one(core, app, &path, run_marker);
-    }
-}
-
-/// A file still busy after a day is dropped from the watch. Only one Tote
-/// would have filed gets a failure row in Activity; an old file she keeps
-/// open in Word, an empty placeholder whose download never finished, or a
-/// file an Undo or a Move put in Downloads for her (the guard `sort_one`
-/// applies) is not hers to hear about (audit T-06, T-07, T-15).
-fn give_up(core: &Core, path: &Path, in_progress: bool, run_marker: i64) {
-    if in_progress {
-        log::info!("giving up on {} in Downloads: still empty or being downloaded after a day", sorter::describe(path));
-    } else if let Some((entry, _)) = new_download_at(path, run_marker) {
-        let Ok(conn) = core.db() else { return };
-        if put_there_for_her(&conn, path, entry.created) {
-            return;
-        }
-        log::info!("giving up on {} in Downloads: still busy after a day", sorter::describe(path));
-        if let Err(error) = ops::note_failure(&conn, path, "The file stayed open in another program for a day, so it was left in Downloads.") {
-            log::warn!("the row for {} left in Downloads was not saved: {}", sorter::describe(path), error.message);
-        }
-    } else {
-        log::debug!("gave up waiting on {}, which Tote would not have filed; no row", path.display());
-        return;
-    }
-    log::debug!("gave up on {}", path.display());
-}
-
-/// The first look at a candidate: a file Tote never files (an installer or
-/// script, a file it cannot read, or one that is not a new download: old
-/// and unstamped, so edited, renamed or put back by hand) is None;
-/// otherwise its entry and web stamp.
-fn new_download_at(path: &Path, run_marker: i64) -> Option<(index::Entry, Option<origin::Origin>)> {
-    if sorter::stays_in_downloads(&sorter::extension(path)) {
-        return None;
-    }
-    let entry = index::entry_for(path)?;
-    let stamp = origin::read_zone(path);
-    if !is_new_download(entry.created, stamp.is_some(), run_marker, crate::db::now()) {
-        log::debug!("{} was there before Tote last ran and carries no fresh web stamp; left in Downloads", path.display());
-        return None;
-    }
-    Some((entry, stamp))
-}
-
-/// Files one finished download and tells the renderer. A file that is not a
-/// new download, or one an Activity row says Tote put in Downloads for her,
-/// is left where it is.
-fn sort_one(core: &Arc<Core>, app: &AppHandle, path: &Path, run_marker: i64) {
-    let Some((entry, stamp)) = new_download_at(path, run_marker) else { return };
-    let origin = stamp.unwrap_or_else(origin::Origin::unknown);
-    let kind = sorter::classify(&sorter::extension(path));
-    let school = match core.roots.school_files() {
-        Ok(s) => s,
-        Err(error) => {
-            log::error!("no School Files folder: {error}");
-            return;
-        }
-    };
-    let dest = sorter::destination(&school, kind, created_local(entry.created));
-    // Settings are read before the database lock is taken: the mutex is not
-    // reentrant, and reading them inside the locked block deadlocked the worker.
-    let notifications = crate::commands::settings_of(core).notifications;
-    // The registry forgets a path after ten minutes and a restart empties
-    // it; the Activity rows still say whether she put the file there. Asked
-    // right before the move, which then takes the lock itself, to record
-    // and to finish, and moves the file with no lock held, so a search
-    // answers while a download is copied to School Files on another drive
-    // (audit T-12).
-    match core.db() {
-        Ok(conn) if !put_there_for_her(&conn, path, entry.created) => {}
-        _ => return,
-    }
-    let moved = ops::move_file(&**core, &core.roots, &core.placed, path, &dest, ops::OpKind::AutoSort).inspect(|new_path| {
-        if let Err(error) = core.db().and_then(|conn| index::set_origin(&conn, new_path, &origin, crate::db::now())) {
-            log::warn!("origin of {} not saved: {error}", kind.words());
-            log::debug!("origin not saved for {}", new_path.display());
-        }
-    });
-    match moved {
-        Ok(new_path) => {
-            let name = new_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let folder = format!("School Files > {}", kind.folder_name());
-            // The kind, not the name: names often carry a student's name (audit T-52).
-            log::info!("sorted {} into {} (from {})", kind.words(), folder, origin.label);
-            if notifications {
-                notify(app, &name, &folder);
-            }
-            let _ = app.emit(SORTED_EVENT, Sorted { name, folder, path: new_path.to_string_lossy().into_owned() });
-            let _ = app.emit(CHANGED_EVENT, ());
-        }
-        Err(error) => {
-            log::warn!("could not sort {}: {}", kind.words(), error.message);
-            log::debug!("could not sort {}", path.display());
-            let _ = app.emit(CHANGED_EVENT, ());
-        }
-    }
-}
-
-fn notify(app: &AppHandle, name: &str, folder: &str) {
-    use tauri_plugin_notification::NotificationExt;
-    if let Err(error) = app.notification().builder().title("Saved for you").body(format!("{name} is in {folder}.")).show() {
-        log::warn!("notification: {error}");
     }
 }
 
@@ -721,31 +413,6 @@ pub fn start_scan(core: Arc<Core>, app: AppHandle) {
 mod tests {
     use super::*;
 
-    /// The rule that keeps the Downloads promise: only a file that arrived
-    /// after Tote last ran, or a freshly stamped one, is a new download. An
-    /// old file she edits, renames or puts back is not (audit T-06, T-07).
-    #[test]
-    fn only_arrivals_and_fresh_stamps_are_new_downloads() {
-        let marker = 1_000_000;
-        let now = marker + 3_600;
-        assert!(is_new_download(marker + 1, false, marker, now), "a file created after the last run, even without a stamp");
-        assert!(is_new_download(now, true, marker, now), "a download that just landed");
-        assert!(!is_new_download(marker - 86_400, false, marker, now), "an old file edited or renamed stays (T-07)");
-        assert!(!is_new_download(marker, false, marker, now), "created at the marker itself is not after it");
-        assert!(is_new_download(marker - 60, true, marker, marker + 120), "stamped and created within the live window: a long download that spanned the start");
-        assert!(!is_new_download(marker - 60, true, marker, marker + LIVE_DOWNLOAD_WINDOW_SECS + 61), "a stamped file from before the last run, past the window, is hers (an Undo put it back)");
-        assert!(is_new_download(marker - 60, true, marker, marker - 60 + LIVE_DOWNLOAD_WINDOW_SECS), "the window's edge still counts");
-    }
-
-    #[test]
-    fn the_month_folder_is_the_month_the_file_arrived() {
-        use chrono::TimeZone;
-        let arrived = chrono::Local.with_ymd_and_hms(2026, 10, 31, 23, 59, 0).unwrap();
-        let school = Path::new(r"C:\Docs\School Files");
-        let dest = sorter::destination(school, sorter::Kind::Pdf, created_local(arrived.timestamp()));
-        assert_eq!(dest, PathBuf::from(r"C:\Docs\School Files\PDF\2026-10"), "filed after midnight, still October");
-    }
-
     fn core_with_downloads() -> (tempfile::TempDir, Core) {
         let dir = tempfile::tempdir().unwrap();
         let (desktop, documents, downloads) = (dir.path().join("Desktop"), dir.path().join("Documents"), dir.path().join("Downloads"));
@@ -761,7 +428,6 @@ mod tests {
             data_dir: std::path::PathBuf::new(),
             tasks_restored: None,
             tasks_unavailable: false,
-            placed: Default::default(),
         };
         (dir, core)
     }
@@ -817,137 +483,5 @@ mod tests {
         std::fs::write(skipped.join("index.txt"), "Santos").unwrap();
         refresh_unlocked(&core, &skipped).unwrap();
         assert_eq!(index::count(&core.db().unwrap()).unwrap(), files, "nothing under a skipped folder");
-    }
-
-    /// The first run writes the marker as now and reports now, so nothing
-    /// already in Downloads counts as new; the next start reads what the
-    /// previous run wrote.
-    #[test]
-    fn the_run_marker_starts_at_now_and_is_read_back() {
-        let (_dir, core) = core_with_downloads();
-        let before = crate::db::now();
-        let first = start_run_marker(&core);
-        assert!(first >= before && first <= crate::db::now());
-        {
-            let conn = core.db().unwrap();
-            crate::db::set_setting(&conn, LAST_RUN_KEY, "123456").unwrap();
-        }
-        assert_eq!(start_run_marker(&core), 123_456, "the previous run's marker");
-        mark_run(&core);
-        let written: i64 = crate::db::get_setting(&core.db().unwrap(), LAST_RUN_KEY).unwrap().unwrap().parse().unwrap();
-        assert!(written >= first);
-    }
-
-    /// The start-up sweep (audit T-51): a stamped file that arrived after the
-    /// previous run is a candidate; an unstamped file, an installer, a file
-    /// from before the marker and a file an Undo put back are not.
-    #[cfg(windows)]
-    #[test]
-    fn the_sweep_finds_stamped_arrivals_and_leaves_the_rest() {
-        let (_dir, core) = core_with_downloads();
-        let downloads = core.roots.downloads.clone().unwrap();
-        let stamp = |path: &Path| std::fs::write(format!("{}:Zone.Identifier", path.to_string_lossy()), "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://www.deped.gov.ph/memo.pdf\r\n").unwrap();
-        let arrived = downloads.join("DepEd Memo 123.pdf");
-        std::fs::write(&arrived, b"%PDF").unwrap();
-        stamp(&arrived);
-        let unstamped = downloads.join("Copied from a flash drive.docx");
-        std::fs::write(&unstamped, b"copy").unwrap();
-        let installer = downloads.join("printer-setup.exe");
-        std::fs::write(&installer, b"MZ").unwrap();
-        stamp(&installer);
-        let put_back = downloads.join("Quiz A.docx");
-        std::fs::write(&put_back, b"quiz").unwrap();
-        stamp(&put_back);
-        let now = crate::db::now();
-        {
-            let conn = core.db().unwrap();
-            let dest = core.roots.documents.clone().unwrap().join("School Files").join("Word");
-            ops::move_file(&conn, &core.roots, &core.placed, &put_back, &dest, ops::OpKind::AutoSort).unwrap();
-            let row = ops::list(&conn, 1).unwrap().remove(0);
-            ops::undo(&conn, &core.roots, &core.placed, row.id).unwrap();
-        }
-        assert!(put_back.is_file());
-        let found = unseen_downloads(&core, now - 60);
-        assert_eq!(found, vec![arrived.clone()], "only the stamped arrival that no Undo put back");
-        assert!(unseen_downloads(&core, now + 60).is_empty(), "nothing is newer than a marker in the future (the first run)");
-    }
-
-    /// The live path's guard after an Undo (audit T-06): the registry alone
-    /// forgets the path after ten minutes, so `sort_one` also asks the
-    /// Activity rows, which know the file was put back for as long as the
-    /// row lives; a later download at the same path is still filed.
-    #[test]
-    fn a_put_back_file_is_left_alone_after_the_registry_forgets_it() {
-        use crate::state::PLACED_FOR;
-        let (_dir, core) = core_with_downloads();
-        let src = core.roots.downloads.clone().unwrap().join("Quiz A.docx");
-        std::fs::write(&src, b"quiz").unwrap();
-        let created = index::entry_for(&src).unwrap().created;
-        let dest = core.roots.documents.clone().unwrap().join("School Files").join("Word");
-        let row = {
-            let conn = core.db().unwrap();
-            ops::move_file(&conn, &core.roots, &core.placed, &src, &dest, ops::OpKind::AutoSort).unwrap();
-            let row = ops::list(&conn, 1).unwrap().remove(0);
-            ops::undo(&conn, &core.roots, &core.placed, row.id).unwrap();
-            row
-        };
-        assert!(src.is_file(), "Undo put it back");
-        // What sort_one reads after the put-back: on the same drive the move kept the created time.
-        let back = index::entry_for(&src).unwrap().created;
-        assert_eq!(back, created, "a same-drive move keeps the created time");
-        let now = Instant::now();
-        assert!(core.placed.covers(&src, now), "the registry covers it at first");
-        assert!(!core.placed.covers(&src, now + PLACED_FOR), "and forgets it after its time: the registry alone is not the guard");
-        let conn = core.db().unwrap();
-        let undone_at: i64 = conn.query_row("SELECT undone_at FROM ops WHERE id = ?1", [row.id], |r| r.get(0)).unwrap();
-        assert!(undone_at >= row.created_at, "the row recorded the moment of the Undo");
-        assert!(put_there_for_her(&conn, &src, back), "the Activity row still says she put it back");
-        assert!(!put_there_for_her(&conn, &src, undone_at + 1), "a download that lands at the same path after the Undo is newer than it and is filed");
-        assert!(!put_there_for_her(&conn, &core.roots.downloads.clone().unwrap().join("Quiz B.docx"), back), "another path is not covered");
-    }
-
-    /// Giving up on a busy file writes a failure row only when Tote would
-    /// have filed it: an old file she keeps open all day gets no row, and
-    /// neither does an empty placeholder or a file an Undo put back for her
-    /// (audit T-06, T-07, T-15).
-    #[test]
-    fn giving_up_writes_a_failure_row_only_for_a_new_download() {
-        let (_dir, core) = core_with_downloads();
-        let downloads = core.roots.downloads.clone().unwrap();
-        let old = downloads.join("Old Lesson.docx");
-        std::fs::write(&old, b"old").unwrap();
-        let now = crate::db::now();
-        // A marker in the future stands for a file that was there before Tote last ran.
-        give_up(&core, &old, false, now + 60);
-        assert!(ops::list(&core.db().unwrap(), 10).unwrap().is_empty(), "an old file she kept open gets no row");
-        give_up(&core, &old, true, now - 60);
-        assert!(ops::list(&core.db().unwrap(), 10).unwrap().is_empty(), "an empty placeholder gets no row");
-        let installer = downloads.join("printer-setup.exe");
-        std::fs::write(&installer, b"MZ").unwrap();
-        give_up(&core, &installer, false, now - 60);
-        assert!(ops::list(&core.db().unwrap(), 10).unwrap().is_empty(), "an installer stays in Downloads anyway, so no row");
-        give_up(&core, &old, false, now - 60);
-        let rows = ops::list(&core.db().unwrap(), 10).unwrap();
-        assert_eq!(rows.len(), 1, "a new download still busy after a day is reported");
-        assert_eq!((rows[0].kind.as_str(), rows[0].status.as_str()), ("autoSort", "failed"));
-        assert_eq!(rows[0].message.as_deref(), Some("The file stayed open in another program for a day, so it was left in Downloads."));
-        // A file Undo put back in Downloads, created in this run, that she then keeps open all day:
-        // Tote was never going to file it, so the undone filing stays the only row about it (audit T-06).
-        let put_back = downloads.join("Quiz A.docx");
-        std::fs::write(&put_back, b"quiz").unwrap();
-        let created = index::entry_for(&put_back).unwrap().created;
-        {
-            let conn = core.db().unwrap();
-            let dest = core.roots.documents.clone().unwrap().join("School Files").join("Word");
-            ops::move_file(&conn, &core.roots, &core.placed, &put_back, &dest, ops::OpKind::AutoSort).unwrap();
-            let row = ops::list(&conn, 1).unwrap().remove(0);
-            ops::undo(&conn, &core.roots, &core.placed, row.id).unwrap();
-        }
-        give_up(&core, &put_back, false, created - 1);
-        let wanted = put_back.to_string_lossy().into_owned();
-        let rows = ops::list(&core.db().unwrap(), 10).unwrap();
-        let about_it: Vec<&ops::OpRow> = rows.iter().filter(|r| r.src == wanted).collect();
-        assert_eq!(about_it.len(), 1, "only the undone filing names it: no failure row");
-        assert_eq!(about_it[0].status, "undone");
     }
 }

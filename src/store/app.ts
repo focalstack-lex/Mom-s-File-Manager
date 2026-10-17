@@ -1,9 +1,9 @@
 // App-wide state: which view is open, app info from the native side, toasts.
 
 import { create } from "zustand";
-import { ipc } from "../lib/ipc";
+import { ipc, logRenderer } from "../lib/ipc";
 import { describeError } from "../lib/errors";
-import type { AppInfo, BrowserStatus, Settings, UpdateInfo } from "../lib/types";
+import type { AppInfo, BrowserStatus, OpRow, Settings, UpdateInfo } from "../lib/types";
 
 export type View = "find" | "todo" | "cleanup" | "activity" | "settings";
 
@@ -101,6 +101,7 @@ export const useApp = create<AppStore>((set, get) => ({
       // The check is advice only: the Find notice stays hidden, and Settings
       // says the check could not run rather than that no browser was found.
       console.warn("Tote: browser check failed", error);
+      logRenderer("warn", describeError(error));
       set({ browsers: null, browsersError: describeError(error) });
     }
   },
@@ -111,6 +112,7 @@ export const useApp = create<AppStore>((set, get) => ({
       // Offline or the site is down: nothing to offer today. Logged, not shown;
       // the native side tries again on the next day's check.
       console.warn("Tote: update check failed", error);
+      logRenderer("warn", describeError(error));
     }
   },
   installUpdate: async () => {
@@ -137,6 +139,7 @@ export const useApp = create<AppStore>((set, get) => ({
       // shell shows the sentence in place with Try again. Later refreshes toast.
       if (get().info === null) {
         console.warn("Tote:", error);
+        logRenderer("error", describeError(error));
         set({ infoError: describeError(error) });
       } else get().fail(error);
     }
@@ -164,6 +167,7 @@ export const useApp = create<AppStore>((set, get) => ({
   },
   fail: (error) => {
     console.warn("Tote:", error);
+    logRenderer("error", describeError(error));
     get().toast(describeError(error), "error");
   },
   dismissToast: (id) => {
@@ -192,12 +196,31 @@ export const useApp = create<AppStore>((set, get) => ({
  * no Undo button and Activity still has it.
  */
 export async function moveOpIds(paths: string[]): Promise<number[]> {
+  return (await movedOps(paths)).map((op) => op.id);
+}
+
+/** The Activity rows of the moves that just put files at `paths`; empty when the log cannot be read. */
+export async function movedOps(paths: string[]): Promise<OpRow[]> {
   try {
     const wanted = new Set(paths);
     const ops = await ipc.activity();
-    return ops.filter((op) => op.kind === "move" && op.status === "done" && op.dst !== null && wanted.has(op.dst)).map((op) => op.id);
+    return ops.filter((op) => op.kind === "move" && op.status === "done" && op.dst !== null && wanted.has(op.dst));
   } catch (error) {
     console.warn("Tote: could not read Activity for Undo", error);
+    logRenderer("warn", describeError(error));
     return [];
   }
+}
+
+/**
+ * The sentence a move toast adds when a file from the web landed on a drive
+ * that cannot keep that mark, such as a FAT32 flash drive (audit T-43), so
+ * Office will open it without its Protected View. Empty when none did.
+ */
+export function stampNote(ops: OpRow[]): string {
+  const lost = ops.filter((op) => op.stampLost).length;
+  if (lost === 0) return "";
+  if (ops.length === 1) return " Windows will no longer mark it as from the internet.";
+  if (lost === ops.length) return " Windows will no longer mark them as from the internet.";
+  return ` Windows will no longer mark ${lost} of them as from the internet.`;
 }

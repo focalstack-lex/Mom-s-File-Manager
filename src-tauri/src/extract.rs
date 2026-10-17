@@ -4,10 +4,11 @@
 //! The Office and text readers are bounded: a part of an Office file
 //! streams through a byte limit and tag stripping stops at the text cap, so
 //! one strange file cannot take memory a laptop does not have (audit T-04).
-//! The PDF reader is bounded by the file's size on disk only: pdf-extract
-//! reads the whole file and unpacks its streams in memory with no cap and
-//! no streaming interface, so a small PDF that unpacks to a great deal can
-//! still cost that much memory (a leftover for the final batch).
+//! The PDF reader is bounded by the file's size on disk, a page budget and
+//! the text cap (`pdf_text`), but pdf-extract still unpacks each content
+//! stream whole in memory with no streaming interface, so one crafted
+//! stream can still cost a great deal of memory (a leftover for the final
+//! batch; the durable fix is process isolation).
 
 use std::io::Read;
 use std::path::Path;
@@ -145,16 +146,103 @@ fn read_part(part: impl Read, declared: u64, text: &mut Stripper) {
     }
 }
 
+/// The most pages one PDF may contribute. A teacher's document is well
+/// under this; a 500-page scan is read by name only beyond the budget.
+const MAX_PDF_PAGES: u32 = 500;
+
+/// PDF text with a page budget and an output cap. pdf-extract has no
+/// streaming limit, so the caller drives it through a device that stops the
+/// document (by returning an error) after `MAX_PDF_PAGES` or `MAX_TEXT_CHARS`
+/// and keeps the text read so far. The file is already at most
+/// `MAX_FILE_BYTES`, checked by `raw_text`.
+///
+/// This bounds the pages and the text, not one stream's unpacked size:
+/// pdf-extract still inflates each content stream whole in memory, so a PDF
+/// built to expand hugely can still cost that memory and panic (caught
+/// above). The durable fix is process isolation for this reader; that is
+/// recorded in reports/fix-audit/LEFTOVERS.md.
 fn pdf_text(path: &Path) -> Option<String> {
     // Panics are caught one level up, in extract_text. The old version also
     // swapped the global panic hook per call, which raced with other threads.
-    // The file is at most MAX_FILE_BYTES, checked by raw_text, and that is
-    // the only bound here: pdf-extract unpacks every stream in memory with
-    // no cap on what comes out (a leftover for the final batch).
     let bytes = std::fs::read(path).ok()?;
-    match pdf_extract::extract_text_from_mem(&bytes) {
-        Ok(text) if !text.trim().is_empty() => Some(text),
-        _ => None,
+    let doc = pdf_extract::Document::load_mem(&bytes).ok()?;
+    let mut out = PdfText::default();
+    // A structural error still leaves the pages already read; the text is
+    // what matters, and an empty result means name only.
+    let _ = pdf_extract::output_doc(&doc, &mut out);
+    if out.text.trim().is_empty() {
+        None
+    } else {
+        Some(out.text)
+    }
+}
+
+/// Collects PDF text up to the caps, then stops the document.
+#[derive(Default)]
+struct PdfText {
+    text: String,
+    pages: u32,
+    full: bool,
+}
+
+impl PdfText {
+    fn limit_error() -> pdf_extract::OutputError {
+        pdf_extract::OutputError::IoError(std::io::Error::other("PDF text limit reached"))
+    }
+
+    fn push(&mut self, text: &str) {
+        if self.full {
+            return;
+        }
+        if self.text.len() + text.len() > MAX_TEXT_CHARS {
+            self.full = true;
+            return;
+        }
+        self.text.push_str(text);
+        if self.text.len() >= MAX_TEXT_CHARS {
+            self.full = true;
+        }
+    }
+}
+
+impl pdf_extract::OutputDev for PdfText {
+    fn begin_page(&mut self, _page_num: u32, _media_box: &pdf_extract::MediaBox, _art_box: Option<(f64, f64, f64, f64)>) -> Result<(), pdf_extract::OutputError> {
+        if self.pages >= MAX_PDF_PAGES {
+            return Err(Self::limit_error());
+        }
+        self.pages += 1;
+        self.push("\n");
+        Ok(())
+    }
+
+    fn end_page(&mut self) -> Result<(), pdf_extract::OutputError> {
+        self.push("\n");
+        if self.full {
+            return Err(Self::limit_error());
+        }
+        Ok(())
+    }
+
+    fn output_character(&mut self, _trm: &pdf_extract::Transform, _width: f64, _spacing: f64, _font_size: f64, char: &str) -> Result<(), pdf_extract::OutputError> {
+        self.push(char);
+        if self.full {
+            return Err(Self::limit_error());
+        }
+        Ok(())
+    }
+
+    fn begin_word(&mut self) -> Result<(), pdf_extract::OutputError> {
+        Ok(())
+    }
+
+    fn end_word(&mut self) -> Result<(), pdf_extract::OutputError> {
+        self.push(" ");
+        Ok(())
+    }
+
+    fn end_line(&mut self) -> Result<(), pdf_extract::OutputError> {
+        self.push("\n");
+        Ok(())
     }
 }
 
@@ -560,6 +648,26 @@ pub mod tests {
         assert_eq!(extract_text(&pdf, "pdf", 120), None);
         let caught = std::panic::catch_unwind(|| ());
         assert!(caught.is_ok(), "unwinding is available in this profile");
+    }
+
+    /// The PDF reader stops at the page budget and the text cap and keeps
+    /// what it read; a document cannot flood the index with either.
+    #[test]
+    fn a_pdf_stops_at_the_page_budget_and_the_text_cap() {
+        use pdf_extract::OutputDev;
+        let boxed = pdf_extract::MediaBox { llx: 0.0, lly: 0.0, urx: 612.0, ury: 792.0 };
+        let mut pages = PdfText::default();
+        for n in 0..MAX_PDF_PAGES {
+            assert!(pages.begin_page(n, &boxed, None).is_ok(), "page {n} is inside the budget");
+        }
+        assert!(pages.begin_page(MAX_PDF_PAGES, &boxed, None).is_err(), "the next page stops the document");
+        assert_eq!(pages.pages, MAX_PDF_PAGES);
+
+        let mut text = PdfText::default();
+        text.push(&"x".repeat(MAX_TEXT_CHARS));
+        assert!(text.full, "the cap is reached");
+        assert!(text.output_character(&pdf_extract::Transform::identity(), 1.0, 0.0, 10.0, "y").is_err(), "text past the cap stops the document");
+        assert_eq!(text.text.len(), MAX_TEXT_CHARS);
     }
 
     #[test]

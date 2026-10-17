@@ -2,6 +2,8 @@
 
 Status: designed with Lex in chat on 2026-10-14. Part 2 of the productivity work; Part 1 is the To do list (`2026-10-14-todo-list-design.md`). Main spec: `2026-10-12-teachers-desktop-manager-design.md`.
 
+Build state (2026-10-18): the proxy in `server/` is implemented and tested (34 tests); the client half (`src-tauri/src/ask.rs`, the Ask screen, the sidebar item and the seventh walkthrough step) is not implemented, so nothing in the app calls the proxy yet. The feature is parked, not shipped.
+
 ## 1. Why
 
 Teachers who are not comfortable with computers call someone (Lex, for his mother) whenever the printer, the internet, the laptop or Office misbehaves. Ask is a chat inside Tote that helps first: it can look at the laptop with read-only checks she approves, explain the fix in her language, find her files, and put tasks on her To do list.

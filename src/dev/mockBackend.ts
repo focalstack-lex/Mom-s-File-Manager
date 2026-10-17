@@ -4,7 +4,8 @@
 
 import type { MockBackend } from "../lib/ipc";
 import { hasWord, indexedName, words as tokens } from "../lib/search";
-import type { CleanupReport, Destination, FileRow, FindResult, Filters, Group, OpRow, Repeat, Settings, Task, Template, TemplateCopy, ToteError } from "../lib/types";
+import { nameProblem } from "../lib/format";
+import type { CleanupReport, Destination, FileRow, FindResult, Filters, Group, MoveRequest, MoveResult, OpRow, Repeat, Settings, Task, Template, TemplateCopy, ToteError } from "../lib/types";
 
 declare global {
   interface Window {
@@ -77,6 +78,9 @@ let files: FileRow[] = [
   file(DOWNLOADS, "old attendance.pdf", { modified: NOW - 90 * DAY }),
   file(DOWNLOADS, "setup-printer.exe", { modified: NOW - 120 * DAY }),
   file(`${DOCS}\\Forms`, "SF9 Template.docx", { modified: NOW - 200 * DAY }),
+  // Word's default name on two different documents (other sizes, no copy mark): the same name, not copies (audit T-16).
+  file(`${DOCS}\\Forms`, "New Microsoft Word Document.docx", { modified: NOW - 50 * DAY, size: 18_200 }),
+  file(`${SCHOOL}\\Word`, "New Microsoft Word Document.docx", { modified: NOW - 8 * DAY, size: 31_400 }),
   // A path of 260 characters or more, which the Recycle Bin refuses (ops.rs), so the drive can see a partial Recycle Bin result.
   file(`${DOCS}\\Forms\\${"Division Science Fair 2026 Documentation ".repeat(6).trim()}`, "Deep Quiz.docx", { modified: NOW - 30 * DAY }),
 ];
@@ -101,15 +105,15 @@ for (const [name, origin, days] of MORE_RECENT) {
 for (let i = 1; i <= 13; i += 1) files.push(file(DOWNLOADS, `old handout ${i}.pdf`, { modified: NOW - (70 + i) * DAY }));
 
 const ops: OpRow[] = [
-  { id: 1, kind: "autoSort", src: `${DOWNLOADS}\\Grade 7 Quiz 2.docx`, dst: `${SCHOOL}\\Word\\2026-10\\Grade 7 Quiz 2.docx`, status: "done", message: null, automatic: true, createdAt: EARLIER_TODAY, batch: null },
-  { id: 2, kind: "autoSort", src: `${DOWNLOADS}\\DepEd Order 2026-014.pdf`, dst: `${SCHOOL}\\PDF\\2026-10\\DepEd Order 2026-014.pdf`, status: "done", message: null, automatic: true, createdAt: NOW - DAY, batch: null },
-  { id: 3, kind: "autoSort", src: `${DOWNLOADS}\\budget.xlsx`, dst: null, status: "failed", message: "The file stayed open in another program for a day, so it was left in Downloads.", automatic: true, createdAt: NOW - 2 * DAY, batch: null },
+  { id: 1, kind: "autoSort", src: `${DOWNLOADS}\\Grade 7 Quiz 2.docx`, dst: `${SCHOOL}\\Word\\2026-10\\Grade 7 Quiz 2.docx`, status: "done", message: null, automatic: true, createdAt: EARLIER_TODAY, batch: null, stampLost: false },
+  { id: 2, kind: "autoSort", src: `${DOWNLOADS}\\DepEd Order 2026-014.pdf`, dst: `${SCHOOL}\\PDF\\2026-10\\DepEd Order 2026-014.pdf`, status: "done", message: null, automatic: true, createdAt: NOW - DAY, batch: null, stampLost: false },
+  { id: 3, kind: "autoSort", src: `${DOWNLOADS}\\budget.xlsx`, dst: null, status: "failed", message: "It is still downloading. Try again when the download is done.", automatic: true, createdAt: NOW - 2 * DAY, batch: null, stampLost: false },
   // Two Recycle Bin rows that failed, worded as ops.rs words them: a refused file that stayed, and one Windows removed.
-  { id: 4, kind: "recycle", src: `${DESKTOP}\\Deep Quiz.docx`, dst: null, status: "failed", message: "This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.", automatic: false, createdAt: NOW - 2 * DAY, batch: null },
-  { id: 5, kind: "recycle", src: `${DOWNLOADS}\\Field Trip Photos.zip`, dst: null, status: "failed", message: "Windows removed it without putting it in the Recycle Bin, so it cannot be brought back.", automatic: false, createdAt: NOW - 3 * DAY, batch: null },
+  { id: 4, kind: "recycle", src: `${DESKTOP}\\Deep Quiz.docx`, dst: null, status: "failed", message: "This file's folder name is too long for the Recycle Bin. Move it to a shorter folder first.", automatic: false, createdAt: NOW - 2 * DAY, batch: null, stampLost: false },
+  { id: 5, kind: "recycle", src: `${DOWNLOADS}\\Field Trip Photos.zip`, dst: null, status: "failed", message: "Windows removed it without putting it in the Recycle Bin, so it cannot be brought back.", automatic: false, createdAt: NOW - 3 * DAY, batch: null, stampLost: false },
   // Two files sent to the Recycle Bin at once where one was refused: ops.rs gives the refused row the batch too, so Activity shows "1 of 2" with the refused file under it.
-  { id: 6, kind: "recycle", src: `${DESKTOP}\\Old Seat Plan.xlsx`, dst: null, status: "done", message: null, automatic: false, createdAt: NOW - 4 * DAY, batch: "recycle-seed" },
-  { id: 7, kind: "recycle", src: "E:\\Seat Plan Photos.jpg", dst: null, status: "failed", message: "Files on a flash drive or a network folder cannot go to the Recycle Bin. Delete it in File Explorer if you are sure.", automatic: false, createdAt: NOW - 4 * DAY, batch: "recycle-seed" },
+  { id: 6, kind: "recycle", src: `${DESKTOP}\\Old Seat Plan.xlsx`, dst: null, status: "done", message: null, automatic: false, createdAt: NOW - 4 * DAY, batch: "recycle-seed", stampLost: false },
+  { id: 7, kind: "recycle", src: "E:\\Seat Plan Photos.jpg", dst: null, status: "failed", message: "Files on a flash drive or a network folder cannot go to the Recycle Bin. Delete it in File Explorer if you are sure.", automatic: false, createdAt: NOW - 4 * DAY, batch: "recycle-seed", stampLost: false },
 ];
 let nextOp = 8;
 let templates: Template[] = [{ id: 1, path: `${DOCS}\\Forms\\SF9 Template.docx`, name: "SF9 Template", missing: false }];
@@ -155,9 +159,18 @@ function group(rows: FileRow[]): Group[] {
     buckets.get(row.groupKey)?.push(row);
   }
   return order.map((k) => {
-    const members = [...(buckets.get(k) ?? [])].sort((a, b) => b.modified - a.modified);
-    return { latest: members[0], others: members.slice(1) };
+    const [latest, ...rest] = [...(buckets.get(k) ?? [])].sort((a, b) => b.modified - a.modified);
+    // As index.rs groups: a copy is the same size or carries a copy mark; the rest only share the name.
+    return { latest, others: rest.filter((m) => isCopyOf(m, latest)), sameName: rest.filter((m) => !isCopyOf(m, latest)) };
   });
+}
+
+/** A name's words in lower case with every copy mark kept (dupes.rs `name_form`). */
+const nameForm = (name: string) => name.replace(/\.[^.]+$/, "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(" ");
+
+/** dupes.rs `differ_by_copy_marker` plus the size rule; the mock treats an equal size as equal content. */
+function isCopyOf(member: FileRow, latest: FileRow): boolean {
+  return member.size === latest.size || nameForm(member.name) !== nameForm(latest.name);
 }
 
 // Snippet marks, as index.rs sets them: private-use characters no document holds.
@@ -222,7 +235,8 @@ function moveTo(path: string, destination: string, kind: OpRow["kind"], batch: s
     n += 1;
   }
   const dst = `${destination}\\${name}`;
-  ops.unshift({ id: nextOp++, kind, src: row.path, dst, status: "done", message: null, automatic: false, createdAt: NOW, batch });
+  // A file from the web loses its mark on a drive that cannot hold it; ?stamp=lost plays that drive (ops.rs `note_stamp_lost`).
+  ops.unshift({ id: nextOp++, kind, src: row.path, dst, status: "done", message: null, automatic: false, createdAt: NOW, batch, stampLost: stampLostEdge && row.downloadedAt !== null });
   row.path = dst;
   row.parent = destination;
   row.name = name;
@@ -261,13 +275,18 @@ function organizePlan() {
 // string so the UI drive can see them: ?rebuilt=kept or ?rebuilt=lost (the
 // index was rebuilt, with or without her settings), ?tasks=unavailable (the
 // To do store could not be opened), ?template=unopened (a template copy is
-// made but Windows could not open it).
+// made but Windows could not open it), ?stamp=lost (every move lands on a
+// drive that cannot keep the web mark, as a FAT32 flash drive).
 const edge = new URLSearchParams(window.location.search);
 const rebuilt = edge.get("rebuilt") === "kept" ? { kept: true } : edge.get("rebuilt") === "lost" ? { kept: false } : null;
 const tasksUnavailable = edge.get("tasks") === "unavailable";
 const templateUnopened = edge.get("template") === "unopened";
+const stampLostEdge = edge.get("stamp") === "lost";
 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
+  // The renderer's own log lines reach tote.log on the native side; the mock
+  // keeps them out of its scripted answers.
+  renderer_log: () => undefined,
   get_app_info: () => ({
     version: "0.1.0-mock",
     roots: [DESKTOP, DOCS, DOWNLOADS, ...settings.extraFolders].filter((r) => !settings.excludedFolders.includes(r)),
@@ -305,14 +324,41 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     const batch = paths.length > 1 ? `move-${nextOp}` : null;
     return paths.map((p) => moveTo(p, String(a.destination), "move", batch));
   },
+  // Each file to its own folder, as commands::move_each: one batch for
+  // several, and a file that cannot move is named in `failed` while the
+  // others still go.
+  move_each: (a): MoveResult => {
+    const moves = a.moves as MoveRequest[];
+    const batch = moves.length > 1 ? `move-${nextOp}` : null;
+    const moved: string[] = [];
+    const failed: MoveResult["failed"] = [];
+    for (const m of moves) {
+      try {
+        moved.push(moveTo(m.path, m.destination, "move", batch));
+      } catch (error) {
+        failed.push({ name: m.path.slice(m.path.lastIndexOf("\\") + 1), message: (error as ToteError).message });
+      }
+    }
+    return { batch: moved.length > 0 ? batch : null, moved, failed };
+  },
+  // As ops::rename_file: the native name rules, a clash refused unless
+  // pickFree asks for "Name (2)", and a change of capitals alone allowed
+  // (Windows names ignore case, so a clash is checked that way too).
   rename_file: (a) => {
     const row = files.find((f) => f.path === a.path);
     if (!row) throw { code: "notFound", message: "That file is no longer there. Search for it in Find." };
     const stem = String(a.newStem);
-    if (/[\\/:*?"<>|]/.test(stem)) throw { code: "invalidName", message: "Names cannot contain : or similar characters." };
-    const name = `${stem}.${row.ext}`;
-    if (files.some((f) => f.parent === row.parent && f.name === name && f !== row)) throw { code: "alreadyExists", message: "A file with that name already exists there. Pick another name." };
-    ops.unshift({ id: nextOp++, kind: "rename", src: row.path, dst: `${row.parent}\\${name}`, status: "done", message: null, automatic: false, createdAt: NOW, batch: null });
+    const problem = nameProblem(stem);
+    if (problem) throw { code: "invalidName", message: problem };
+    const taken = (candidate: string) => files.some((f) => f !== row && f.parent === row.parent && f.name.toLowerCase() === candidate.toLowerCase());
+    let name = `${stem}.${row.ext}`;
+    if (taken(name)) {
+      if (!a.pickFree) throw { code: "alreadyExists", message: "A file with that name already exists there. Pick another name.", path: `${row.parent}\\${name}` };
+      let n = 2;
+      while (taken(`${stem} (${n}).${row.ext}`)) n += 1;
+      name = `${stem} (${n}).${row.ext}`;
+    }
+    ops.unshift({ id: nextOp++, kind: "rename", src: row.path, dst: `${row.parent}\\${name}`, status: "done", message: null, automatic: false, createdAt: NOW, batch: null, stampLost: false });
     row.name = name;
     row.path = `${row.parent}\\${name}`;
     return row.path;
@@ -336,6 +382,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
         automatic: false,
         createdAt: NOW,
         batch,
+        stampLost: false,
       };
       ops.unshift(op);
       out.push(op);
@@ -368,10 +415,12 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     op.status = "undone";
   },
   cleanup_report: (): CleanupReport => {
-    const groups = group(files).filter((g) => g.others.length > 0);
+    // As cleanup::report: copies in `duplicates`, files that only share the name in `sameName` (latest plus its sameName list).
+    const groups = group(files);
     const suggest = (f: FileRow) => ({ file: f, suggestedDir: `${SCHOOL}\\${{ word: "Word", pdf: "PDF", excel: "Excel", powerpoint: "PowerPoint", images: "Images", videos: "Videos", other: "Other" }[f.kind]}\\2026-10` });
     return {
-      duplicates: groups,
+      duplicates: groups.filter((g) => g.others.length > 0).map((g) => ({ ...g, sameName: [] })),
+      sameName: groups.filter((g) => g.sameName.length > 0).map((g) => ({ ...g, others: [] })),
       desktop: files.filter((f) => f.parent === DESKTOP).map(suggest),
       oldDownloads: files.filter((f) => f.parent === DOWNLOADS && f.ext !== "exe" && f.modified < NOW - 60 * DAY).map(suggest),
     };
@@ -390,7 +439,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     if (!t) throw { code: "notFound", message: "That template is no longer on the shelf." };
     const copy = file(`${SCHOOL}\\Word\\2026-10`, `${t.name} 2026-10-12.docx`, { modified: NOW });
     files.unshift(copy);
-    ops.unshift({ id: nextOp++, kind: "copy", src: t.path, dst: copy.path, status: "done", message: null, automatic: false, createdAt: NOW, batch: null });
+    ops.unshift({ id: nextOp++, kind: "copy", src: t.path, dst: copy.path, status: "done", message: null, automatic: false, createdAt: NOW, batch: null, stampLost: false });
     return { path: copy.path, opened: !templateUnopened };
   },
   get_settings: () => settings,
@@ -423,7 +472,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       const row = files.find((f) => f.path === m.path);
       if (!row) continue;
       const dst = `${m.destDir}\\${row.name}`;
-      ops.unshift({ id: nextOp++, kind: "move", src: row.path, dst, status: "done", message: null, automatic: false, createdAt: NOW, batch });
+      ops.unshift({ id: nextOp++, kind: "move", src: row.path, dst, status: "done", message: null, automatic: false, createdAt: NOW, batch, stampLost: false });
       row.path = dst;
       row.parent = m.destDir;
       folders.add(m.destDir);
@@ -433,15 +482,16 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
   undo_batch: (a) => {
     let undone = 0;
-    const failed: string[] = [];
+    const failed: { name: string; message: string }[] = [];
     for (const op of ops.filter((o) => o.batch === a.batch && o.status === "done")) {
       if (op.kind === "recycle") files.push(file(op.src.slice(0, op.src.lastIndexOf("\\")), op.src.slice(op.src.lastIndexOf("\\") + 1)));
       else {
         const row = files.find((f) => f.path === op.dst);
         // A file that is no longer where the run put it cannot go back: the
-        // native side names it and leaves its row done, so Undo all can retry.
+        // native side names it with the sentence and leaves its row done, so
+        // Undo all can retry.
         if (!row) {
-          failed.push(op.src.slice(op.src.lastIndexOf("\\") + 1));
+          failed.push({ name: op.src.slice(op.src.lastIndexOf("\\") + 1), message: "That file is no longer there. Search for it in Find." });
           continue;
         }
         row.path = op.src;
@@ -527,7 +577,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
 };
 
 export function installMockBackend(): void {
-  const mock: MockBackend & { calls: typeof calls; simulateDownload(): void; offerUpdate(version: string): void; vanish(path: string): void } = {
+  const mock: MockBackend & { calls: typeof calls; simulateMoveToTote(name?: string): void; simulateDrag(over: boolean): void; simulateDrop(name: string): void; offerUpdate(version: string): void; vanish(path: string): void } = {
     calls,
     async invoke(command, args) {
       calls.push({ command, args });
@@ -557,12 +607,23 @@ export function installMockBackend(): void {
     vanish(path) {
       files = files.filter((f) => f.path !== path);
     },
-    simulateDownload() {
-      const row = file(`${SCHOOL}\\PDF\\2026-10`, "Reading Assessment Q2.pdf", { originLabel: "Messenger", downloadedAt: NOW, modified: NOW });
+    // A download she sent with File Explorer's Move to Tote, filed by the
+    // Organize rule ("reading" is an English word).
+    simulateMoveToTote(name = "Reading Assessment Q2.pdf") {
+      const row = file(`${SCHOOL}\\English`, name, { originLabel: "Messenger", downloadedAt: NOW, modified: NOW });
       files.unshift(row);
-      ops.unshift({ id: nextOp++, kind: "autoSort", src: `${DOWNLOADS}\\${row.name}`, dst: row.path, status: "done", message: null, automatic: true, createdAt: NOW, batch: null });
-      emit("tote://sorted", { name: row.name, folder: "School Files > PDF", path: row.path });
+      ops.unshift({ id: nextOp++, kind: "autoSort", src: `${DOWNLOADS}\\${row.name}`, dst: row.path, status: "done", message: null, automatic: true, createdAt: NOW, batch: null, stampLost: false });
+      emit("tote://sorted", { name: row.name, folder: "School Files > English", path: row.path, count: 1 });
       emit("tote://changed");
+    },
+    // Files from File Explorer held over the window (the native side's drag events).
+    simulateDrag(over) {
+      emit("tote://mock-drag", over);
+    },
+    // She lets go: the drag ends and the native side files the file like Move to Tote.
+    simulateDrop(name) {
+      emit("tote://mock-drag", false);
+      mock.simulateMoveToTote(name);
     },
   };
   window.__toteMock = mock;

@@ -5,6 +5,7 @@
 
 import { BrushCleaning, ChevronLeft, ChevronRight, FolderOpen, History, ListChecks, Search, Settings } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType } from "react";
+import { DropZone } from "./components/DropZone";
 import { ToteMark } from "./components/icons";
 import { LoadFailed } from "./components/LoadFailed";
 import { TitleBar } from "./components/TitleBar";
@@ -12,6 +13,7 @@ import { Toasts } from "./components/Toasts";
 import { Tour } from "./components/Tour";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { focusSoon, SEARCH_BOX } from "./lib/focus";
+import { labelWords } from "./lib/format";
 import { CHANGED_EVENT, ipc, listen, SORTED_EVENT, type SortedEvent } from "./lib/ipc";
 import { useApp, type View } from "./store/app";
 import { useFind } from "./store/find";
@@ -106,6 +108,11 @@ export default function App() {
       if (active) {
         nav.style.setProperty("--tab-y", `${active.offsetTop}px`);
         nav.style.setProperty("--tab-h", `${active.offsetHeight}px`);
+        // In a window short enough to scroll the menu, the last item (Settings)
+        // keeps its clearance from the card's rounded corner only with the
+        // menu at its end, where the bottom padding is (styles.css, .sidebar).
+        const items = nav.querySelectorAll<HTMLElement>(".nav-button");
+        if (active === items[items.length - 1]) nav.scrollTop = nav.scrollHeight;
       }
     };
     place();
@@ -151,7 +158,8 @@ export default function App() {
           if (useApp.getState().view === "find") void refreshFind(true);
         }, 400);
       }),
-      listen<SortedEvent>(SORTED_EVENT, (e) => toast(`${e.name} is in ${e.folder}.`)),
+      // "Filed" is the one word for what Move to Tote does, in toasts and in Activity.
+      listen<SortedEvent>(SORTED_EVENT, (e) => toast(e.count > 1 ? `Filed ${e.count} files in ${labelWords(e.folder)}.` : `Filed ${e.name} in ${labelWords(e.folder)}.`)),
     ];
     return () => {
       window.removeEventListener("focus", onFocus);
@@ -251,6 +259,7 @@ export default function App() {
       </main>
       <Toasts />
       <Tour onFinish={finishTour} />
+      <DropZone />
     </div>
   );
 }

@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 import { describeError, plainMessage, undoText } from "../lib/errors";
 import { focusSoon } from "../lib/focus";
 import { locationLine, relativeTime } from "../lib/format";
-import { ipc } from "../lib/ipc";
+import { ipc, logRenderer } from "../lib/ipc";
 import { LoadFailed } from "../components/LoadFailed";
 import { ShowMore } from "../components/ShowMore";
 import { SkeletonList } from "../components/Skeleton";
@@ -63,8 +63,8 @@ export function describeOp(op: OpRow, roots: string[]): { title: string; detail:
   switch (op.kind) {
     case "autoSort":
       return failed
-        ? { title: `${nameOf(op.src)} was left in Downloads`, detail: plainMessage(op.message, "It is still in Downloads.") }
-        : { title: `Filed ${name}`, detail: `${folderOf(op.dst, roots)}, automatically` };
+        ? { title: `Could not file ${nameOf(op.src)}`, detail: plainMessage(op.message, "It is still where it was. Right-click it in File Explorer to try again.") }
+        : { title: `Filed ${name}`, detail: folderOf(op.dst, roots) };
     case "move":
       return failed
         ? { title: `Could not move ${nameOf(op.src)}`, detail: plainMessage(op.message, STAYED) }
@@ -145,6 +145,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
     } catch (error) {
       // The sentence sits where the list would be, with Try again; never a skeleton for good.
       console.warn("Tote:", error);
+      logRenderer("error", describeError(error));
       setLoadError(describeError(error));
     }
   };
@@ -165,7 +166,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
     try {
       const result = await ipc.undoBatch(batch);
       // The same words as the toast Undo: what went back, and the first file that did not.
-      toast(undoText(result.undone, result.failed.map((name) => ({ name, reason: null }))), result.failed.length === 0 ? "info" : "error");
+      toast(undoText(result.undone, result.failed.map((file) => ({ name: file.name, reason: file.message }))), result.failed.length === 0 ? "info" : "error");
       await load();
       await refreshFind();
     } catch (error) {
@@ -202,7 +203,7 @@ export function ActivityView({ info }: { info: AppInfo }) {
             <History size={26} />
           </span>
           <strong>Nothing yet</strong>
-          When a download is filed or you move a file, it shows up here.
+          When Tote files something or you move a file, it shows up here.
         </div>
       ) : (
         <>

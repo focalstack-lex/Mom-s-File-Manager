@@ -4,8 +4,9 @@
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { AppInfo, BatchUndo, BrowserStatus, Completed, OrganizePlan, OrganizeResult, Repeat, SubjectRule, CleanupReport, Destination, FindResult, Filters, OpRow, Preview, Settings, SortedEvent, Task, Template, TemplateCopy, UpdateInfo } from "./types";
+import type { AppInfo, BatchUndo, BrowserStatus, Completed, OrganizePlan, OrganizeResult, Repeat, SubjectRule, CleanupReport, Destination, FindResult, Filters, MoveRequest, MoveResult, OpRow, Preview, Settings, SortedEvent, Task, Template, TemplateCopy, UpdateInfo } from "./types";
 
 export interface MockBackend {
   invoke(command: string, args: Record<string, unknown>): Promise<unknown>;
@@ -30,7 +31,32 @@ export async function listen<T>(event: string, handler: (payload: T) => void): P
 
 export const CHANGED_EVENT = "tote://changed";
 export const SORTED_EVENT = "tote://sorted";
+/** The mock's stand-in for the window's file drag: true while files are over it. */
+export const MOCK_DRAG_EVENT = "tote://mock-drag";
+
+/**
+ * Whether files from File Explorer are being dragged over the window. The
+ * drop itself is filed by the native side (lib.rs), like Move to Tote; the
+ * screen only shows where to let go.
+ */
+export async function onFileDrag(handler: (over: boolean) => void): Promise<UnlistenFn> {
+  if (window.__toteMock) return window.__toteMock.listen(MOCK_DRAG_EVENT, (over) => handler(over === true));
+  // "enter" carries the paths: a drag of text or a link (no files) shows nothing.
+  return getCurrentWebview().onDragDropEvent((e) => {
+    if (e.payload.type === "enter") handler(e.payload.paths.length > 0);
+    else if (e.payload.type !== "over") handler(false);
+  });
+}
 export type { SortedEvent };
+
+/**
+ * Sends one line to tote.log (spec 6.5), so a screen that failed leaves a
+ * trace after its toast is gone. A log line that cannot be sent stays a
+ * console line: it must never raise a toast of its own.
+ */
+export function logRenderer(level: "error" | "warn" | "info", message: string): void {
+  void invoke<void>("renderer_log", { level, message }).catch((error) => console.warn("Tote: the log line was not sent", error));
+}
 
 export const ipc = {
   appInfo: () => invoke<AppInfo>("get_app_info"),
@@ -43,7 +69,10 @@ export const ipc = {
   copyFiles: (paths: string[]) => invoke<void>("copy_files", { paths }),
   preview: (path: string) => invoke<Preview>("preview", { path }),
   moveFiles: (paths: string[], destination: string) => invoke<string[]>("move_files", { paths, destination }),
-  renameFile: (path: string, newStem: string) => invoke<string>("rename_file", { path, newStem }),
+  /** Several files, each to its own folder, as one batch: Activity shows one row with Undo all; files that cannot move are named in `failed`. */
+  moveEach: (moves: MoveRequest[]) => invoke<MoveResult>("move_each", { moves }),
+  /** With `pickFree`, a taken name becomes the first free "Name (2)"; without it a clash is refused as `alreadyExists`. */
+  renameFile: (path: string, newStem: string, pickFree = false) => invoke<string>("rename_file", { path, newStem, pickFree }),
   createFolder: (parent: string, name: string) => invoke<string>("create_folder", { parent, name }),
   recycleFiles: (paths: string[]) => invoke<OpRow[]>("recycle_files", { paths }),
   destinations: () => invoke<Destination[]>("list_destinations"),

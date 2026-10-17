@@ -1,4 +1,5 @@
 // Move to... (spec 5.4): her folders, recent destinations first, with New folder.
+// Month folders read as months ("School Files > Word > October 2026").
 // Focus lands on the first folder once the list arrives, so Enter or Space
 // picks it straight away.
 
@@ -6,6 +7,7 @@ import { Folder, FolderPlus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ipc } from "../lib/ipc";
 import { describeError } from "../lib/errors";
+import { labelWords } from "../lib/format";
 import type { Destination } from "../lib/types";
 import { Dialog } from "./Dialog";
 
@@ -63,7 +65,7 @@ export function FolderPicker({ count, warnOld, onPick, onClose }: Props) {
           <li key={folder.path}>
             <button type="button" className="folder-option" aria-pressed={chosen === folder.path} onClick={() => setChosen(folder.path)}>
               <Folder size={20} aria-hidden />
-              {folder.label}
+              {labelWords(folder.label)}
               {folder.recent && <span className="hint">recent</span>}
             </button>
           </li>
@@ -71,7 +73,7 @@ export function FolderPicker({ count, warnOld, onPick, onClose }: Props) {
       </ul>
       {creating ? (
         <div className="field">
-          <label htmlFor="new-folder-name">New folder inside {folders.find((f) => f.path === (chosen ?? folders[0]?.path))?.label ?? "the chosen folder"}</label>
+          <label htmlFor="new-folder-name">New folder inside {labelWords(folders.find((f) => f.path === (chosen ?? folders[0]?.path))?.label ?? "the chosen folder")}</label>
           <input id="new-folder-name" autoFocus value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void create()} />
         </div>
       ) : (
